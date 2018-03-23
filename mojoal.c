@@ -253,7 +253,6 @@ typedef struct ALsource
     ALsizei queue_frequency;
 } ALsource;
 
-#define ALCDEV_MIXBUFLEN (64 * 1024)
 struct ALCdevice_struct
 {
     char *name;
@@ -269,7 +268,6 @@ struct ALCdevice_struct
         struct {
             ALCcontext *contexts;
             BufferBlock buffer_blocks;  /* buffers are shared between contexts on the same device. */
-            Uint8 mixbuf[ALCDEV_MIXBUFLEN];
         } playback;
         struct {
             RingBuffer ring;  /* only used if iscapture */
@@ -493,12 +491,11 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
         const int bufferframesize = (int) (buffer->channels * sizeof (float));
         const int deviceframesize = ctx->device->framesize;
         const int framesneeded = *len / deviceframesize;
-        int mixframes;
 
         SDL_assert(src->offset < buffer->len);
 
         if (src->stream) {  /* resampling? */
-            int mixlen;
+            int mixframes, mixlen, remainingmixframes;
             while ( (((mixlen = SDL_AudioStreamAvailable(src->stream)) / bufferframesize) < framesneeded) && (src->offset < buffer->len) ) {
                 const int framesput = (buffer->len - src->offset) / bufferframesize;
                 const int bytesput = SDL_min(framesput, 1024) * bufferframesize;
@@ -507,20 +504,28 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
                 src->offset += bytesput;
                 data += bytesput / sizeof (float);
             }
+
             mixframes = SDL_min(mixlen / bufferframesize, framesneeded);
-            FIXME("make ALCDEV_MIXBUFLEN smaller, mix in a loop here");
-            SDL_assert(ALCDEV_MIXBUFLEN >= mixlen);
-            SDL_AudioStreamGet(src->stream, ctx->device->playback.mixbuf, mixframes * bufferframesize);
-            mix_source_data_float32(ctx, src, buffer->channels, (const float *) ctx->device->playback.mixbuf, *stream, mixframes);
+            remainingmixframes = mixframes;
+            while (remainingmixframes > 0) {
+                const int mixbuflen = 1024;
+                float mixbuf[mixbuflen / sizeof (float)];
+                const int mixbufframes = mixbuflen / bufferframesize;
+                const int getframes = SDL_min(remainingmixframes, mixbufframes);
+                SDL_AudioStreamGet(src->stream, mixbuf, getframes * bufferframesize);
+                mix_source_data_float32(ctx, src, buffer->channels, mixbuf, *stream, getframes);
+                *len -= getframes * deviceframesize;
+                *stream += getframes * ctx->device->channels;
+                remainingmixframes -= getframes;
+            }
         } else {
             const int framesavail = (buffer->len - src->offset) / bufferframesize;
-            mixframes = SDL_min(framesneeded, framesavail);
+            const int mixframes = SDL_min(framesneeded, framesavail);
             mix_source_data_float32(ctx, src, buffer->channels, data, *stream, mixframes);
             src->offset += mixframes * bufferframesize;
+            *len -= mixframes * deviceframesize;
+            *stream += mixframes * ctx->device->channels;
         }
-
-        *len -= mixframes * deviceframesize;
-        *stream += mixframes * ctx->device->channels;
 
         SDL_assert(src->offset <= buffer->len);
 
