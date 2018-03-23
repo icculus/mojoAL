@@ -5,7 +5,8 @@
 
 #define OPENAL_VERSION_MAJOR 1
 #define OPENAL_VERSION_MINOR 1
-#define OPENAL_VERSION_STRING2(major, minor) #major "." #minor
+#define OPENAL_VERSION_STRING3(major, minor) #major "." #minor
+#define OPENAL_VERSION_STRING2(major, minor) OPENAL_VERSION_STRING3(major, minor)
 
 /* !!! FIXME: make some decisions about VENDOR and RENDERER strings here */
 #define OPENAL_VERSION_STRING OPENAL_VERSION_STRING2(OPENAL_VERSION_MAJOR, OPENAL_VERSION_MINOR)
