@@ -29,6 +29,16 @@
 #define OPENAL_BUFFER_BLOCK_SIZE 256
 #endif
 
+/* AL_EXT_FLOAT32 support... */
+#ifndef AL_FORMAT_MONO_FLOAT32
+#define AL_FORMAT_MONO_FLOAT32 0x10010
+#endif
+
+#ifndef AL_FORMAT_STEREO_FLOAT32
+#define AL_FORMAT_STEREO_FLOAT32 0x10011
+#endif
+
+
 /*
   The locking strategy for this OpenAL implementation is complicated.
   Not only do we generally want you to be able to call into OpenAL from any
@@ -413,8 +423,17 @@ static ALCboolean alcfmt_to_sdlfmt(const ALCenum alfmt, SDL_AudioFormat *sdlfmt,
             *channels = 2;
             *framesize = 4;
             break;
+        case AL_FORMAT_MONO_FLOAT32:
+            *sdlfmt = AUDIO_F32SYS;
+            *channels = 1;
+            *framesize = 4;
+            break;
+        case AL_FORMAT_STEREO_FLOAT32:
+            *sdlfmt = AUDIO_F32SYS;
+            *channels = 2;
+            *framesize = 8;
+            break;
         default:
-            FIXME("AL_FORMAT_FLOAT32_EXT?");
             return ALC_FALSE;
     }
 
@@ -1335,7 +1354,7 @@ ALboolean alIsEnabled(ALenum capability)
 const ALchar* alGetString(ALenum param)
 {
     switch (param) {
-        case AL_EXTENSIONS: FIXME("add some extensions.  :)"); return "";
+        case AL_EXTENSIONS: FIXME("add some extensions.  :)"); return "AL_EXT_FLOAT32";
         case AL_VERSION: return OPENAL_VERSION_STRING;
         case AL_RENDERER: return OPENAL_RENDERER_STRING;
         case AL_VENDOR: return OPENAL_VENDOR_STRING;
@@ -1467,8 +1486,9 @@ ALenum alGetError(void)
 
 ALboolean alIsExtensionPresent(const ALchar *extname)
 {
-    FIXME("This entry point is currently unimplemented.");
-    return AL_FALSE;
+    FIXME("write me");
+    if (SDL_strcasecmp(extname, "AL_EXT_FLOAT32") == 0) return ALC_TRUE;
+    return ALC_FALSE;
 }
 
 void *alGetProcAddress(const ALchar *funcname)
@@ -1636,6 +1656,8 @@ ALenum alGetEnumValue(const ALchar *enumname)
     ENUM_TEST(AL_LINEAR_DISTANCE_CLAMPED);
     ENUM_TEST(AL_EXPONENT_DISTANCE);
     ENUM_TEST(AL_EXPONENT_DISTANCE_CLAMPED);
+    ENUM_TEST(AL_FORMAT_MONO_FLOAT32);
+    ENUM_TEST(AL_FORMAT_STEREO_FLOAT32);
     #undef ENUM_TEST
 
     FIXME("Extension enums?");
