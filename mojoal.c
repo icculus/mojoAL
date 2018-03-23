@@ -28,19 +28,27 @@
 #define OPENAL_BUFFER_BLOCK_SIZE 256
 #endif
 
-/* !!! FIXME: update this
+/*
   The locking strategy for this OpenAL implementation is complicated.
   Not only do we generally want you to be able to call into OpenAL from any
   thread, we'll always have to compete with the SDL audio device thread.
   However, we don't want to just throw a big mutex around the whole thing,
-  because not only can we safely touch two unrelated objects at the same
+  not only because can we safely touch two unrelated objects at the same
   time, but also because the mixer might make your simple state change call
   on the main thread block for several milliseconds if your luck runs out,
   killing your framerate. Here's the basic plan:
 
+- Devices are expected to live for the entire life of your OpenAL experience,
+  so deleting one while another thread is using it is your own fault. Don't
+  do that.
+
+- Create or destroying a context will lock the SDL audio device, serializing
+  these calls vs the mixer thread while we add/remove the context on the
+  device's list. So don't do this in time-critical code.
+
 - The current context is an atomic pointer, so even if there's a MakeCurrent
   while an operation is in progress, the operation will either get the new
-  current or the previous current and set state on whichever. This should
+  context or the previous context and set state on whichever. This should
   protect everything but context destruction, but if you are still calling
   into the AL while destroying the context, shame on you (even there, the
   first thing context destruction will do is make the context no-longer
@@ -73,23 +81,35 @@
   blocks, OPENAL_BUFFER_BLOCK_SIZE at a time, until we find our target block,
   and then index into that.
 
-- Buffer data is owned by the AL, but we need a lock around it, in case an
-  alBufferData() call happens while mixing. !!! FIXME: maybe not...
+- Buffer data is owned by the AL, and it's illegal to delete a buffer or
+  alBufferData() its contents while queued on a source with either AL_BUFFER
+  or alSourceQueueBuffers(). We keep an atomic refcount for each buffer,
+  and you can't change its state or delete it when its refcount is > 0, so
+  there isn't a race with the mixer, and multiple racing calls into the API
+  will generate an error and return immediately from all except the thread
+  that managed to get the first reference count increment.
 
 - Buffer queues are a hot mess. alSourceQueueBuffers will build a linked
   list of buffers, then atomically move this list into position for the
   mixer to obtain it. The mixer will process this list without the need
-  to be atomic (as it owns it). As processed, it moves them atomically to
-  a linked list that other threads can pick up for alSourceUnqueueBuffers.
-  The problem with unqueueing is that multiple threads can compete. Unlike
-  queueing, where we don't care which thread wins the race to queue,
-  unqueueing _must_ return buffer names in the order they were mixed,
-  according to the spec, which means we need a lock. But! we only need to
-  serialize the alSourceUnqueueBuffers callers, not the mixer thread, and
-  only long enough to unqueue items from the list.
+  to be atomic (as it owns it once it atomically claims it from from the
+  just_queue field where alSourceQueueBuffers staged it). As buffers are
+  processed, the mixer moves them atomically to a linked list that other
+  threads can pick up for alSourceUnqueueBuffers. The problem with unqueueing
+  is that multiple threads can compete. Unlike queueing, where we don't care
+  which thread wins the race to queue, unqueueing _must_ return buffer names
+  in the order they were mixed, according to the spec, which means we need a
+  lock. But! we only need to serialize the alSourceUnqueueBuffers callers,
+  not the mixer thread, and only long enough to obtain any newly-processed
+  buffers from the mixer thread and unqueue items from the actual list.
 
 - Capture just locks the SDL audio device for everything, since it's a very
-  lightweight load and a much simplified API; good enough.
+  lightweight load and a much simplified API; good enough. The capture device
+  thread is an almost-constant minimal load (1 or 2 memcpy's, depending on the
+  ring buffer position), and the worst load on the API side (alcCaptureSamples)
+  is the same deal, so this never takes long, and is good enough.
+
+- Probably other things. These notes might get updates later.
 */
 
 
