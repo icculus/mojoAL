@@ -834,7 +834,8 @@ ALCenum alcGetError(ALCdevice *device)
 ALCboolean alcIsExtensionPresent(ALCdevice *device, const ALCchar *extname)
 {
     FIXME("write me");
-    if (SDL_strcasecmp(extname, "ALC_EXT_capture") == 0) return ALC_TRUE;
+    if (SDL_strcasecmp(extname, "ALC_ENUMERATION_EXT") == 0) return ALC_TRUE;
+    if (SDL_strcasecmp(extname, "ALC_EXT_CAPTURE") == 0) return ALC_TRUE;
     return ALC_FALSE;
 }
 
@@ -963,12 +964,8 @@ const ALCchar *alcGetString(ALCdevice *device, ALCenum param)
 {
     switch (param) {
         case ALC_EXTENSIONS:
-            if (!device) {
-                set_alc_error(NULL, ALC_INVALID_DEVICE);
-            } else {
-                FIXME("add some extensions.  :)");
-                return "ALC_EXT_CAPTURE";
-            }
+            FIXME("add some extensions.  :)");
+            return "ALC_ENUMERATION_EXT ALC_EXT_CAPTURE";
             break;
 
         /* You open the default SDL device with a NULL device name, but that is how OpenAL
