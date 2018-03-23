@@ -268,6 +268,7 @@ struct ALCdevice_struct
         struct {
             ALCcontext *contexts;
             BufferBlock buffer_blocks;  /* buffers are shared between contexts on the same device. */
+            void *buffer_queue_pool;  /* void* because we'll atomicgetptr it. */
         } playback;
         struct {
             RingBuffer ring;  /* only used if iscapture */
@@ -2450,11 +2451,6 @@ void alSourceQueueBuffers(ALuint name, ALsizei nb, const ALuint *bufnames)
         return;  /* nothing to do. */
     }
 
-    /* the AL spec says all queued buffers must be the same format, and
-       we don't enforce that because we preconvert in alBufferData, but
-       that messes up resampling, so this will be changing soon. */
-    FIXME("enforce spec requirements on queue format");
-
     for (i = nb; i > 0; i--) {  /* build list in reverse */
         BufferQueueItem *item = NULL;
         const ALuint bufname = bufnames[i-1];
@@ -2478,12 +2474,20 @@ void alSourceQueueBuffers(ALuint name, ALsizei nb, const ALuint *bufnames)
             }
         }
 
-        FIXME("make a pool of reusable buffer items");
-        item = (BufferQueueItem *) SDL_calloc(1, sizeof (BufferQueueItem));
-        if (!item) {
-            set_al_error(ctx, AL_OUT_OF_MEMORY);
-            failed = AL_TRUE;
-            break;
+        do {
+            ptr = SDL_AtomicGetPtr(&ctx->device->playback.buffer_queue_pool);
+            item = (BufferQueueItem *) ptr;
+            if (!item) break;
+            ptr = item->next;
+        } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, item, ptr));
+
+        if (!item) {  /* allocate a new item */
+            item = (BufferQueueItem *) SDL_calloc(1, sizeof (BufferQueueItem));
+            if (!item) {
+                set_al_error(ctx, AL_OUT_OF_MEMORY);
+                failed = AL_TRUE;
+                break;
+            }
         }
 
         item->buffer = buffer;
@@ -2523,10 +2527,12 @@ void alSourceQueueBuffers(ALuint name, ALsizei nb, const ALuint *bufnames)
     }
 
     if (failed) {
-        while (queue) {
-            BufferQueueItem *next = queue->next;
-            SDL_free(queue);
-            queue = next;
+        if (queue) {
+            /* put the whole new queue back in the pool for reuse later. */
+            do {
+                ptr = SDL_AtomicGetPtr(&ctx->device->playback.buffer_queue_pool);
+                SDL_AtomicSetPtr(&queueend->next, ptr);
+            } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, ptr, queue));
         }
         if (stream) {
             SDL_FreeAudioStream(stream);
@@ -2566,8 +2572,10 @@ void alSourceQueueBuffers(ALuint name, ALsizei nb, const ALuint *bufnames)
 
 void alSourceUnqueueBuffers(ALuint name, ALsizei nb, ALuint *bufnames)
 {
+    BufferQueueItem *queueend = NULL;
     BufferQueueItem *queue;
     BufferQueueItem *item;
+    void *ptr;
     ALsizei i;
     ALCcontext *ctx = get_current_context();
     ALsource *src = get_source(ctx, name);
@@ -2614,12 +2622,17 @@ void alSourceUnqueueBuffers(ALuint name, ALsizei nb, ALuint *bufnames)
 
     item = queue;
     for (i = 0; i < nb; i++) {
-        BufferQueueItem *next = item->next;
         bufnames[i] = item->buffer ? item->buffer->name : 0;
-        FIXME("pool and reuse these, don't alloc/free every time!");
-        SDL_free(item);
-        item = next;
+        queueend = item;
+        item = item->next;
     }
+
+    /* put the whole new queue back in the pool for reuse later. */
+    SDL_assert(queueend != NULL);
+    do {
+        ptr = SDL_AtomicGetPtr(&ctx->device->playback.buffer_queue_pool);
+        SDL_AtomicSetPtr(&queueend->next, ptr);
+    } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, ptr, queue));
 }
 
 void alGenBuffers(ALsizei n, ALuint *names)
