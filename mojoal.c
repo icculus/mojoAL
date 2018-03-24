@@ -1,3 +1,11 @@
+/**
+ * MojoAL; a simple drop-in OpenAL implementation.
+ *
+ * Please see the file LICENSE.txt in the source's root directory.
+ *
+ *  This file written by Ryan C. Gordon.
+ */
+
 #include <stdio.h>
 #include "AL/al.h"
 #include "AL/alc.h"
