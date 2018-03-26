@@ -702,6 +702,8 @@ ALCcontext* alcCreateContext(ALCdevice *device, const ALCint* attrlist)
         }
     }
 
+    FIXME("use these variables at some point"); (void) refresh; (void) sync;
+
     retval = (ALCcontext *) SDL_calloc(1, sizeof (ALCcontext));
     if (!retval) {
         set_alc_error(device, ALC_OUT_OF_MEMORY);
@@ -930,7 +932,7 @@ static const ALCchar *calculate_sdl_device_list(const int iscapture)
        race conditions don't bite us. The enumeration extension shouldn't have
        reused entry points, or done this silly null-delimited string list.
        Oh well. */
-    const size_t DEVICE_LIST_BUFFER_SIZE = 512;
+    #define DEVICE_LIST_BUFFER_SIZE 512
     static ALCchar playback_list[DEVICE_LIST_BUFFER_SIZE];
     static ALCchar capture_list[DEVICE_LIST_BUFFER_SIZE];
     ALCchar list[DEVICE_LIST_BUFFER_SIZE];
@@ -966,6 +968,8 @@ static const ALCchar *calculate_sdl_device_list(const int iscapture)
 
     SDL_memcpy(final_list, list, DEVICE_LIST_BUFFER_SIZE - avail);
     return final_list;
+
+    #undef DEVICE_LIST_BUFFER_SIZE
 }
 
 const ALCchar *alcGetString(ALCdevice *device, ALCenum param)
@@ -2190,7 +2194,7 @@ void alSourceiv(ALuint name, ALenum param, const ALint *values)
 
                     if (src->buffer != buffer) {
                         if (src->buffer) {
-                            SDL_AtomicDecRef(&src->buffer->refcount);
+                            (void) SDL_AtomicDecRef(&src->buffer->refcount);
                         }
                         if (buffer) {
                             SDL_AtomicIncRef(&buffer->refcount);
@@ -2376,7 +2380,7 @@ void alGetSourceiv(ALuint name, ALenum param, ALint *values)
     switch (param) {
         case AL_SOURCE_STATE: *values = (ALint) src->state; return;
         case AL_SOURCE_TYPE: *values = (ALint) src->type; return;
-        case AL_BUFFER: *values = (ALint) src->buffer ? src->buffer->name : 0; return;
+        case AL_BUFFER: *values = (ALint) (src->buffer ? src->buffer->name : 0); return;
         case AL_BUFFERS_QUEUED: *values = (ALint) SDL_AtomicGet(&src->buffer_queue.num_items); return;
         case AL_BUFFERS_PROCESSED: *values = (ALint) SDL_AtomicGet(&src->buffer_queue_processed.num_items); return;
         case AL_SOURCE_RELATIVE: *values = (ALint) src->source_relative; return;
@@ -2837,7 +2841,7 @@ void alBufferData(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, A
     SDL_assert(prevrefcount >= 0);
     if (prevrefcount != 0) {
         /* this buffer is being used by some source. Unqueue it first. */
-        SDL_AtomicDecRef(&buffer->refcount);
+        (void) SDL_AtomicDecRef(&buffer->refcount);
         set_al_error(ctx, AL_INVALID_OPERATION);
         return;
     }
@@ -2854,7 +2858,7 @@ void alBufferData(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, A
     SDL_zero(sdlcvt);
     rc = SDL_BuildAudioCVT(&sdlcvt, sdlfmt, channels, (int) freq, AUDIO_F32SYS, channels, (int) freq);
     if (rc == -1) {
-        SDL_AtomicDecRef(&buffer->refcount);
+        (void) SDL_AtomicDecRef(&buffer->refcount);
         set_al_error(ctx, AL_OUT_OF_MEMORY);  /* not really, but oh well. */
         return;
     }
@@ -2862,7 +2866,7 @@ void alBufferData(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, A
     sdlcvt.len = sdlcvt.len_cvt = size;
     sdlcvt.buf = (Uint8 *) SDL_malloc(size * sdlcvt.len_mult);
     if (!sdlcvt.buf) {
-        SDL_AtomicDecRef(&buffer->refcount);
+        (void) SDL_AtomicDecRef(&buffer->refcount);
         set_al_error(ctx, AL_OUT_OF_MEMORY);
         return;
     }
@@ -2886,7 +2890,7 @@ void alBufferData(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, A
     buffer->frequency = freq;
     buffer->len = (ALsizei) sdlcvt.len_cvt;
 
-    SDL_AtomicDecRef(&buffer->refcount);  /* ready to go! */
+    (void) SDL_AtomicDecRef(&buffer->refcount);  /* ready to go! */
 }
 
 void alBufferf(ALuint name, ALenum param, ALfloat value)
