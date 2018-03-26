@@ -935,19 +935,25 @@ static const ALCchar *calculate_sdl_device_list(const int iscapture)
     #define DEVICE_LIST_BUFFER_SIZE 512
     static ALCchar playback_list[DEVICE_LIST_BUFFER_SIZE];
     static ALCchar capture_list[DEVICE_LIST_BUFFER_SIZE];
-    ALCchar list[DEVICE_LIST_BUFFER_SIZE];
-    const int numdevs = SDL_GetNumAudioDevices(iscapture);
     ALCchar *final_list = iscapture ? capture_list : playback_list;
-    ALCchar *ptr = list;
+    ALCchar *ptr = final_list;
+    int numdevs;
     size_t avail = DEVICE_LIST_BUFFER_SIZE;
     size_t cpy;
     int i;
 
     /* default device is always available. */
     cpy = SDL_strlcpy(ptr, iscapture ? DEFAULT_CAPTURE_DEVICE : DEFAULT_PLAYBACK_DEVICE, avail);
-    SDL_assert(cpy < avail);
+    SDL_assert((cpy+1) < avail);
     ptr += cpy + 1;  /* skip past null char. */
     avail -= cpy + 1;
+
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) == -1) {
+        return final_list;
+        return NULL;
+    }
+
+    numdevs = SDL_GetNumAudioDevices(iscapture);
 
     for (i = 0; i < numdevs; i++) {
         const char *devname = SDL_GetAudioDeviceName(i, iscapture);
@@ -955,8 +961,8 @@ static const ALCchar *calculate_sdl_device_list(const int iscapture)
         /* if we're out of space, we just have to drop devices we can't cram in the buffer. */
         if (avail > (devnamelen + 2)) {
             cpy = SDL_strlcpy(ptr, devname, avail);
-            SDL_assert(cpy == (devnamelen + 1));
-            SDL_assert(cpy < avail);
+            SDL_assert(cpy == devnamelen);
+            SDL_assert((cpy+1) < avail);
             ptr += cpy + 1;  /* skip past null char. */
             avail -= cpy + 1;
         }
@@ -964,9 +970,9 @@ static const ALCchar *calculate_sdl_device_list(const int iscapture)
 
     SDL_assert(avail >= 1);
     *ptr = '\0';
-    avail--;
 
-    SDL_memcpy(final_list, list, DEVICE_LIST_BUFFER_SIZE - avail);
+    SDL_QuitSubSystem(SDL_INIT_AUDIO);
+
     return final_list;
 
     #undef DEVICE_LIST_BUFFER_SIZE
