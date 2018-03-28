@@ -2189,7 +2189,7 @@ void alSourceiv(ALuint name, ALenum param, const ALint *values)
                     SDL_AudioStream *stream = NULL;
                     /* We only use the stream for resampling, not for channel conversion. */
                     FIXME("keep the existing stream if formats match?");
-                    if (ctx->device->frequency != buffer->frequency) {
+                    if (buffer && (ctx->device->frequency != buffer->frequency)) {
                         stream = SDL_NewAudioStream(AUDIO_F32SYS, buffer->channels, buffer->frequency, AUDIO_F32SYS, buffer->channels, ctx->device->frequency);
                         if (!stream) {
                             set_al_error(ctx, AL_OUT_OF_MEMORY);
