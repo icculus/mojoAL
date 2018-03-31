@@ -604,19 +604,22 @@ static inline void mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, Buffe
         SDL_assert((src->type == AL_STATIC) || (src->type == AL_STREAMING));
         if (src->type == AL_STREAMING) {  /* mark buffer processed. */
             SDL_assert(item == src->buffer_queue.head);
-            src->buffer_queue.head = next;
-            if (!next) {
-                src->buffer_queue.tail = NULL;
+            FIXME("bubble out all these NULL checks");  // these are only here because we check for looping/stopping in this loop, but we really shouldn't enter this loop at all if queue==NULL.
+            if (item != NULL) {
+                src->buffer_queue.head = next;
+                if (!next) {
+                    src->buffer_queue.tail = NULL;
+                }
+                SDL_AtomicAdd(&src->buffer_queue.num_items, -1);
+
+                /* Move it to the processed queue for alSourceUnqueueBuffers() to pick up. */
+                do {
+                    ptr = SDL_AtomicGetPtr(&src->buffer_queue_processed.just_queued);
+                    SDL_AtomicSetPtr(&item->next, ptr);
+                } while (!SDL_AtomicCASPtr(&src->buffer_queue_processed.just_queued, ptr, item));
+
+                SDL_AtomicAdd(&src->buffer_queue_processed.num_items, 1);
             }
-            SDL_AtomicAdd(&src->buffer_queue.num_items, -1);
-
-            /* Move it to the processed queue for alSourceUnqueueBuffers() to pick up. */
-            do {
-                ptr = SDL_AtomicGetPtr(&src->buffer_queue_processed.just_queued);
-                SDL_AtomicSetPtr(&item->next, ptr);
-            } while (!SDL_AtomicCASPtr(&src->buffer_queue_processed.just_queued, ptr, item));
-
-            SDL_AtomicAdd(&src->buffer_queue_processed.num_items, 1);
         }
 
         if (queue == NULL) {  /* nothing else to play? */
