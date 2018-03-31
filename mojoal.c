@@ -2658,7 +2658,7 @@ void alSourceUnqueueBuffers(ALuint name, ALsizei nb, ALuint *bufnames)
        an obscenely large number of buffers to the processed queue. That is
        to say: it's a pathological (and probably not ever real) scenario. */
     SDL_AtomicLock(&src->buffer_queue_lock);
-    if (((ALsizei) SDL_AtomicGet(&src->buffer_queue.num_items)) < nb) {
+    if (((ALsizei) SDL_AtomicGet(&src->buffer_queue_processed.num_items)) < nb) {
         SDL_AtomicUnlock(&src->buffer_queue_lock);
         set_al_error(ctx, AL_INVALID_VALUE);
         return;
