@@ -511,7 +511,7 @@ static void mix_source_data_float32(ALCcontext *ctx, ALsource *src, const int ch
             }
         } else {
             for (i = 0; i < iterations; i++) {
-                const float samp = *(data++);
+                const float samp = *(data++) * gain;
                 *(stream++) += samp;
                 *(stream++) += samp;
             }
@@ -525,8 +525,8 @@ static void mix_source_data_float32(ALCcontext *ctx, ALsource *src, const int ch
             }
         } else {
             for (i = 0; i < iterations; i++) {
-                const float samp = *(data++);
-                *(stream++) += samp * gain;
+                const float samp = *(data++) * gain;
+                *(stream++) += samp;
             }
         }
     }
