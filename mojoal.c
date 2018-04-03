@@ -253,7 +253,7 @@ typedef struct BufferBlock
 
 typedef struct BufferQueueItem
 {
-    const ALbuffer *buffer;
+    ALbuffer *buffer;
     void *next;  /* void* because we'll atomicgetptr it. */
 } BufferQueueItem;
 
@@ -2554,6 +2554,9 @@ void alSourceQueueBuffers(ALuint name, ALsizei nb, const ALuint *bufnames)
             }
         }
 
+        if (buffer) {
+            SDL_AtomicIncRef(&buffer->refcount);  /* mark it as in-use. */
+        }
         item->buffer = buffer;
 
         SDL_assert((queue != NULL) == (queueend != NULL));
@@ -2592,6 +2595,14 @@ void alSourceQueueBuffers(ALuint name, ALsizei nb, const ALuint *bufnames)
 
     if (failed) {
         if (queue) {
+            /* Drop our claim on any buffers we planned to queue. */
+            BufferQueueItem *item;
+            for (item = queue; item != NULL; item = item->next) {
+                if (item->buffer) {
+                    (void) SDL_AtomicDecRef(&item->buffer->refcount);
+                }
+            }
+
             /* put the whole new queue back in the pool for reuse later. */
             do {
                 ptr = SDL_AtomicGetPtr(&ctx->device->playback.buffer_queue_pool);
@@ -2686,6 +2697,9 @@ void alSourceUnqueueBuffers(ALuint name, ALsizei nb, ALuint *bufnames)
 
     item = queue;
     for (i = 0; i < nb; i++) {
+        if (item->buffer) {
+            (void) SDL_AtomicDecRef(&item->buffer->refcount);
+        }
         bufnames[i] = item->buffer ? item->buffer->name : 0;
         queueend = item;
         item = item->next;
