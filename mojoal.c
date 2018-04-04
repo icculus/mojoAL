@@ -1001,9 +1001,11 @@ const ALCchar *alcGetString(ALCdevice *device, ALCenum param)
             return DEFAULT_CAPTURE_DEVICE;
 
         case ALC_DEVICE_SPECIFIER:
+            FIXME("should return NULL if device->iscapture?");
             return device ? device->name : calculate_sdl_device_list(0);
 
         case ALC_CAPTURE_DEVICE_SPECIFIER:
+            FIXME("should return NULL if !device->iscapture?");
             return device ? device->name : calculate_sdl_device_list(1);
 
         case ALC_NO_ERROR: return "ALC_NO_ERROR";
