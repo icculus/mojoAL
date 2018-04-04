@@ -74,7 +74,43 @@ static void get_alc_strings(ALCdevice *device, const char *devname)
     GET_ALC_STRING_ERROR(ALC_INVALID_ENUM);
     GET_ALC_STRING_ERROR(ALC_INVALID_VALUE);
     GET_ALC_STRING_ERROR(ALC_OUT_OF_MEMORY);
+    #undef GET_ALC_STRING
+    #undef GET_ALC_STRING_ERROR
 }
+
+
+static void get_al_string(const ALenum token, const char *tokenstr, const ALboolean iserr)
+{
+    const char *str = alGetString(token);
+    check_openal_error("alGetString");
+    if (iserr) {
+        if (SDL_strcmp(str, tokenstr) != 0) {
+            printf(" * %s reported INCORRECT STRING ('%s')!\n", tokenstr, str);
+        }
+    } else {
+        printf(" * %s: %s\n", tokenstr, str);
+    }
+}
+
+static void get_al_strings(void)
+{
+    printf("Strings for the AL ...\n");
+    #define GET_AL_STRING(e) get_al_string(e, #e, AL_FALSE)
+    #define GET_AL_STRING_ERROR(e) get_al_string(e, #e, AL_TRUE)
+    GET_AL_STRING(AL_EXTENSIONS);
+    GET_AL_STRING(AL_VERSION);
+    GET_AL_STRING(AL_RENDERER);
+    GET_AL_STRING(AL_VENDOR);
+    GET_AL_STRING_ERROR(AL_NO_ERROR);
+    GET_AL_STRING_ERROR(AL_INVALID_NAME);
+    GET_AL_STRING_ERROR(AL_INVALID_ENUM);
+    GET_AL_STRING_ERROR(AL_INVALID_VALUE);
+    GET_AL_STRING_ERROR(AL_INVALID_OPERATION);
+    GET_AL_STRING_ERROR(AL_OUT_OF_MEMORY);
+    #undef GET_AL_STRING
+    #undef GET_AL_STRING_ERROR
+}
+
 
 int main(int argc, char **argv)
 {
@@ -94,6 +130,8 @@ int main(int argc, char **argv)
     }
     check_openal_alc_error(NULL, "alcOpenDevice");
 
+    get_alc_strings(device, devname ? devname : "[default device]");
+
     context = alcCreateContext(device, NULL);
     if (!context) {
         printf("Couldn't create OpenAL context.\n");
@@ -105,7 +143,7 @@ int main(int argc, char **argv)
     alcMakeContextCurrent(context);
     check_openal_alc_error(device, "alcMakeContextCurrent");
 
-    get_alc_strings(device, devname ? devname : "[default device]");
+    get_al_strings();
 
     alcMakeContextCurrent(NULL);
     check_openal_alc_error(device, "alcMakeContextCurrent(NULL)");
