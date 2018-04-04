@@ -1392,7 +1392,7 @@ const ALchar* alGetString(ALenum param)
     }
 
     FIXME("other enums that should report as strings?");
-    set_al_error(get_current_context(), ALC_INVALID_ENUM);
+    set_al_error(get_current_context(), AL_INVALID_ENUM);
 
     return NULL;
 }
