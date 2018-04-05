@@ -348,6 +348,16 @@ struct ALCcontext_struct
 static void *current_context = NULL;
 static ALCenum null_device_error = ALC_NO_ERROR;
 
+/* we don't have any device-specific extensions. */
+#define ALC_EXTENSION_ITEMS \
+    ALC_EXTENSION_ITEM(ALC_ENUMERATION_EXT) \
+    ALC_EXTENSION_ITEM(ALC_EXT_CAPTURE)
+
+#define AL_EXTENSION_ITEMS \
+    AL_EXTENSION_ITEM(AL_EXT_FLOAT32)
+
+
+
 static void set_alc_error(ALCdevice *device, const ALCenum error)
 {
     ALCenum *perr = device ? &device->error : &null_device_error;
@@ -849,9 +859,9 @@ ALCenum alcGetError(ALCdevice *device)
 
 ALCboolean alcIsExtensionPresent(ALCdevice *device, const ALCchar *extname)
 {
-    FIXME("write me");
-    if (SDL_strcasecmp(extname, "ALC_ENUMERATION_EXT") == 0) return ALC_TRUE;
-    if (SDL_strcasecmp(extname, "ALC_EXT_CAPTURE") == 0) return ALC_TRUE;
+    #define ALC_EXTENSION_ITEM(ext) if (SDL_strcasecmp(extname, #ext) == 0) { return ALC_TRUE; }
+    ALC_EXTENSION_ITEMS
+    #undef ALC_EXTENSION_ITEM
     return ALC_FALSE;
 }
 
@@ -987,10 +997,13 @@ static const ALCchar *calculate_sdl_device_list(const int iscapture)
 const ALCchar *alcGetString(ALCdevice *device, ALCenum param)
 {
     switch (param) {
-        case ALC_EXTENSIONS:
-            FIXME("add some extensions.  :)");
-            return "ALC_ENUMERATION_EXT ALC_EXT_CAPTURE";
-            break;
+        case ALC_EXTENSIONS: {
+            #define ALC_EXTENSION_ITEM(ext) #ext " "
+            static char alc_extensions_string[] = ALC_EXTENSION_ITEMS;
+            #undef ALC_EXTENSION_ITEM
+            alc_extensions_string[sizeof (alc_extensions_string) - 2] = '\0';  /* kill that last space. */
+            return alc_extensions_string;
+        }
 
         /* You open the default SDL device with a NULL device name, but that is how OpenAL
            reports an error here, so we give it a magic identifier here instead. */
@@ -1377,7 +1390,14 @@ ALboolean alIsEnabled(ALenum capability)
 const ALchar* alGetString(ALenum param)
 {
     switch (param) {
-        case AL_EXTENSIONS: FIXME("add some extensions.  :)"); return "AL_EXT_FLOAT32";
+        case AL_EXTENSIONS: {
+            #define AL_EXTENSION_ITEM(ext) #ext " "
+            static char al_extensions_string[] = AL_EXTENSION_ITEMS;
+            #undef AL_EXTENSION_ITEM
+            al_extensions_string[sizeof (al_extensions_string) - 2] = '\0';  /* kill that last space. */
+            return al_extensions_string;
+        }
+
         case AL_VERSION: return OPENAL_VERSION_STRING;
         case AL_RENDERER: return OPENAL_RENDERER_STRING;
         case AL_VENDOR: return OPENAL_VENDOR_STRING;
@@ -1509,9 +1529,10 @@ ALenum alGetError(void)
 
 ALboolean alIsExtensionPresent(const ALchar *extname)
 {
-    FIXME("write me");
-    if (SDL_strcasecmp(extname, "AL_EXT_FLOAT32") == 0) return ALC_TRUE;
-    return ALC_FALSE;
+    #define AL_EXTENSION_ITEM(ext) if (SDL_strcasecmp(extname, #ext) == 0) { return AL_TRUE; }
+    AL_EXTENSION_ITEMS
+    #undef AL_EXTENSION_ITEM
+    return AL_FALSE;
 }
 
 void *alGetProcAddress(const ALchar *funcname)
