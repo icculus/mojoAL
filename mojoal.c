@@ -2451,12 +2451,16 @@ static void source_pause(ALCcontext *ctx, const ALuint name)
             set_al_error(ctx, AL_INVALID_OPERATION); \
         } else { \
             ALsizei i; \
-            FIXME("Can we do this without a full device lock?"); \
-            SDL_LockAudioDevice(ctx->device->sdldevice);  /* lock the SDL device so these all start mixing in the same callback. */ \
-            for (i = 0; i < n; i++) { \
-                source_##fn(ctx, sources[i]); \
+            if (n > 1) { \
+                FIXME("Can we do this without a full device lock?"); \
+                SDL_LockAudioDevice(ctx->device->sdldevice);  /* lock the SDL device so these all start mixing in the same callback. */ \
+                for (i = 0; i < n; i++) { \
+                    source_##fn(ctx, sources[i]); \
+                } \
+                SDL_UnlockAudioDevice(ctx->device->sdldevice); \
+            } else if (n == 1) { \
+                source_##fn(ctx, *sources); \
             } \
-            SDL_UnlockAudioDevice(ctx->device->sdldevice); \
         } \
     }
 
