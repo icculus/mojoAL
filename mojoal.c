@@ -290,7 +290,8 @@ typedef struct ALsource
     BufferQueue buffer_queue;
     BufferQueue buffer_queue_processed;
     SDL_SpinLock buffer_queue_lock;  /* this serializes access to the API end. The mixer does not acquire this! */
-    ALsizei offset;
+    ALsizei offset;  /* offset in bytes for converted stream! */
+    ALboolean offset_latched;  /* AL_SEC_OFFSET, etc, say set values apply to next alSourcePlay if not currently playing! */
     ALint queue_channels;
     ALsizei queue_frequency;
 } ALsource;
@@ -2105,6 +2106,12 @@ void alSourcefv(ALuint name, ALenum param, const ALfloat *values)
         case AL_CONE_OUTER_ANGLE: src->cone_outer_angle = *values; return;
         case AL_CONE_OUTER_GAIN: src->cone_outer_gain = *values; return;
 
+        case AL_SEC_OFFSET:
+        case AL_SAMPLE_OFFSET:
+        case AL_BYTE_OFFSET:
+            FIXME("offsets");
+            break;
+
         default: break;
     }
 
@@ -2221,7 +2228,7 @@ void alSourceiv(ALuint name, ALenum param, const ALint *values)
         case AL_SAMPLE_OFFSET:
         case AL_BYTE_OFFSET:
             FIXME("offsets");
-            /*return*/break;
+            break;
 
         default: break;
     }
@@ -2294,6 +2301,13 @@ void alGetSourcefv(ALuint name, ALenum param, ALfloat *values)
         case AL_CONE_INNER_ANGLE: *values = src->cone_inner_angle; return;
         case AL_CONE_OUTER_ANGLE: *values = src->cone_outer_angle; return;
         case AL_CONE_OUTER_GAIN:  *values = src->cone_outer_gain; return;
+
+        case AL_SEC_OFFSET:
+        case AL_SAMPLE_OFFSET:
+        case AL_BYTE_OFFSET:
+            FIXME("offsets");
+            break;
+
         default: break;
     }
 
@@ -2387,7 +2401,9 @@ static void source_play(ALCcontext *ctx, const ALuint name)
     ALsource *src = get_source(ctx, name);
     if (src) {
         FIXME("this needs a lock");
-        if (src->state != AL_PAUSED) {
+        if (src->offset_latched) {
+            src->offset_latched = AL_FALSE;
+        } else if (src->state != AL_PAUSED) {
             src->offset = 0;
         }
         src->state = AL_PLAYING;
@@ -2435,6 +2451,7 @@ static void source_pause(ALCcontext *ctx, const ALuint name)
             set_al_error(ctx, AL_INVALID_OPERATION); \
         } else { \
             ALsizei i; \
+            FIXME("Can we do this without a full device lock?"); \
             SDL_LockAudioDevice(ctx->device->sdldevice);  /* lock the SDL device so these all start mixing in the same callback. */ \
             for (i = 0; i < n; i++) { \
                 source_##fn(ctx, sources[i]); \
