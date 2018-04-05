@@ -895,7 +895,6 @@ void *alcGetProcAddress(ALCdevice *device, const ALCchar *funcname)
     FN_TEST(alcCaptureSamples);
     #undef FN_TEST
 
-    FIXME("Extension entry points?");
     set_alc_error(device, ALC_INVALID_VALUE);
     return NULL;
 }
@@ -935,7 +934,6 @@ ALCenum alcGetEnumValue(ALCdevice *device, const ALCchar *enumname)
     ENUM_TEST(ALC_ALL_DEVICES_SPECIFIER);
     #undef ENUM_TEST
 
-    FIXME("Extension enums?");
     set_alc_error(device, ALC_INVALID_VALUE);
     return (ALCenum) AL_NONE;
 }
@@ -1096,7 +1094,6 @@ void alcGetIntegerv(ALCdevice *device, ALCenum param, ALCsizei size, ALCint *val
         default: break;
     }
 
-    FIXME("Extension enums?");
     set_alc_error(device, ALC_INVALID_ENUM);
     *values = 0;
 }
@@ -1370,19 +1367,16 @@ void alDistanceModel(ALenum model)
 
 void alEnable(ALenum capability)
 {
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in AL 1.1 uses this. */
 }
 
 void alDisable(ALenum capability)
 {
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in AL 1.1 uses this. */
 }
 
 ALboolean alIsEnabled(ALenum capability)
 {
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in AL 1.1 uses this. */
     return AL_FALSE;
 }
@@ -1428,7 +1422,6 @@ void alGetBooleanv(ALenum param, ALboolean *values)
     if (!values) return;  /* legal no-op */
 
     /* nothing in core OpenAL 1.1 uses this */
-    FIXME("extensions?");
     set_al_error(ctx, AL_INVALID_ENUM);
 }
 
@@ -1447,8 +1440,6 @@ void alGetIntegerv(ALenum param, ALint *values)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != 1 float, like AL_ORIENTATION?");
-    FIXME("extensions?");
     set_al_error(ctx, AL_INVALID_ENUM);
 }
 
@@ -1469,8 +1460,6 @@ void alGetFloatv(ALenum param, ALfloat *values)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != 1 float, like AL_ORIENTATION?");
-    FIXME("extensions?");
     set_al_error(ctx, AL_INVALID_ENUM);
 }
 
@@ -1485,8 +1474,6 @@ void alGetDoublev(ALenum param, ALdouble *values)
     if (!values) return;  /* legal no-op */
 
     /* nothing in core OpenAL 1.1 uses this */
-    FIXME("Should GetFloatv params work here??");
-    FIXME("extensions?");
     set_al_error(ctx, AL_INVALID_ENUM);
 }
 
@@ -1620,7 +1607,6 @@ void *alGetProcAddress(const ALchar *funcname)
     FN_TEST(alGetBufferiv);
     #undef FN_TEST
 
-    FIXME("Extension entry points?");
     set_al_error(ctx, ALC_INVALID_VALUE);
     return NULL;
 }
@@ -1704,7 +1690,6 @@ ALenum alGetEnumValue(const ALchar *enumname)
     ENUM_TEST(AL_FORMAT_STEREO_FLOAT32);
     #undef ENUM_TEST
 
-    FIXME("Extension enums?");
     set_al_error(ctx, AL_INVALID_VALUE);
     return AL_NONE;
 }
@@ -1718,8 +1703,6 @@ void alListenerf(ALenum param, ALfloat value)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs more than 1 float, like AL_POSITION?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -1735,8 +1718,6 @@ void alListener3f(ALenum param, ALfloat value1, ALfloat value2, ALfloat value3)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != 3 floats, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -1771,15 +1752,11 @@ void alListenerfv(ALenum param, const ALfloat *values)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != 3 floats, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(ctx, AL_INVALID_ENUM);
 }
 
 void alListeneri(ALenum param, ALint value)
 {
-    FIXME("What happens if you pass something that needs != 1 int, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -1795,8 +1772,6 @@ void alListener3i(ALenum param, ALint value1, ALint value2, ALint value3)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != 3 ints, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -1836,8 +1811,6 @@ void alListeneriv(ALenum param, const ALint *values)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != 3 ints, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(ctx, AL_INVALID_ENUM);
 }
 
@@ -1850,8 +1823,6 @@ void alGetListenerf(ALenum param, ALfloat *value)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != 1 float, like AL_ORIENTATION?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -1870,8 +1841,6 @@ void alGetListener3f(ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *va
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != 3 float, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -1906,15 +1875,11 @@ void alGetListenerfv(ALenum param, ALfloat *values)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != 3 float, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(ctx, AL_INVALID_ENUM);
 }
 
 void alGetListeneri(ALenum param, ALint *value)
 {
-    FIXME("What happens if you pass something that needs != 1 int, like AL_POSITION?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -1933,8 +1898,6 @@ void alGetListener3i(ALenum param, ALint *value1, ALint *value2, ALint *value3)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != 3 int, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -1974,8 +1937,6 @@ void alGetListeneriv(ALenum param, ALint *values)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != ints, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(ctx, AL_INVALID_ENUM);
 }
 
@@ -2102,8 +2063,6 @@ void alSourcef(ALuint name, ALenum param, ALfloat value)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != ints, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -2120,8 +2079,6 @@ void alSource3f(ALuint name, ALenum param, ALfloat value1, ALfloat value2, ALflo
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != ints, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -2151,8 +2108,6 @@ void alSourcefv(ALuint name, ALenum param, const ALfloat *values)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != float, like AL_LOOPING?");
-    FIXME("extensions?");
     set_al_error(ctx, AL_INVALID_ENUM);
 }
 
@@ -2175,8 +2130,6 @@ void alSourcei(ALuint name, ALenum param, ALint value)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != ints, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -2191,8 +2144,6 @@ void alSource3i(ALuint name, ALenum param, ALint value1, ALint value2, ALint val
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != ints, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -2275,8 +2226,6 @@ void alSourceiv(ALuint name, ALenum param, const ALint *values)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != float, like AL_LOOPING?");
-    FIXME("extensions?");
     set_al_error(ctx, AL_INVALID_ENUM);
 }
 
@@ -2301,8 +2250,6 @@ void alGetSourcef(ALuint name, ALenum param, ALfloat *value)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != ints, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -2322,8 +2269,6 @@ void alGetSource3f(ALuint name, ALenum param, ALfloat *value1, ALfloat *value2, 
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != ints, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -2352,8 +2297,6 @@ void alGetSourcefv(ALuint name, ALenum param, ALfloat *values)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != float, like AL_LOOPING?");
-    FIXME("extensions?");
     set_al_error(ctx, AL_INVALID_ENUM);
 }
 
@@ -2380,8 +2323,6 @@ void alGetSourcei(ALuint name, ALenum param, ALint *value)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != ints, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -2399,8 +2340,6 @@ void alGetSource3i(ALuint name, ALenum param, ALint *value1, ALint *value2, ALin
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != ints, like AL_GAIN?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -2440,8 +2379,6 @@ void alGetSourceiv(ALuint name, ALenum param, ALint *values)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != float, like AL_LOOPING?");
-    FIXME("extensions?");
     set_al_error(ctx, AL_INVALID_ENUM);
 }
 
@@ -2945,63 +2882,54 @@ void alBufferData(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, A
 void alBufferf(ALuint name, ALenum param, ALfloat value)
 {
     /* nothing in core OpenAL 1.1 uses this */
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
 void alBuffer3f(ALuint name, ALenum param, ALfloat value1, ALfloat value2, ALfloat value3)
 {
     /* nothing in core OpenAL 1.1 uses this */
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
 void alBufferfv(ALuint name, ALenum param, const ALfloat *values)
 {
     /* nothing in core OpenAL 1.1 uses this */
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
 void alBufferi(ALuint name, ALenum param, ALint value)
 {
     /* nothing in core OpenAL 1.1 uses this */
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
 void alBuffer3i(ALuint name, ALenum param, ALint value1, ALint value2, ALint value3)
 {
     /* nothing in core OpenAL 1.1 uses this */
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
 void alBufferiv(ALuint name, ALenum param, const ALint *values)
 {
     /* nothing in core OpenAL 1.1 uses this */
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
 void alGetBufferf(ALuint name, ALenum param, ALfloat *value)
 {
     /* nothing in core OpenAL 1.1 uses this */
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
 void alGetBuffer3f(ALuint name, ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *value3)
 {
     /* nothing in core OpenAL 1.1 uses this */
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
 void alGetBufferfv(ALuint name, ALenum param, ALfloat *values)
 {
     /* nothing in core OpenAL 1.1 uses this */
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -3017,15 +2945,12 @@ void alGetBufferi(ALuint name, ALenum param, ALint *value)
         default: break;
     }
 
-    FIXME("What happens if you pass something that needs != ints?");
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
 void alGetBuffer3i(ALuint name, ALenum param, ALint *value1, ALint *value2, ALint *value3)
 {
     /* nothing in core OpenAL 1.1 uses this */
-    FIXME("extensions?");
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
@@ -3044,7 +2969,6 @@ void alGetBufferiv(ALuint name, ALenum param, ALint *values)
         default: break;
     }
 
-    FIXME("extensions?");
     set_al_error(ctx, AL_INVALID_ENUM);
 }
 
