@@ -1117,7 +1117,12 @@ void alcGetIntegerv(ALCdevice *device, ALCenum param, ALCsizei size, ALCint *val
             return;
 
         case ALC_CONNECTED:
-            *values = (ALCint) device->connected ? ALC_TRUE : ALC_FALSE;
+            if (device) {
+                *values = (ALCint) device->connected ? ALC_TRUE : ALC_FALSE;
+            } else {
+                *values = 0;
+                set_alc_error(device, ALC_INVALID_DEVICE);
+            }
             return;
 
         case ALC_ATTRIBUTES_SIZE:
