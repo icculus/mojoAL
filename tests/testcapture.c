@@ -41,6 +41,8 @@ int main(int argc, char **argv)
     #define freq 44100
     #define total_samples freq * 5
     static cfmt buf[total_samples];
+    ALenum alc_connected = 0;
+    ALCint connected = ALC_TRUE;
     ALCdevice *device;
     ALCdevice *capture;
     ALCcontext *context;
@@ -72,6 +74,10 @@ int main(int argc, char **argv)
         return 4;
     }
 
+    if (alcIsExtensionPresent(capture, "ALC_EXT_DISCONNECT")) {
+        alc_connected = alcGetEnumValue(capture, "ALC_CONNECTED");
+    }
+
     printf("recording...\n");
     alcCaptureStart(capture);
     check_openal_alc_error(capture, "alcCaptureStart");
@@ -80,10 +86,17 @@ int main(int argc, char **argv)
         SDL_Delay(100);
         alcGetIntegerv(capture, ALC_CAPTURE_SAMPLES, 1, &samples);
         check_openal_alc_error(capture, "alcGetIntegerv");
-    } while (samples < total_samples);
+        if (alc_connected != 0) {
+            alcGetIntegerv(capture, alc_connected, 1, &connected);
+            check_openal_alc_error(capture, "alcGetIntegerv");
+        }
+    } while (connected && (samples < total_samples));
 
+    if (!connected) {
+        printf("(Uhoh, recording device was disconnected! Carrying on...)\n");
+    }
 
-    alcCaptureSamples(capture, buf, total_samples);
+    alcCaptureSamples(capture, buf, samples);
     check_openal_alc_error(capture, "alcCaptureSamples");
     alcCaptureStop(capture);
     check_openal_alc_error(capture, "alcCaptureStop");
@@ -109,6 +122,16 @@ int main(int argc, char **argv)
         alGetSourceiv(sid, AL_SOURCE_STATE, &state);
         check_openal_error("alGetSourceiv");
     } while (state == AL_PLAYING);
+
+    if (alcIsExtensionPresent(device, "ALC_EXT_DISCONNECT")) {
+        alc_connected = alcGetEnumValue(device, "ALC_CONNECTED");
+        check_openal_alc_error(device, "alcGetEnumValue");
+        alcGetIntegerv(device, alc_connected, 1, &connected);
+        check_openal_alc_error(device, "alcGetIntegerv");
+        if (!connected) {
+            printf("(Uhoh, playback device was disconnected!)\n");
+        }
+    }
 
     printf("Cleaning up...\n");
 

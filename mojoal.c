@@ -49,6 +49,11 @@
 #define AL_FORMAT_STEREO_FLOAT32 0x10011
 #endif
 
+/* ALC_EXT_DISCONNECTED support... */
+#ifndef ALC_CONNECTED
+#define ALC_CONNECTED 0x313
+#endif
+
 
 /*
   The locking strategy for this OpenAL implementation is complicated.
@@ -301,6 +306,7 @@ struct ALCdevice_struct
     char *name;
     ALCenum error;
     ALCboolean iscapture;
+    ALCboolean connected;
     SDL_AudioDeviceID sdldevice;
 
     ALint channels;
@@ -352,7 +358,8 @@ static ALCenum null_device_error = ALC_NO_ERROR;
 /* we don't have any device-specific extensions. */
 #define ALC_EXTENSION_ITEMS \
     ALC_EXTENSION_ITEM(ALC_ENUMERATION_EXT) \
-    ALC_EXTENSION_ITEM(ALC_EXT_CAPTURE)
+    ALC_EXTENSION_ITEM(ALC_EXT_CAPTURE) \
+    ALC_EXTENSION_ITEM(ALC_EXT_DISCONNECT)
 
 #define AL_EXTENSION_ITEMS \
     AL_EXTENSION_ITEM(AL_EXT_FLOAT32)
@@ -396,6 +403,7 @@ ALCdevice *alcOpenDevice(const ALCchar *devicename)
     /* we don't open an SDL audio device until the first context is
        created, so we can attempt to match audio formats. */
 
+    dev->connected = ALC_TRUE;
     dev->iscapture = ALC_FALSE;
     return dev;
 }
@@ -677,6 +685,42 @@ static void mix_context(ALCcontext *ctx, float *stream, int len)
 }
 
 
+/* Disconnected devices move all PLAYING sources to STOPPED, making their buffer queues processed. */
+static void mix_disconnected_context(ALCcontext *ctx)
+{
+    ALsizei i;
+    FIXME("keep a small array of playing sources so we don't have to walk the whole array");
+    for (i = 0; i < OPENAL_MAX_SOURCES; i++) {
+        ALsource *src = &ctx->sources[i];
+        if (SDL_AtomicGet(&src->allocated) != 1) {
+            continue;  /* not in use */
+        }
+
+        obtain_newly_queued_buffers(&src->buffer_queue);
+
+        if (src->state == AL_PLAYING) {
+            src->state = AL_STOPPED;
+            if (src->type == AL_STREAMING) {  /* mark buffers processed. */
+                while (src->buffer_queue.head) {
+                    void *ptr;
+                    BufferQueueItem *item = src->buffer_queue.head;
+                    src->buffer_queue.head = item->next;
+                    SDL_AtomicAdd(&src->buffer_queue.num_items, -1);
+
+                    /* Move it to the processed queue for alSourceUnqueueBuffers() to pick up. */
+                    do {
+                        ptr = SDL_AtomicGetPtr(&src->buffer_queue_processed.just_queued);
+                        SDL_AtomicSetPtr(&item->next, ptr);
+                    } while (!SDL_AtomicCASPtr(&src->buffer_queue_processed.just_queued, ptr, item));
+
+                    SDL_AtomicAdd(&src->buffer_queue_processed.num_items, 1);
+                }
+                src->buffer_queue.tail = NULL;
+            }
+        }
+    }
+}
+
 /* We process all unsuspended ALC contexts during this call, mixing their
    output to (stream). SDL then plays this mixed audio to the hardware. */
 static void SDLCALL playback_device_callback(void *userdata, Uint8 *stream, int len)
@@ -686,9 +730,20 @@ static void SDLCALL playback_device_callback(void *userdata, Uint8 *stream, int 
 
     SDL_memset(stream, '\0', len);
 
+    if (device->connected) {
+        if (SDL_GetAudioDeviceStatus(device->sdldevice) == SDL_AUDIO_STOPPED) {
+            device->connected = ALC_FALSE;
+        }
+    }
+
+
     for (ctx = device->playback.contexts; ctx != NULL; ctx = ctx->next) {
         if (SDL_AtomicGet(&ctx->processing)) {
-            mix_context(ctx, (float *) stream, len);
+            if (device->connected) {
+                mix_context(ctx, (float *) stream, len);
+            } else {
+                mix_disconnected_context(ctx);
+            }
         }
     }
 }
@@ -704,6 +759,11 @@ ALCcontext* alcCreateContext(ALCdevice *device, const ALCint* attrlist)
 
     if (!device) {
         set_alc_error(NULL, ALC_INVALID_DEVICE);
+        return NULL;
+    }
+
+    if (!device->connected) {
+        set_alc_error(device, ALC_INVALID_DEVICE);
         return NULL;
     }
 
@@ -933,6 +993,7 @@ ALCenum alcGetEnumValue(ALCdevice *device, const ALCchar *enumname)
     ENUM_TEST(ALC_CAPTURE_SAMPLES);
     ENUM_TEST(ALC_DEFAULT_ALL_DEVICES_SPECIFIER);
     ENUM_TEST(ALC_ALL_DEVICES_SPECIFIER);
+    ENUM_TEST(ALC_CONNECTED);
     #undef ENUM_TEST
 
     set_alc_error(device, ALC_INVALID_VALUE);
@@ -1055,6 +1116,10 @@ void alcGetIntegerv(ALCdevice *device, ALCenum param, ALCsizei size, ALCint *val
             SDL_UnlockAudioDevice(device->sdldevice);
             return;
 
+        case ALC_CONNECTED:
+            *values = (ALCint) device->connected ? ALC_TRUE : ALC_FALSE;
+            return;
+
         case ALC_ATTRIBUTES_SIZE:
         case ALC_ALL_ATTRIBUTES:
             if (!device || device->iscapture) {
@@ -1108,7 +1173,16 @@ static void SDLCALL capture_device_callback(void *userdata, Uint8 *stream, int l
 {
     ALCdevice *device = (ALCdevice *) userdata;
     SDL_assert(device->iscapture);
-    ring_buffer_put(&device->capture.ring, stream, (ALCsizei) len);
+
+    if (device->connected) {
+        if (SDL_GetAudioDeviceStatus(device->sdldevice) == SDL_AUDIO_STOPPED) {
+            device->connected = ALC_FALSE;
+        }
+    }
+
+    if (device->connected) {
+        ring_buffer_put(&device->capture.ring, stream, (ALCsizei) len);
+    }
 }
 
 ALCdevice* alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, ALCenum format, ALCsizei buffersize)
@@ -1137,6 +1211,7 @@ ALCdevice* alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, AL
     desired.callback = capture_device_callback;
     desired.userdata = device;
 
+    device->connected = ALC_TRUE;
     device->iscapture = ALC_TRUE;
 
     if (!devicename) {
@@ -2406,7 +2481,12 @@ static void source_play(ALCcontext *ctx, const ALuint name)
         } else if (src->state != AL_PAUSED) {
             src->offset = 0;
         }
-        src->state = AL_PLAYING;
+        if (ctx->device->connected) {
+            src->state = AL_PLAYING;
+        } else {
+            FIXME("buffer queue needs to promote to processed");
+            src->state = AL_STOPPED;  /* disconnected devices promote directly to STOPPED */
+        }
     }
 }
 
@@ -2415,6 +2495,7 @@ static void source_stop(ALCcontext *ctx, const ALuint name)
     ALsource *src = get_source(ctx, name);
     if (src) {
         FIXME("this needs a lock");
+        FIXME("buffer queue needs to promote to processed");
         if (src->state != AL_INITIAL) {
             src->state = AL_STOPPED;
         }

@@ -64,7 +64,7 @@ static int queueBuffer(const ALuint sid, const ALuint bid, const ALenum alfmt, c
     return 1;
 }
 
-static void queuewav(const char *fname)
+static void queuewav(ALCdevice *device, const char *fname)
 {
     SDL_AudioSpec spec;
     ALenum alfmt = AL_NONE;
@@ -75,6 +75,7 @@ static void queuewav(const char *fname)
     ALuint sid = 0;
     ALuint buffers[32];
     ALsizei i;
+    ALenum alc_connected = 0;
 
     if (!SDL_LoadWAV(fname, &spec, &buf, &buflen)) {
         printf("Loading '%s' failed! %s\n", fname, SDL_GetError());
@@ -86,6 +87,10 @@ static void queuewav(const char *fname)
     }
 
     check_openal_error("startup");
+
+    if (alcIsExtensionPresent(device, "ALC_EXT_DISCONNECT")) {
+        alc_connected = alcGetEnumValue(device, "ALC_CONNECTED");
+    }
 
     printf("Now queueing '%s'...\n", fname);
 
@@ -146,6 +151,15 @@ static void queuewav(const char *fname)
                 }
             }
             processed--;
+        }
+
+        if (alc_connected != 0) {
+            ALCint connected = 0;
+            alcGetIntegerv(device, alc_connected, 1, &connected);
+            if (!connected) {
+                printf("Device is apparently disconnected!\n");
+                failed = 1;
+            }
         }
 
         if (!failed) {
@@ -214,7 +228,7 @@ int main(int argc, char **argv)
     alcMakeContextCurrent(context);
 
     for (i = 1; i < argc; i++) {
-        queuewav(argv[i]);
+        queuewav(device, argv[i]);
     }
 
     alcMakeContextCurrent(NULL);
