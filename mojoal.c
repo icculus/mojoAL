@@ -831,6 +831,8 @@ ALCcontext* alcCreateContext(ALCdevice *device, const ALCint* attrlist)
     retval->doppler_velocity = 1.0f;
     retval->speed_of_sound = 343.3f;
     retval->listener.gain = 1.0f;
+    retval->listener.orientation[2] = -1.0f;
+    retval->listener.orientation[4] = 1.0f;
     retval->device = device;
     SDL_AtomicSet(&retval->processing, 1);  /* contexts default to processing */
 
