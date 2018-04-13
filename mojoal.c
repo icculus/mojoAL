@@ -505,13 +505,13 @@ static void obtain_newly_queued_buffers(BufferQueue *queue)
     queue_new_buffer_items_recursive(queue, items);
 }
 
-static void mix_source_data_float32(ALCcontext *ctx, ALsource *src, const int channels, const float *data, float *stream, const ALsizei mixframes)
+static void mix_source_data_float32(ALCcontext *ctx, ALsource *src, const int channels, const ALfloat *panning, const float *data, float *stream, const ALsizei mixframes)
 {
+    const ALfloat left = panning[0];
+    const ALfloat right = panning[1];
     ALsizei i;
 
-    FIXME("precalculate a bunch of stuff before this function");
-    const float gain = ctx->listener.gain * src->gain;
-    if (gain == 0.0f) {
+    if ((left == 0.0f) && (right == 0.0f)) {
         return;  /* it's silent, don't spend time mixing it. */
     }
 
@@ -519,39 +519,35 @@ static void mix_source_data_float32(ALCcontext *ctx, ALsource *src, const int ch
     FIXME("currently expects output to be stereo");
 
     if (channels == 1) {
-        const ALsizei iterations = mixframes;
-        /* we only spatialize audio for mono sources */
-        FIXME("Calculate distance attentuation and other 3D math things");
-        if (gain == 1.0f) {
-            for (i = 0; i < iterations; i++) {
+        if ((left == 1.0f) && (right == 1.0f)) {
+            for (i = 0; i < mixframes; i++) {
                 const float samp = *(data++);
                 *(stream++) += samp;
                 *(stream++) += samp;
             }
         } else {
-            for (i = 0; i < iterations; i++) {
-                const float samp = *(data++) * gain;
-                *(stream++) += samp;
-                *(stream++) += samp;
+            for (i = 0; i < mixframes; i++) {
+                const float samp = *(data++);
+                *(stream++) += samp * left;
+                *(stream++) += samp * right;
             }
         }
     } else if (channels == 2) {
-        const ALsizei iterations = mixframes * 2;
-        if (gain == 1.0f) {
-            for (i = 0; i < iterations; i++) {
-                const float samp = *(data++);
-                *(stream++) += samp;
+        if ((left == 1.0f) && (right == 1.0f)) {
+            for (i = 0; i < mixframes; i++) {
+                *(stream++) += *(data++);
+                *(stream++) += *(data++);
             }
         } else {
-            for (i = 0; i < iterations; i++) {
-                const float samp = *(data++) * gain;
-                *(stream++) += samp;
+            for (i = 0; i < mixframes; i++) {
+                *(stream++) += *(data++) * left;
+                *(stream++) += *(data++) * right;
             }
         }
     }
 }
 
-static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueItem *queue, float **stream, int *len)
+static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueItem *queue, const ALfloat *panning, float **stream, int *len)
 {
     const ALbuffer *buffer = queue ? queue->buffer : NULL;
     ALboolean processed = AL_TRUE;
@@ -584,7 +580,7 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
                 const int mixbufframes = mixbuflen / bufferframesize;
                 const int getframes = SDL_min(remainingmixframes, mixbufframes);
                 SDL_AudioStreamGet(src->stream, mixbuf, getframes * bufferframesize);
-                mix_source_data_float32(ctx, src, buffer->channels, mixbuf, *stream, getframes);
+                mix_source_data_float32(ctx, src, buffer->channels, panning, mixbuf, *stream, getframes);
                 *len -= getframes * deviceframesize;
                 *stream += getframes * ctx->device->channels;
                 remainingmixframes -= getframes;
@@ -592,7 +588,7 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
         } else {
             const int framesavail = (buffer->len - src->offset) / bufferframesize;
             const int mixframes = SDL_min(framesneeded, framesavail);
-            mix_source_data_float32(ctx, src, buffer->channels, data, *stream, mixframes);
+            mix_source_data_float32(ctx, src, buffer->channels, panning, data, *stream, mixframes);
             src->offset += mixframes * bufferframesize;
             *len -= mixframes * deviceframesize;
             *stream += mixframes * ctx->device->channels;
@@ -610,9 +606,9 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
     return processed;
 }
 
-static inline void mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, BufferQueueItem *queue, float *stream, int len)
+static inline void mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, BufferQueueItem *queue, const ALfloat *panning, float *stream, int len)
 {
-    while ((len > 0) && (mix_source_buffer(ctx, src, queue, &stream, &len))) {
+    while ((len > 0) && (mix_source_buffer(ctx, src, queue, panning, &stream, &len))) {
         /* Finished this buffer! */
         BufferQueueItem *item = queue;
         BufferQueueItem *next = queue ? queue->next : NULL;
@@ -658,20 +654,296 @@ static inline void mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, Buffe
     }
 }
 
+/* All the 3D math here is way overcommented because I HAVE NO IDEA WHAT I'M
+   DOING and had to research the hell out of what are probably pretty simple
+   concepts. Pay attention in math class, kids. */
+
+/* calculates cross product. https://en.wikipedia.org/wiki/Cross_product
+    Basically takes two vectors and gives you a vector that's perpendicular
+    to both.
+*/
+static void xyzzy(ALfloat *v, const ALfloat *a, const ALfloat *b)
+{
+    v[0] = (a[1] * b[2]) - (a[2] * b[1]);
+    v[1] = (a[2] * b[0]) - (a[0] * b[2]);
+    v[2] = (a[0] * b[1]) - (a[1] * b[0]);
+}
+
+/* calculate dot product (multiply each element of two vectors, sum them) */
+static ALfloat dotproduct(const ALfloat *a, const ALfloat *b)
+{
+    return (a[0] * b[0]) + (a[1] * b[1]) + (a[2] * b[2]);
+}
+
+/* calculate distance ("magnitude") in 3D space:
+    https://math.stackexchange.com/questions/42640/calculate-distance-in-3d-space
+    assumes vector starts at (0,0,0). */
+static ALfloat magnitude(const ALfloat *v)
+{
+    /* technically, the inital part on this is just a dot product of itself. */
+    return sqrtf((v[0] * v[0]) + (v[1] * v[1]) + (v[2] * v[2]));
+}
+
+/* https://www.khanacademy.org/computing/computer-programming/programming-natural-simulations/programming-vectors/a/vector-magnitude-normalization */
+static void normalize(ALfloat *v)
+{
+    const ALfloat mag = magnitude(v);
+    if (mag == 0.0f) {
+        SDL_memset(v, '\0', sizeof (*v) * 3);
+    } else {
+        v[0] /= mag;
+        v[1] /= mag;
+        v[2] /= mag;
+    }
+}
+
+/* Get the sin(angle) and cos(angle) at the same time. Ideally, with one
+   instruction, like what is offered on the x86.
+   angle is in radians, not degrees. */
+static void sincos(const ALfloat angle, ALfloat *_sin, ALfloat *_cos)
+{
+    FIXME("use sincos() or asm or compiler intrinsics?");
+    *_sin = sinf(angle);
+    *_cos = cosf(angle);
+}
+
+static ALfloat calculate_distance_attenuation(const ALCcontext *ctx, const ALsource *src, const ALfloat *position)
+{
+    ALfloat distance;
+
+    distance = magnitude(position);
+
+    /* AL SPEC: "With all the distance models, if the formula can not be
+       evaluated then the source will not be attenuated. For example, if a
+       linear model is being used with AL_REFERENCE_DISTANCE equal to
+       AL_MAX_DISTANCE, then the gain equation will have a divide-by-zero
+       error in it. In this case, there is no attenuation for that source." */
+    FIXME("check divisions by zero");
+
+    switch (ctx->distance_model) {
+        case AL_INVERSE_DISTANCE_CLAMPED:
+            distance = SDL_min(SDL_max(distance, src->reference_distance), src->max_distance);
+            /* fallthrough */
+        case AL_INVERSE_DISTANCE:
+            /* AL SPEC: "gain = AL_REFERENCE_DISTANCE / (AL_REFERENCE_DISTANCE + AL_ROLLOFF_FACTOR * (distance - AL_REFERENCE_DISTANCE))" */
+            return src->reference_distance / (src->reference_distance + src->rolloff_factor * (distance - src->reference_distance));
+
+        case AL_LINEAR_DISTANCE_CLAMPED:
+            distance = SDL_max(distance, src->reference_distance);
+            /* fallthrough */
+        case AL_LINEAR_DISTANCE:
+            /* AL SPEC: "distance = min(distance, AL_MAX_DISTANCE) // avoid negative gain
+                         gain = (1 - AL_ROLLOFF_FACTOR * (distance - AL_REFERENCE_DISTANCE) / (AL_MAX_DISTANCE - AL_REFERENCE_DISTANCE))" */
+            return 1.0f - src->rolloff_factor * (SDL_min(distance, src->max_distance) - src->reference_distance) / (src->max_distance - src->reference_distance);
+
+        case AL_EXPONENT_DISTANCE_CLAMPED:
+            distance = SDL_min(SDL_max(distance, src->reference_distance), src->max_distance);
+            /* fallthrough */
+        case AL_EXPONENT_DISTANCE:
+            /* AL SPEC: "gain = (distance / AL_REFERENCE_DISTANCE) ^ (- AL_ROLLOFF_FACTOR)" */
+            return SDL_powf(distance / src->reference_distance, -src->rolloff_factor);
+
+        default: break;
+    }
+
+    SDL_assert(!"Unexpected distance model");
+    return 1.0f;
+}
+
+static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, float *gains)
+{
+    /* rolloff==0.0f makes all distance models result in 1.0f,
+       and we never spatialize non-mono sources, per the AL spec. */
+    const ALboolean spatialize = (ctx->distance_model != AL_NONE) &&
+                                 (src->queue_channels == 1) &&
+                                 (src->rolloff_factor != 0.0f);
+
+
+    ALfloat U[3];
+    ALfloat V[3];
+    ALfloat N[3];
+    ALfloat rotated[3];
+    ALfloat gain;
+    ALfloat position[3];
+
+    FIXME("SIMD all of this");
+
+    /* this goes through the steps the AL spec dictates for gain and distance attenuation... */
+
+    if (!spatialize) {
+        /* simpler path through the same AL spec details if not spatializing. */
+        gain = SDL_min(SDL_max(src->gain, src->min_gain), src->max_gain) * ctx->listener.gain;
+        gains[0] = gains[1] = gain;  /* no spatialization, but AL_GAIN (etc) is still applied. */
+        return;
+    }
+
+    SDL_memcpy(position, src->position, sizeof (position));
+
+    /* if values aren't source-relative, then convert it to be so. */
+    if (!src->source_relative) {
+        position[0] -= ctx->listener.position[0];
+        position[1] -= ctx->listener.position[1];
+        position[2] -= ctx->listener.position[2];
+    }
+
+    /* AL SPEC: ""1. Distance attenuation is calculated first, including
+       minimum (AL_REFERENCE_DISTANCE) and maximum (AL_MAX_DISTANCE)
+       thresholds." */
+    gain = calculate_distance_attenuation(ctx, src, position);
+
+    /* AL SPEC: "2. The result is then multiplied by source gain (AL_GAIN)." */
+    gain *= src->gain;
+
+    /* AL SPEC: "3. If the source is directional (AL_CONE_INNER_ANGLE less
+       than AL_CONE_OUTER_ANGLE), an angle-dependent attenuation is calculated
+       depending on AL_CONE_OUTER_GAIN, and multiplied with the distance
+       dependent attenuation. The resulting attenuation factor for the given
+       angle and distance between listener and source is multiplied with
+       source AL_GAIN." */
+    if (src->cone_inner_angle < src->cone_outer_angle) {
+        FIXME("directional sources");
+    }
+
+    /* AL SPEC: "4. The effective gain computed this way is compared against
+       AL_MIN_GAIN and AL_MAX_GAIN thresholds." */
+    gain = SDL_min(SDL_max(gain, src->min_gain), src->max_gain);
+
+    /* AL SPEC: "5. The result is guaranteed to be clamped to [AL_MIN_GAIN,
+       AL_MAX_GAIN], and subsequently multiplied by listener gain which serves
+       as an overall volume control. The implementation is free to clamp
+       listener gain if necessary due to hardware or implementation
+       constraints." */
+    gain *= ctx->listener.gain;
+
+    /* now figure out positioning. Since we're aiming for stereo, we just
+       need a simple panning effect. We're going to do what's called
+       "constant power panning," as explained...
+
+       https://dsp.stackexchange.com/questions/21691/algorithm-to-pan-audio
+
+       Naturally, we'll need to know the angle between where our listener
+       is facing and where the source is to make that work...
+
+       https://www.youtube.com/watch?v=S_568VZWFJo
+
+       ...but to do that, we need to rotate so we have the correct side of
+       the listener, which isn't just a point in space, but has a definite
+       direction it is facing. More or less, this is what gluLookAt deals
+       with...
+
+       http://www.songho.ca/opengl/gl_camera.html
+
+       ...although I messed with the algorithm until it did what I wanted.
+
+       XYZZY!! https://en.wikipedia.org/wiki/Cross_product#Mnemonic
+    */
+    /* cross product of listener At and Up... */
+    xyzzy(U, &ctx->listener.orientation[0], &ctx->listener.orientation[3]);
+    normalize(U);
+    xyzzy(V, &ctx->listener.orientation[0], U);
+    SDL_memcpy(N, &ctx->listener.orientation[0], sizeof (N));
+    normalize(N);
+
+    /* we don't need the bottom row of the gluLookAt matrix, since we don't
+       translate. (Matrix * Vector) is just filling in each element of the
+       output vector with the dot product of a row of the matrix and the
+       vector. I made some of these negative to make it work for my purposes,
+       but that's not what GLU does here.
+
+       (This says gluLookAt is left-handed, so maybe that's part of it?)
+        https://stackoverflow.com/questions/25933581/how-u-v-n-camera-coordinate-system-explained-with-opengl
+     */
+    rotated[0] = dotproduct(position, U);
+    rotated[1] = -dotproduct(position, V);
+    rotated[2] = -dotproduct(position, N);
+
+    /* At this point, we have rotated vector and we can calculate the angle
+       from 0 (directly in front of where the listener is facing) to 180
+       degrees (directly behind) ... */
+
+    const ALfloat *at = &ctx->listener.orientation[0];
+    const ALfloat mags = magnitude(at) * magnitude(rotated);
+    ALfloat radians = (mags == 0.0f) ? 0.0f : acosf(dotproduct(at, rotated) / mags);
+
+    /* and we already have what we need to decide if those degrees are on the
+       listener's left or right...
+       https://gamedev.stackexchange.com/questions/43897/determining-if-something-is-on-the-right-or-left-side-of-an-object
+       ...we already did this dot product: it's in rotated[0]. */
+
+    /* make it negative to the left, positive to the right. */
+    if (rotated[0] < 0.0f) {
+        radians = -radians;
+    }
+
+    /* here comes the Constant Power Panning magic... */
+    #define SQRT2_DIV2 0.7071067812f  /* sqrt(2.0) / 2.0 ... */
+
+    /* this might be a terrible idea, which is totally my own doing here,
+      but here you go: Constant Power Panning only works from -45 to 45
+      degrees in front of the listener. So we split this into 4 quadrants.
+      - from -45 to 45: standard panning.
+      - from 45 to 135: pan full right.
+      - from 135 to 225: flip angle so it works like standard panning.
+      - from 225 to -45: pan full left. */
+
+    #define RADIANS_45_DEGREES 0.7853981634f
+    #define RADIANS_135_DEGREES 2.3561944902f
+    if ((radians >= -RADIANS_45_DEGREES) && (radians <= RADIANS_45_DEGREES)) {
+        ALfloat sine, cosine;
+        sincos(radians, &sine, &cosine);
+        gains[0] = (SQRT2_DIV2 * (cosine - sine));
+        gains[1] = (SQRT2_DIV2 * (cosine + sine));
+    } else if ((radians >= RADIANS_45_DEGREES) && (radians <= RADIANS_135_DEGREES)) {
+        gains[0] = 0.0f;
+        gains[1] = 1.0f;
+    } else if ((radians >= -RADIANS_135_DEGREES) && (radians <= -RADIANS_45_DEGREES)) {
+        gains[0] = 1.0f;
+        gains[1] = 0.0f;
+    } else if (radians < 0.0f) {  /* back left */
+        ALfloat sine, cosine;
+        sincos(-(radians + M_PI), &sine, &cosine);
+        gains[0] = (SQRT2_DIV2 * (cosine - sine));
+        gains[1] = (SQRT2_DIV2 * (cosine + sine));
+    } else { /* back right */
+        ALfloat sine, cosine;
+        sincos(-(radians - M_PI), &sine, &cosine);
+        gains[0] = (SQRT2_DIV2 * (cosine - sine));
+        gains[1] = (SQRT2_DIV2 * (cosine + sine));
+    }
+
+    #if 0
+    static ALfloat saved[3];
+    if (SDL_memcmp(saved, src->position, sizeof (saved)) != 0) {
+        const ALfloat degrees = radians * (180.0 / M_PI);
+        printf("srcpos=(%f, %f, %f) rotated=(%f, %f, %f) degrees=%f left=%f right=%f gain=%f\n", src->position[0], src->position[1], src->position[2], rotated[0], rotated[1], rotated[2], degrees, gains[0], gains[1], gain);
+        SDL_memcpy(saved, src->position, sizeof (saved));
+    }
+    #endif
+
+    /* apply distance attenuation and gain to positioning. */
+    gains[0] *= gain;
+    gains[1] *= gain;
+}
+
+
 static void mix_source(ALCcontext *ctx, ALsource *src, float *stream, int len)
 {
+    float panning[2];  /* we only do stereo for now */
+
     if (SDL_AtomicGet(&src->allocated) != 1) {
         return;  /* not in use */
     } else if (src->state != AL_PLAYING) {
         return;  /* not playing, don't process. */
     }
 
+    calculate_channel_gains(ctx, src, panning);
+
     if (src->type == AL_STATIC) {
         BufferQueueItem fakequeue = { src->buffer, NULL };
-        mix_source_buffer_queue(ctx, src, &fakequeue, stream, len);
+        mix_source_buffer_queue(ctx, src, &fakequeue, panning, stream, len);
     } else if (src->type == AL_STREAMING) {
         obtain_newly_queued_buffers(&src->buffer_queue);
-        mix_source_buffer_queue(ctx, src, src->buffer_queue.head, stream, len);
+        mix_source_buffer_queue(ctx, src, src->buffer_queue.head, panning, stream, len);
     }
 }
 
