@@ -2277,7 +2277,7 @@ void alSourceiv(ALuint name, ALenum param, const ALint *values)
                     }
                     src->buffer = buffer;
                     src->type = buffer ? AL_STATIC : AL_UNDETERMINED;
-                    src->queue_channels = 0;
+                    src->queue_channels = buffer ? buffer->channels : 0;
                     src->queue_frequency = 0;
                     FIXME("must dump buffer queue");
                     /* if this was AL_PLAYING and the mixer is mixing this source RIGHT NOW you could alSourceStop and call this while it's still mixing. */
