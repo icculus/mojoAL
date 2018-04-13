@@ -14,6 +14,10 @@
 #include "AL/alc.h"
 #include "SDL.h"
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 static int check_openal_error(const char *where)
 {
     const ALenum err = alGetError();
@@ -134,6 +138,15 @@ static int mainloop(SDL_Renderer *renderer)
     return 1;
 }
 
+
+#ifdef __EMSCRIPTEN__
+static void emscriptenMainloop(void *arg)
+{
+    (void) mainloop((SDL_Renderer *) arg);
+}
+#endif
+
+
 static void spatialize(SDL_Renderer *renderer, const char *fname)
 {
     obj *o = objects;
@@ -194,7 +207,11 @@ static void spatialize(SDL_Renderer *renderer, const char *fname)
     alSource3f(o->sid, AL_POSITION, ((o->x / 400.0f) - 1.0f) * 10.0f, 0.0f, ((o->y / 300.0f) - 1.0f) * 10.0f);
     o++;
 
+    #ifdef __EMSCRIPTEN__
+    emscripten_set_main_loop_arg(emscriptenMainloop, renderer, 0, 1);
+    #else
     while (mainloop(renderer)) { /* go again */ }
+    #endif
 
     //alSourcei(sid, AL_BUFFER, 0);  /* force unqueueing */
     alDeleteSources(1, &sid);
