@@ -276,6 +276,7 @@ typedef struct BufferQueue
 typedef struct ALsource
 {
     SDL_atomic_t allocated;
+    SDL_SpinLock lock;
     ALenum state;  /* initial, playing, paused, stopped */
     ALenum type;  /* undetermined, static, streaming */
     ALboolean source_relative;
@@ -934,23 +935,23 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
 
 static void mix_source(ALCcontext *ctx, ALsource *src, float *stream, int len)
 {
-    float panning[2];  /* we only do stereo for now */
+    SDL_AtomicLock(&src->lock);
 
-    if (SDL_AtomicGet(&src->allocated) != 1) {
-        return;  /* not in use */
-    } else if (src->state != AL_PLAYING) {
-        return;  /* not playing, don't process. */
+    if ((SDL_AtomicGet(&src->allocated) == 1) && (src->state == AL_PLAYING)) {
+        float panning[2];  /* we only do stereo for now */
+        calculate_channel_gains(ctx, src, panning);
+        if (src->type == AL_STATIC) {
+            BufferQueueItem fakequeue = { src->buffer, NULL };
+            mix_source_buffer_queue(ctx, src, &fakequeue, panning, stream, len);
+        } else if (src->type == AL_STREAMING) {
+            obtain_newly_queued_buffers(&src->buffer_queue);
+            mix_source_buffer_queue(ctx, src, src->buffer_queue.head, panning, stream, len);
+        } else {
+            SDL_assert(!"unknown source type");
+        }
     }
 
-    calculate_channel_gains(ctx, src, panning);
-
-    if (src->type == AL_STATIC) {
-        BufferQueueItem fakequeue = { src->buffer, NULL };
-        mix_source_buffer_queue(ctx, src, &fakequeue, panning, stream, len);
-    } else if (src->type == AL_STREAMING) {
-        obtain_newly_queued_buffers(&src->buffer_queue);
-        mix_source_buffer_queue(ctx, src, src->buffer_queue.head, panning, stream, len);
-    }
+    SDL_AtomicUnlock(&src->lock);
 }
 
 static void mix_context(ALCcontext *ctx, float *stream, int len)
@@ -2335,6 +2336,7 @@ void alGenSources(ALsizei n, ALuint *names)
     for (i = 0; i < (ALuint) n; i++) {
         ALsource *src = &ctx->sources[names[i]-1];
         /* don't SDL_zerop() this source, because we need src->allocated to stay at 2 until initialized. */
+        src->lock = 0;
         src->state = AL_INITIAL;
         src->type = AL_UNDETERMINED;
         src->source_relative = AL_FALSE;
@@ -2356,6 +2358,7 @@ void alGenSources(ALsizei n, ALuint *names)
         src->stream = NULL;
         SDL_zero(src->buffer_queue);
         SDL_zero(src->buffer_queue_processed);
+        src->buffer_queue_lock = 0;
         src->queue_channels = 0;
         src->queue_frequency = 0;
         SDL_AtomicSet(&src->allocated, 1);   /* we officially own it. */
@@ -2387,13 +2390,14 @@ void alDeleteSources(ALsizei n, const ALuint *names)
         const ALuint name = names[i];
         if (name != 0) {
             ALsource *src = &ctx->sources[name - 1];
-            FIXME("race conditions for state, buffer queue, etc");
+            SDL_AtomicLock(&src->lock);
             FIXME("clear buffer queue");
             if (src->stream) {
                 SDL_FreeAudioStream(src->stream);
                 src->stream = NULL;
             }
             SDL_AtomicSet(&src->allocated, 0);
+            SDL_AtomicUnlock(&src->lock);
         }
     }
 }
@@ -2514,6 +2518,60 @@ void alSource3i(ALuint name, ALenum param, ALint value1, ALint value2, ALint val
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 
+static void set_source_static_buffer(ALCcontext *ctx, ALsource *src, const ALuint bufname)
+{
+    if ((src->state == AL_PLAYING) || (src->state == AL_PAUSED)) {
+        set_al_error(ctx, AL_INVALID_OPERATION);  /* can't change buffer on playing/paused sources */
+    } else {
+        ALbuffer *buffer = NULL;
+        if (bufname && ((buffer = get_buffer(ctx, bufname)) == NULL)) {
+            set_al_error(ctx, AL_INVALID_VALUE);
+        } else {
+            SDL_AudioStream *stream = NULL;
+            SDL_AudioStream *freestream = NULL;
+            /* We only use the stream for resampling, not for channel conversion. */
+            FIXME("keep the existing stream if formats match?");
+            if (buffer && (ctx->device->frequency != buffer->frequency)) {
+                stream = SDL_NewAudioStream(AUDIO_F32SYS, buffer->channels, buffer->frequency, AUDIO_F32SYS, buffer->channels, ctx->device->frequency);
+                if (!stream) {
+                    set_al_error(ctx, AL_OUT_OF_MEMORY);
+                    return;
+                }
+                FIXME("need a way to prealloc space in the stream, so the mixer doesn't have to malloc");
+            }
+
+            SDL_AtomicLock(&src->lock);
+
+            if (src->buffer != buffer) {
+                if (src->buffer) {
+                    (void) SDL_AtomicDecRef(&src->buffer->refcount);
+                }
+                if (buffer) {
+                    SDL_AtomicIncRef(&buffer->refcount);
+                }
+                src->buffer = buffer;
+            }
+
+            src->type = buffer ? AL_STATIC : AL_UNDETERMINED;
+            src->queue_channels = buffer ? buffer->channels : 0;
+            src->queue_frequency = 0;
+
+            FIXME("must dump buffer queue");
+
+            if (src->stream != stream) {
+                freestream = src->stream;  /* free this after unlocking. */
+                src->stream = stream;
+            }
+
+            SDL_AtomicUnlock(&src->lock);
+
+            if (freestream) {
+                SDL_FreeAudioStream(freestream);
+            }
+        }
+    }
+}
+
 void alSourceiv(ALuint name, ALenum param, const ALint *values)
 {
     ALCcontext *ctx = get_current_context();
@@ -2523,53 +2581,7 @@ void alSourceiv(ALuint name, ALenum param, const ALint *values)
     FIXME("this needs a lock");  // ...or atomic operations.
 
     switch (param) {
-        case AL_BUFFER:
-            FIXME("split this into a separate function");
-            if ((src->state == AL_PLAYING) || (src->state == AL_PAUSED)) {
-                set_al_error(ctx, AL_INVALID_OPERATION);  /* can't change buffer on playing/paused sources */
-            } else {
-                const ALuint bufname = (ALuint) *values;
-                ALbuffer *buffer = NULL;
-                if (bufname && ((buffer = get_buffer(ctx, bufname)) == NULL)) {
-                    set_al_error(ctx, AL_INVALID_VALUE);
-                } else {
-                    SDL_AudioStream *stream = NULL;
-                    /* We only use the stream for resampling, not for channel conversion. */
-                    FIXME("keep the existing stream if formats match?");
-                    if (buffer && (ctx->device->frequency != buffer->frequency)) {
-                        stream = SDL_NewAudioStream(AUDIO_F32SYS, buffer->channels, buffer->frequency, AUDIO_F32SYS, buffer->channels, ctx->device->frequency);
-                        if (!stream) {
-                            set_al_error(ctx, AL_OUT_OF_MEMORY);
-                            return;
-                        }
-                        FIXME("need a way to prealloc space in the stream, so the mixer doesn't have to malloc");
-                    }
-
-                    if (src->buffer != buffer) {
-                        if (src->buffer) {
-                            (void) SDL_AtomicDecRef(&src->buffer->refcount);
-                        }
-                        if (buffer) {
-                            SDL_AtomicIncRef(&buffer->refcount);
-                        }
-                    }
-                    src->buffer = buffer;
-                    src->type = buffer ? AL_STATIC : AL_UNDETERMINED;
-                    src->queue_channels = buffer ? buffer->channels : 0;
-                    src->queue_frequency = 0;
-                    FIXME("must dump buffer queue");
-                    /* if this was AL_PLAYING and the mixer is mixing this source RIGHT NOW you could alSourceStop and call this while it's still mixing. */
-                    FIXME("race conditions...");
-                    if (src->stream != stream) {
-                        if (src->stream) {
-                            SDL_FreeAudioStream(src->stream);
-                        }
-                        src->stream = stream;
-                    }
-                }
-            }
-            return;
-
+        case AL_BUFFER: set_source_static_buffer(ctx, src, (ALuint) *values); return;
         case AL_SOURCE_RELATIVE: src->source_relative = *values ? AL_TRUE : AL_FALSE; return;
         case AL_LOOPING: src->looping = *values ? AL_TRUE : AL_FALSE; return;
         case AL_REFERENCE_DISTANCE: src->reference_distance = (ALfloat) *values; return;
@@ -2579,9 +2591,11 @@ void alSourceiv(ALuint name, ALenum param, const ALint *values)
         case AL_CONE_OUTER_ANGLE: src->cone_outer_angle = (ALfloat) *values; return;
 
         case AL_DIRECTION:
+            SDL_AtomicLock(&src->lock);
             src->direction[0] = (ALfloat) values[0];
             src->direction[1] = (ALfloat) values[1];
             src->direction[2] = (ALfloat) values[2];
+            SDL_AtomicUnlock(&src->lock);
             return;
 
         case AL_SEC_OFFSET:
@@ -2760,7 +2774,8 @@ static void source_play(ALCcontext *ctx, const ALuint name)
 {
     ALsource *src = get_source(ctx, name);
     if (src) {
-        FIXME("this needs a lock");
+        FIXME("this could be lock free if we maintain a queue of playing sources");
+        SDL_AtomicLock(&src->lock);
         if (src->offset_latched) {
             src->offset_latched = AL_FALSE;
         } else if (src->state != AL_PAUSED) {
@@ -2772,6 +2787,7 @@ static void source_play(ALCcontext *ctx, const ALuint name)
             FIXME("buffer queue needs to promote to processed");
             src->state = AL_STOPPED;  /* disconnected devices promote directly to STOPPED */
         }
+        SDL_AtomicUnlock(&src->lock);
     }
 }
 
@@ -2779,11 +2795,12 @@ static void source_stop(ALCcontext *ctx, const ALuint name)
 {
     ALsource *src = get_source(ctx, name);
     if (src) {
-        FIXME("this needs a lock");
         FIXME("buffer queue needs to promote to processed");
+        SDL_AtomicLock(&src->lock);
         if (src->state != AL_INITIAL) {
             src->state = AL_STOPPED;
         }
+        SDL_AtomicUnlock(&src->lock);
     }
 }
 
@@ -2791,9 +2808,10 @@ static void source_rewind(ALCcontext *ctx, const ALuint name)
 {
     ALsource *src = get_source(ctx, name);
     if (src) {
-        FIXME("this needs a lock");
+        SDL_AtomicLock(&src->lock);
         src->state = AL_INITIAL;
         src->offset = 0;
+        SDL_AtomicUnlock(&src->lock);
     }
 }
 
@@ -2801,10 +2819,11 @@ static void source_pause(ALCcontext *ctx, const ALuint name)
 {
     ALsource *src = get_source(ctx, name);
     if (src) {
-        FIXME("this needs a lock");
+        SDL_AtomicLock(&src->lock);
         if (src->state == AL_PLAYING) {
             src->state = AL_PAUSED;
         }
+        SDL_AtomicUnlock(&src->lock);
     }
 }
 
@@ -2962,6 +2981,8 @@ void alSourceQueueBuffers(ALuint name, ALsizei nb, const ALuint *bufnames)
         return;
     }
 
+    FIXME("this needs to be set way sooner");
+    SDL_AtomicLock(&src->lock);
     src->type = AL_STREAMING;
 
     if (!src->queue_channels) {
@@ -2969,6 +2990,7 @@ void alSourceQueueBuffers(ALuint name, ALsizei nb, const ALuint *bufnames)
         src->queue_frequency = queue_frequency;
         src->stream = stream;
     }
+    SDL_AtomicUnlock(&src->lock);
 
     /* so we're going to put these on a linked list called just_queued,
         where things build up in reverse order, to keep this on a single
