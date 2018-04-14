@@ -6,6 +6,9 @@
  *  This file written by Ryan C. Gordon.
  */
 
+/* this gets us sincos() if using glibc. */
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <math.h>
 #include <float.h>
@@ -700,11 +703,14 @@ static void normalize(ALfloat *v)
 /* Get the sin(angle) and cos(angle) at the same time. Ideally, with one
    instruction, like what is offered on the x86.
    angle is in radians, not degrees. */
-static void sincos(const ALfloat angle, ALfloat *_sin, ALfloat *_cos)
+static void calculate_sincos(const ALfloat angle, ALfloat *_sin, ALfloat *_cos)
 {
-    FIXME("use sincos() or asm or compiler intrinsics?");
+#ifdef __GLIBC__
+    sincosf(angle, _sin, _cos);
+#else
     *_sin = sinf(angle);
     *_cos = cosf(angle);
+#endif
 }
 
 static ALfloat calculate_distance_attenuation(const ALCcontext *ctx, const ALsource *src, const ALfloat *position)
@@ -890,7 +896,7 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
     #define RADIANS_135_DEGREES 2.3561944902f
     if ((radians >= -RADIANS_45_DEGREES) && (radians <= RADIANS_45_DEGREES)) {
         ALfloat sine, cosine;
-        sincos(radians, &sine, &cosine);
+        calculate_sincos(radians, &sine, &cosine);
         gains[0] = (SQRT2_DIV2 * (cosine - sine));
         gains[1] = (SQRT2_DIV2 * (cosine + sine));
     } else if ((radians >= RADIANS_45_DEGREES) && (radians <= RADIANS_135_DEGREES)) {
@@ -901,12 +907,12 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
         gains[1] = 0.0f;
     } else if (radians < 0.0f) {  /* back left */
         ALfloat sine, cosine;
-        sincos(-(radians + M_PI), &sine, &cosine);
+        calculate_sincos(-(radians + M_PI), &sine, &cosine);
         gains[0] = (SQRT2_DIV2 * (cosine - sine));
         gains[1] = (SQRT2_DIV2 * (cosine + sine));
     } else { /* back right */
         ALfloat sine, cosine;
-        sincos(-(radians - M_PI), &sine, &cosine);
+        calculate_sincos(-(radians - M_PI), &sine, &cosine);
         gains[0] = (SQRT2_DIV2 * (cosine - sine));
         gains[1] = (SQRT2_DIV2 * (cosine + sine));
     }
