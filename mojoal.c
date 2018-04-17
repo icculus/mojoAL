@@ -414,6 +414,8 @@ ALCdevice *alcOpenDevice(const ALCchar *devicename)
 
 ALCboolean alcCloseDevice(ALCdevice *device)
 {
+    BufferBlock *bb;
+
     if (!device || device->iscapture) {
         return ALC_FALSE;
     }
@@ -422,8 +424,25 @@ ALCboolean alcCloseDevice(ALCdevice *device)
         return ALC_FALSE;
     }
 
+    for (bb = &device->playback.buffer_blocks; bb; bb = bb->next) {
+        ALbuffer *buf = bb->buffers;
+        int i;
+        for (i = 0; i < SDL_arraysize(bb->buffers); i++, buf++) {
+            if (SDL_AtomicGet(&buf->allocated) == 1) {
+                return ALC_FALSE;
+            }
+        }
+    }
+
     if (device->sdldevice) {
         SDL_CloseAudioDevice(device->sdldevice);
+    }
+
+    bb = device->playback.buffer_blocks.next;
+    while (bb) {
+        BufferBlock *next = bb->next;
+        SDL_free(bb);
+        bb = next;
     }
 
     SDL_free(device->name);
@@ -1161,31 +1180,63 @@ static inline ALCcontext *get_current_context(void)
     return (ALCcontext *) SDL_AtomicGetPtr(&current_context);
 }
 
-void alcDestroyContext(ALCcontext *context)
+void alcDestroyContext(ALCcontext *ctx)
 {
+    int i;
+
     FIXME("Should NULL context be an error?");
-    if (!context) return;
+    if (!ctx) return;
 
     /* The spec says it's illegal to delete the current context. */
-    if (get_current_context() == context) {
-        set_alc_error(context->device, ALC_INVALID_CONTEXT);
+    if (get_current_context() == ctx) {
+        set_alc_error(ctx->device, ALC_INVALID_CONTEXT);
         return;
     }
 
     /* do this first in case the mixer is running _right now_. */
-    SDL_AtomicSet(&context->processing, 0);
+    SDL_AtomicSet(&ctx->processing, 0);
 
-    SDL_LockAudioDevice(context->device->sdldevice);
-    if (context->prev) {
-        context->prev->next = context->next;
+    SDL_LockAudioDevice(ctx->device->sdldevice);
+    if (ctx->prev) {
+        ctx->prev->next = ctx->next;
     } else {
-        SDL_assert(context == context->device->playback.contexts);
-        context->device->playback.contexts = context->next;
+        SDL_assert(ctx == ctx->device->playback.contexts);
+        ctx->device->playback.contexts = ctx->next;
     }
-    if (context->next) {
-        context->next->prev = context->prev;
+    if (ctx->next) {
+        ctx->next->prev = ctx->prev;
     }
-    SDL_UnlockAudioDevice(context->device->sdldevice);
+    SDL_UnlockAudioDevice(ctx->device->sdldevice);
+
+    for (i = 0; i < SDL_arraysize(ctx->sources); i++) {
+        ALsource *src = &ctx->sources[i];
+        void *ptr;
+        if (SDL_AtomicGet(&src->allocated) != 1) {
+            continue;
+        }
+
+        SDL_FreeAudioStream(src->stream);
+
+        /* move any buffer queue items to the device's available pool for reuse. */
+        obtain_newly_queued_buffers(&src->buffer_queue);
+        if (src->buffer_queue.tail != NULL) {
+            do {
+                ptr = SDL_AtomicGetPtr(&ctx->device->playback.buffer_queue_pool);
+                SDL_AtomicSetPtr(&src->buffer_queue.tail->next, ptr);
+            } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, ptr, src->buffer_queue.head));
+        }
+
+        obtain_newly_queued_buffers(&src->buffer_queue_processed);
+        if (src->buffer_queue_processed.tail != NULL) {
+            do {
+                ptr = SDL_AtomicGetPtr(&ctx->device->playback.buffer_queue_pool);
+                SDL_AtomicSetPtr(&src->buffer_queue_processed.tail->next, ptr);
+            } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, ptr, src->buffer_queue_processed.head));
+        }
+    }
+
+    SDL_free(ctx->attributes);
+    SDL_free(ctx);
 }
 
 ALCcontext *alcGetCurrentContext(void)
