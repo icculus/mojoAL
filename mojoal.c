@@ -1156,9 +1156,21 @@ void alcSuspendContext(ALCcontext *context)
     SDL_AtomicSet(&context->processing, 0);
 }
 
+static inline ALCcontext *get_current_context(void)
+{
+    return (ALCcontext *) SDL_AtomicGetPtr(&current_context);
+}
+
 void alcDestroyContext(ALCcontext *context)
 {
+    FIXME("Should NULL context be an error?");
     if (!context) return;
+
+    /* The spec says it's illegal to delete the current context. */
+    if (get_current_context() == context) {
+        set_alc_error(context->device, ALC_INVALID_CONTEXT);
+        return;
+    }
 
     /* do this first in case the mixer is running _right now_. */
     SDL_AtomicSet(&context->processing, 0);
@@ -1174,11 +1186,6 @@ void alcDestroyContext(ALCcontext *context)
         context->next->prev = context->prev;
     }
     SDL_UnlockAudioDevice(context->device->sdldevice);
-}
-
-static inline ALCcontext *get_current_context(void)
-{
-    return (ALCcontext *) SDL_AtomicGetPtr(&current_context);
 }
 
 ALCcontext *alcGetCurrentContext(void)
