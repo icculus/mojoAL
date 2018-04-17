@@ -1405,11 +1405,10 @@ const ALCchar *alcGetString(ALCdevice *device, ALCenum param)
 {
     switch (param) {
         case ALC_EXTENSIONS: {
-            #define ALC_EXTENSION_ITEM(ext) #ext " "
-            static char alc_extensions_string[] = ALC_EXTENSION_ITEMS;
+            #define ALC_EXTENSION_ITEM(ext) " " #ext
+            static ALCchar alc_extensions_string[] = ALC_EXTENSION_ITEMS;
             #undef ALC_EXTENSION_ITEM
-            alc_extensions_string[sizeof (alc_extensions_string) - 2] = '\0';  /* kill that last space. */
-            return alc_extensions_string;
+            return alc_extensions_string + 1;  /* skip that first space char */
         }
 
         /* You open the default SDL device with a NULL device name, but that is how OpenAL
@@ -1813,11 +1812,10 @@ const ALchar* alGetString(ALenum param)
 {
     switch (param) {
         case AL_EXTENSIONS: {
-            #define AL_EXTENSION_ITEM(ext) #ext " "
-            static char al_extensions_string[] = AL_EXTENSION_ITEMS;
+            #define AL_EXTENSION_ITEM(ext) " " #ext
+            static ALchar al_extensions_string[] = AL_EXTENSION_ITEMS;
             #undef AL_EXTENSION_ITEM
-            al_extensions_string[sizeof (al_extensions_string) - 2] = '\0';  /* kill that last space. */
-            return al_extensions_string;
+            return al_extensions_string + 1;  /* skip that first space char */
         }
 
         case AL_VERSION: return OPENAL_VERSION_STRING;
