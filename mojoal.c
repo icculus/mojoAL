@@ -415,6 +415,7 @@ ALCdevice *alcOpenDevice(const ALCchar *devicename)
 ALCboolean alcCloseDevice(ALCdevice *device)
 {
     BufferBlock *bb;
+    BufferQueueItem *item;
 
     if (!device || device->iscapture) {
         return ALC_FALSE;
@@ -443,6 +444,13 @@ ALCboolean alcCloseDevice(ALCdevice *device)
         BufferBlock *next = bb->next;
         SDL_free(bb);
         bb = next;
+    }
+
+    item = (BufferQueueItem *) device->playback.buffer_queue_pool;
+    while (item) {
+        BufferQueueItem *next = item->next;
+        SDL_free(item);
+        item = next;
     }
 
     SDL_free(device->name);
