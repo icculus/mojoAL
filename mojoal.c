@@ -2149,14 +2149,16 @@ void alListener3f(ALenum param, ALfloat value1, ALfloat value2, ALfloat value3)
 
 void alListenerfv(ALenum param, const ALfloat *values)
 {
-    ALfloat dummy[6];
     ALCcontext *ctx = get_current_context();
     if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
         return;
     }
 
-    if (!values) values = dummy;
+    if (!values) {
+        set_al_error(ctx, AL_INVALID_VALUE);
+        return;
+    }
 
     switch (param) {
         case AL_GAIN:
@@ -2203,14 +2205,16 @@ void alListener3i(ALenum param, ALint value1, ALint value2, ALint value3)
 
 void alListeneriv(ALenum param, const ALint *values)
 {
-    ALint dummy[6];
     ALCcontext *ctx = get_current_context();
     if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
         return;
     }
 
-    if (!values) values = dummy;
+    if (!values) {
+        set_al_error(ctx, AL_INVALID_VALUE);
+        return;
+    }
 
     switch (param) {
         case AL_POSITION:
@@ -2272,14 +2276,13 @@ void alGetListener3f(ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *va
 
 void alGetListenerfv(ALenum param, ALfloat *values)
 {
-    ALfloat dummy[6];
     ALCcontext *ctx = get_current_context();
     if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
         return;
     }
 
-    if (!values) values = dummy;
+    if (!values) return;  /* legal no-op */
 
     switch (param) {
         case AL_GAIN:
@@ -2329,14 +2332,13 @@ void alGetListener3i(ALenum param, ALint *value1, ALint *value2, ALint *value3)
 
 void alGetListeneriv(ALenum param, ALint *values)
 {
-    ALint dummy[6];
     ALCcontext *ctx = get_current_context();
     if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
         return;
     }
 
-    if (!values) values = dummy;
+    if (!values) return;  /* legal no-op */
 
     switch (param) {
         case AL_POSITION:
