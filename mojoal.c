@@ -286,6 +286,7 @@ typedef struct ALsource
     SDL_SpinLock lock;
     ALenum state;  /* initial, playing, paused, stopped */
     ALenum type;  /* undetermined, static, streaming */
+    ALboolean recalc;
     ALboolean source_relative;
     ALboolean looping;
     ALfloat gain;
@@ -294,6 +295,7 @@ typedef struct ALsource
     ALfloat position[3];
     ALfloat velocity[3];
     ALfloat direction[3];
+    ALfloat panning[2];  /* we only do stereo for now */
     ALfloat reference_distance;
     ALfloat max_distance;
     ALfloat rolloff_factor;
@@ -350,6 +352,7 @@ struct ALCcontext_struct
         ALfloat orientation[6];
     } listener;
 
+    ALCboolean recalc;
     ALenum distance_model;
     ALfloat doppler_factor;
     ALfloat doppler_velocity;
@@ -385,6 +388,10 @@ static void set_alc_error(ALCdevice *device, const ALCenum error)
         *perr = error;
     }
 }
+
+/* all data written before the release barrier must be available before the recalc flag changes. */ \
+#define context_needs_recalc(ctx) SDL_MemoryBarrierRelease(); ctx->recalc = AL_TRUE;
+#define source_needs_recalc(src) SDL_MemoryBarrierRelease(); src->recalc = AL_TRUE;
 
 ALCdevice *alcOpenDevice(const ALCchar *devicename)
 {
@@ -755,7 +762,7 @@ static void mix_buffer(const ALbuffer *buffer, const ALfloat * restrict panning,
     }
 }
 
-static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueItem *queue, const ALfloat *panning, float **stream, int *len)
+static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueItem *queue, float **stream, int *len)
 {
     const ALbuffer *buffer = queue ? queue->buffer : NULL;
     ALboolean processed = AL_TRUE;
@@ -788,7 +795,7 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
                 const int mixbufframes = mixbuflen / bufferframesize;
                 const int getframes = SDL_min(remainingmixframes, mixbufframes);
                 SDL_AudioStreamGet(src->stream, mixbuf, getframes * bufferframesize);
-                mix_buffer(buffer, panning, mixbuf, *stream, getframes);
+                mix_buffer(buffer, src->panning, mixbuf, *stream, getframes);
                 *len -= getframes * deviceframesize;
                 *stream += getframes * ctx->device->channels;
                 remainingmixframes -= getframes;
@@ -796,7 +803,7 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
         } else {
             const int framesavail = (buffer->len - src->offset) / bufferframesize;
             const int mixframes = SDL_min(framesneeded, framesavail);
-            mix_buffer(buffer, panning, data, *stream, mixframes);
+            mix_buffer(buffer, src->panning, data, *stream, mixframes);
             src->offset += mixframes * bufferframesize;
             *len -= mixframes * deviceframesize;
             *stream += mixframes * ctx->device->channels;
@@ -814,9 +821,9 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
     return processed;
 }
 
-static inline void mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, BufferQueueItem *queue, const ALfloat *panning, float *stream, int len)
+static inline void mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, BufferQueueItem *queue, float *stream, int len)
 {
-    while ((len > 0) && (mix_source_buffer(ctx, src, queue, panning, &stream, &len))) {
+    while ((len > 0) && (mix_source_buffer(ctx, src, queue, &stream, &len))) {
         /* Finished this buffer! */
         BufferQueueItem *item = queue;
         BufferQueueItem *next = queue ? queue->next : NULL;
@@ -1137,19 +1144,22 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
 }
 
 
-static void mix_source(ALCcontext *ctx, ALsource *src, float *stream, int len)
+static void mix_source(ALCcontext *ctx, ALsource *src, float *stream, int len, const ALboolean force_recalc)
 {
     SDL_AtomicLock(&src->lock);
 
     if ((SDL_AtomicGet(&src->allocated) == 1) && (src->state == AL_PLAYING)) {
-        float panning[2];  /* we only do stereo for now */
-        calculate_channel_gains(ctx, src, panning);
+        if (src->recalc || force_recalc) {
+            SDL_MemoryBarrierAcquire();
+            src->recalc = AL_FALSE;
+            calculate_channel_gains(ctx, src, src->panning);
+        }
         if (src->type == AL_STATIC) {
             BufferQueueItem fakequeue = { src->buffer, NULL };
-            mix_source_buffer_queue(ctx, src, &fakequeue, panning, stream, len);
+            mix_source_buffer_queue(ctx, src, &fakequeue, stream, len);
         } else if (src->type == AL_STREAMING) {
             obtain_newly_queued_buffers(&src->buffer_queue);
-            mix_source_buffer_queue(ctx, src, src->buffer_queue.head, panning, stream, len);
+            mix_source_buffer_queue(ctx, src, src->buffer_queue.head, stream, len);
         } else {
             SDL_assert(!"unknown source type");
         }
@@ -1160,10 +1170,17 @@ static void mix_source(ALCcontext *ctx, ALsource *src, float *stream, int len)
 
 static void mix_context(ALCcontext *ctx, float *stream, int len)
 {
+    const ALboolean force_recalc = ctx->recalc;
     ALsizei i;
+
+    if (force_recalc) {
+        SDL_MemoryBarrierAcquire();
+        ctx->recalc = AL_FALSE;
+    }
+
     FIXME("keep a small array of playing sources so we don't have to walk the whole array");
     for (i = 0; i < OPENAL_MAX_SOURCES; i++) {
-        mix_source(ctx, &ctx->sources[i], stream, len);
+        mix_source(ctx, &ctx->sources[i], stream, len, force_recalc);
     }
 }
 
@@ -1317,6 +1334,7 @@ ALCcontext* alcCreateContext(ALCdevice *device, const ALCint* attrlist)
     retval->listener.orientation[2] = -1.0f;
     retval->listener.orientation[4] = 1.0f;
     retval->device = device;
+    context_needs_recalc(retval);
     SDL_AtomicSet(&retval->processing, 1);  /* contexts default to processing */
 
     SDL_LockAudioDevice(device->sdldevice);
@@ -1919,6 +1937,7 @@ void alDopplerFactor(ALfloat value)
         set_al_error(ctx, AL_INVALID_VALUE);
     } else {
         ctx->doppler_factor = value;
+        context_needs_recalc(ctx);
     }
 }
 
@@ -1931,6 +1950,7 @@ void alDopplerVelocity(ALfloat value)
         set_al_error(ctx, AL_INVALID_VALUE);
     } else {
         ctx->doppler_velocity = value;
+        context_needs_recalc(ctx);
     }
 }
 
@@ -1943,6 +1963,7 @@ void alSpeedOfSound(ALfloat value)
         set_al_error(ctx, AL_INVALID_VALUE);
     } else {
         ctx->speed_of_sound = value;
+        context_needs_recalc(ctx);
     }
 }
 
@@ -1963,6 +1984,7 @@ void alDistanceModel(ALenum model)
         case AL_EXPONENT_DISTANCE:
         case AL_EXPONENT_DISTANCE_CLAMPED:
             ctx->distance_model = model;
+            context_needs_recalc(ctx);
             return;
         default: break;
     }
@@ -2340,24 +2362,24 @@ void alListenerfv(ALenum param, const ALfloat *values)
     switch (param) {
         case AL_GAIN:
             ctx->listener.gain = *values;
-            return;
+            break;
 
         case AL_POSITION:
             SDL_memcpy(ctx->listener.position, values, sizeof (*values) * 3);
-            return;
+            break;
 
         case AL_VELOCITY:
             SDL_memcpy(ctx->listener.velocity, values, sizeof (*values) * 3);
-            return;
+            break;
 
         case AL_ORIENTATION:
             SDL_memcpy(ctx->listener.orientation, values, sizeof (*values) * 6);
-            return;
+            break;
 
-        default: break;
+        default: set_al_error(ctx, AL_INVALID_ENUM); return;
     }
 
-    set_al_error(ctx, AL_INVALID_ENUM);
+    context_needs_recalc(ctx);
 }
 
 void alListeneri(ALenum param, ALint value)
@@ -2398,13 +2420,13 @@ void alListeneriv(ALenum param, const ALint *values)
             ctx->listener.position[0] = (ALfloat) values[0];
             ctx->listener.position[1] = (ALfloat) values[1];
             ctx->listener.position[2] = (ALfloat) values[2];
-            return;
+            break;
 
         case AL_VELOCITY:
             ctx->listener.velocity[0] = (ALfloat) values[0];
             ctx->listener.velocity[1] = (ALfloat) values[1];
             ctx->listener.velocity[2] = (ALfloat) values[2];
-            return;
+            break;
 
         case AL_ORIENTATION:
             ctx->listener.orientation[0] = (ALfloat) values[0];
@@ -2413,12 +2435,12 @@ void alListeneriv(ALenum param, const ALint *values)
             ctx->listener.orientation[3] = (ALfloat) values[3];
             ctx->listener.orientation[4] = (ALfloat) values[4];
             ctx->listener.orientation[5] = (ALfloat) values[5];
-            return;
+            break;
 
-        default: break;
+        default: set_al_error(ctx, AL_INVALID_ENUM); return;
     }
 
-    set_al_error(ctx, AL_INVALID_ENUM);
+    context_needs_recalc(ctx);
 }
 
 void alGetListenerf(ALenum param, ALfloat *value)
@@ -2582,6 +2604,7 @@ void alGenSources(ALsizei n, ALuint *names)
         src->lock = 0;
         src->state = AL_INITIAL;
         src->type = AL_UNDETERMINED;
+        src->recalc = AL_TRUE;
         src->source_relative = AL_FALSE;
         src->looping = AL_FALSE;
         src->gain = 1.0f;
@@ -2604,6 +2627,7 @@ void alGenSources(ALsizei n, ALuint *names)
         src->buffer_queue_lock = 0;
         src->queue_channels = 0;
         src->queue_frequency = 0;
+        source_needs_recalc(src);
         SDL_AtomicSet(&src->allocated, 1);   /* we officially own it. */
     }
 }
@@ -2699,19 +2723,19 @@ void alSourcefv(ALuint name, ALenum param, const ALfloat *values)
     FIXME("this needs a lock");  // ...or atomic operations.
 
     switch (param) {
-        case AL_GAIN: src->gain = *values; return;
-        case AL_POSITION: SDL_memcpy(src->position, values, sizeof (ALfloat) * 3); return;
-        case AL_VELOCITY: SDL_memcpy(src->velocity, values, sizeof (ALfloat) * 3); return;
-        case AL_DIRECTION: SDL_memcpy(src->direction, values, sizeof (ALfloat) * 3); return;
-        case AL_MIN_GAIN: src->min_gain = *values; return;
-        case AL_MAX_GAIN: src->max_gain = *values; return;
-        case AL_REFERENCE_DISTANCE: src->reference_distance = *values; return;
-        case AL_ROLLOFF_FACTOR: src->rolloff_factor = *values; return;
-        case AL_MAX_DISTANCE: src->max_distance = *values; return;
-        case AL_PITCH: src->pitch = *values; return;
-        case AL_CONE_INNER_ANGLE: src->cone_inner_angle = *values; return;
-        case AL_CONE_OUTER_ANGLE: src->cone_outer_angle = *values; return;
-        case AL_CONE_OUTER_GAIN: src->cone_outer_gain = *values; return;
+        case AL_GAIN: src->gain = *values; break;
+        case AL_POSITION: SDL_memcpy(src->position, values, sizeof (ALfloat) * 3); break;
+        case AL_VELOCITY: SDL_memcpy(src->velocity, values, sizeof (ALfloat) * 3); break;
+        case AL_DIRECTION: SDL_memcpy(src->direction, values, sizeof (ALfloat) * 3); break;
+        case AL_MIN_GAIN: src->min_gain = *values; break;
+        case AL_MAX_GAIN: src->max_gain = *values; break;
+        case AL_REFERENCE_DISTANCE: src->reference_distance = *values; break;
+        case AL_ROLLOFF_FACTOR: src->rolloff_factor = *values; break;
+        case AL_MAX_DISTANCE: src->max_distance = *values; break;
+        case AL_PITCH: src->pitch = *values; break;
+        case AL_CONE_INNER_ANGLE: src->cone_inner_angle = *values; break;
+        case AL_CONE_OUTER_ANGLE: src->cone_outer_angle = *values; break;
+        case AL_CONE_OUTER_GAIN: src->cone_outer_gain = *values; break;
 
         case AL_SEC_OFFSET:
         case AL_SAMPLE_OFFSET:
@@ -2719,10 +2743,11 @@ void alSourcefv(ALuint name, ALenum param, const ALfloat *values)
             FIXME("offsets");
             break;
 
-        default: break;
+        default: set_al_error(ctx, AL_INVALID_ENUM); return;
+
     }
 
-    set_al_error(ctx, AL_INVALID_ENUM);
+    source_needs_recalc(src);
 }
 
 void alSourcei(ALuint name, ALenum param, ALint value)
@@ -2824,22 +2849,20 @@ void alSourceiv(ALuint name, ALenum param, const ALint *values)
     FIXME("this needs a lock");  // ...or atomic operations.
 
     switch (param) {
-        case AL_BUFFER: set_source_static_buffer(ctx, src, (ALuint) *values); return;
-        case AL_SOURCE_RELATIVE: src->source_relative = *values ? AL_TRUE : AL_FALSE; return;
-        case AL_LOOPING: src->looping = *values ? AL_TRUE : AL_FALSE; return;
-        case AL_REFERENCE_DISTANCE: src->reference_distance = (ALfloat) *values; return;
-        case AL_ROLLOFF_FACTOR: src->rolloff_factor = (ALfloat) *values; return;
-        case AL_MAX_DISTANCE: src->max_distance = (ALfloat) *values; return;
-        case AL_CONE_INNER_ANGLE: src->cone_inner_angle = (ALfloat) *values; return;
-        case AL_CONE_OUTER_ANGLE: src->cone_outer_angle = (ALfloat) *values; return;
+        case AL_BUFFER: set_source_static_buffer(ctx, src, (ALuint) *values); break;
+        case AL_SOURCE_RELATIVE: src->source_relative = *values ? AL_TRUE : AL_FALSE; break;
+        case AL_LOOPING: src->looping = *values ? AL_TRUE : AL_FALSE; break;
+        case AL_REFERENCE_DISTANCE: src->reference_distance = (ALfloat) *values; break;
+        case AL_ROLLOFF_FACTOR: src->rolloff_factor = (ALfloat) *values; break;
+        case AL_MAX_DISTANCE: src->max_distance = (ALfloat) *values; break;
+        case AL_CONE_INNER_ANGLE: src->cone_inner_angle = (ALfloat) *values; break;
+        case AL_CONE_OUTER_ANGLE: src->cone_outer_angle = (ALfloat) *values; break;
 
         case AL_DIRECTION:
-            SDL_AtomicLock(&src->lock);
             src->direction[0] = (ALfloat) values[0];
             src->direction[1] = (ALfloat) values[1];
             src->direction[2] = (ALfloat) values[2];
-            SDL_AtomicUnlock(&src->lock);
-            return;
+            break;
 
         case AL_SEC_OFFSET:
         case AL_SAMPLE_OFFSET:
@@ -2847,10 +2870,10 @@ void alSourceiv(ALuint name, ALenum param, const ALint *values)
             FIXME("offsets");
             break;
 
-        default: break;
+        default: set_al_error(ctx, AL_INVALID_ENUM); return;
     }
 
-    set_al_error(ctx, AL_INVALID_ENUM);
+    source_needs_recalc(src);
 }
 
 void alGetSourcef(ALuint name, ALenum param, ALfloat *value)
