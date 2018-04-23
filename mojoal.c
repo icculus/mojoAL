@@ -13,6 +13,10 @@
 #include <math.h>
 #include <float.h>
 
+#ifdef __SSE__
+#include <mmintrin.h>
+#endif
+
 #include "AL/al.h"
 #include "AL/alc.h"
 #include "SDL.h"
@@ -241,6 +245,8 @@ static ALCsizei ring_buffer_get(RingBuffer *ring, void *_data, ALCsizei size)
     return size;  /* may have been clamped if there wasn't enough data... */
 }
 
+typedef void (*BufferMixerFn)(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes);
+
 typedef struct ALbuffer
 {
     SDL_atomic_t allocated;
@@ -250,6 +256,7 @@ typedef struct ALbuffer
     ALsizei frequency;
     ALsizei len;   /* length of data in bytes. */
     const float *data;  /* we only work in Float32 format. */
+    BufferMixerFn mixer;
     SDL_atomic_t refcount;  /* if zero, can be deleted or alBufferData'd */
 } ALbuffer;
 
@@ -536,45 +543,215 @@ static void obtain_newly_queued_buffers(BufferQueue *queue)
     queue_new_buffer_items_recursive(queue, items);
 }
 
-static void mix_source_data_float32(ALCcontext *ctx, ALsource *src, const int channels, const ALfloat *panning, const float *data, float *stream, const ALsizei mixframes)
+
+static void mix_float32_c1_scalar(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
 {
     const ALfloat left = panning[0];
     const ALfloat right = panning[1];
+    const int unrolled = mixframes / 4;
+    const int leftover = mixframes % 4;
     ALsizei i;
 
-    if ((left == 0.0f) && (right == 0.0f)) {
-        return;  /* it's silent, don't spend time mixing it. */
+    if ((left == 1.0f) && (right == 1.0f)) {
+        for (i = 0; i < unrolled; i++, data += 4, stream += 8) {
+            const float samp0 = data[0];
+            const float samp1 = data[1];
+            const float samp2 = data[2];
+            const float samp3 = data[3];
+            stream[0] += samp0;
+            stream[1] += samp0;
+            stream[2] += samp1;
+            stream[3] += samp1;
+            stream[4] += samp2;
+            stream[5] += samp2;
+            stream[6] += samp3;
+            stream[7] += samp3;
+        }
+        for (i = 0; i < leftover; i++, stream += 2) {
+            const float samp = *(data++);
+            stream[0] += samp;
+            stream[1] += samp;
+        }
+    } else {
+        for (i = 0; i < unrolled; i++, data += 4, stream += 8) {
+            const float samp0 = data[0];
+            const float samp1 = data[1];
+            const float samp2 = data[2];
+            const float samp3 = data[3];
+            stream[0] += samp0 * left;
+            stream[1] += samp0 * right;
+            stream[2] += samp1 * left;
+            stream[3] += samp1 * right;
+            stream[4] += samp2 * left;
+            stream[5] += samp2 * right;
+            stream[6] += samp3 * left;
+            stream[7] += samp3 * right;
+        }
+        for (i = 0; i < leftover; i++, stream += 2) {
+            const float samp = *(data++);
+            stream[0] += samp * left;
+            stream[1] += samp * right;
+        }
+    }
+}
+
+static void mix_float32_c2_scalar(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+{
+    const ALfloat left = panning[0];
+    const ALfloat right = panning[1];
+    const int unrolled = mixframes / 4;
+    const int leftover = mixframes % 4;
+    ALsizei i;
+
+    if ((left == 1.0f) && (right == 1.0f)) {
+        for (i = 0; i < unrolled; i++, stream += 8, data += 8) {
+            stream[0] += data[0];
+            stream[1] += data[1];
+            stream[2] += data[2];
+            stream[3] += data[3];
+            stream[4] += data[4];
+            stream[5] += data[5];
+            stream[6] += data[6];
+            stream[7] += data[7];
+        }
+        for (i = 0; i < leftover; i++, stream += 2, data += 2) {
+            stream[0] += data[0];
+            stream[1] += data[1];
+        }
+    } else {
+        for (i = 0; i < unrolled; i++, stream += 8, data += 8) {
+            stream[0] += data[0] * left;
+            stream[1] += data[1] * right;
+            stream[2] += data[2] * left;
+            stream[3] += data[3] * right;
+            stream[4] += data[4] * left;
+            stream[5] += data[5] * right;
+            stream[6] += data[6] * left;
+            stream[7] += data[7] * right;
+        }
+        for (i = 0; i < leftover; i++, stream += 2, data += 2) {
+            stream[0] += data[0] * left;
+            stream[1] += data[1] * right;
+        }
+    }
+}
+
+
+#ifdef __SSE__
+static void mix_float32_c1_sse(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+{
+    const ALfloat left = panning[0];
+    const ALfloat right = panning[1];
+    const int unrolled = mixframes / 8;
+    const int leftover = mixframes % 8;
+    ALsizei i;
+
+    if ( (((size_t)stream) % 16) || (((size_t)data) % 16) ) {
+        /* unaligned, do scalar version. */
+        mix_float32_c1_scalar(panning, data, stream, mixframes);
+    } else if ((left == 1.0f) && (right == 1.0f)) {
+        for (i = 0; i < unrolled; i++, data += 8, stream += 16) {
+            /* We have 8 SSE registers, load 6 of them, have two for math (unrolled once). */
+            {
+                const __m128 vdataload1 = _mm_load_ps(data);
+                const __m128 vdataload2 = _mm_load_ps(data+4);
+                const __m128 vstream1 = _mm_load_ps(stream);
+                const __m128 vstream2 = _mm_load_ps(stream+4);
+                const __m128 vstream3 = _mm_load_ps(stream+8);
+                const __m128 vstream4 = _mm_load_ps(stream+12);
+                _mm_store_ps(stream, _mm_add_ps(vstream1, _mm_shuffle_ps(vdataload1, vdataload1, _MM_SHUFFLE(0, 0, 1, 1))));
+                _mm_store_ps(stream+4, _mm_add_ps(vstream2, _mm_shuffle_ps(vdataload1, vdataload1, _MM_SHUFFLE(2, 2, 3, 3))));
+                _mm_store_ps(stream+8, _mm_add_ps(vstream3, _mm_shuffle_ps(vdataload2, vdataload2, _MM_SHUFFLE(0, 0, 1, 1))));
+                _mm_store_ps(stream+12, _mm_add_ps(vstream4, _mm_shuffle_ps(vdataload2, vdataload2, _MM_SHUFFLE(2, 2, 3, 3))));
+            }
+        }
+        for (i = 0; i < leftover; i++, stream += 2) {
+            const float samp = *(data++);
+            stream[0] += samp;
+            stream[1] += samp;
+        }
+    } else {
+        const __m128 vleftright = { left, right, left, right };
+        for (i = 0; i < unrolled; i++, data += 8, stream += 16) {
+            /* We have 8 SSE registers, load 6 of them, have two for math (unrolled once). */
+            const __m128 vdataload1 = _mm_load_ps(data);
+            const __m128 vdataload2 = _mm_load_ps(data+4);
+            const __m128 vstream1 = _mm_load_ps(stream);
+            const __m128 vstream2 = _mm_load_ps(stream+4);
+            const __m128 vstream3 = _mm_load_ps(stream+8);
+            const __m128 vstream4 = _mm_load_ps(stream+12);
+            _mm_store_ps(stream, _mm_add_ps(vstream1, _mm_mul_ps(_mm_shuffle_ps(vdataload1, vdataload1, _MM_SHUFFLE(0, 0, 1, 1)), vleftright)));
+            _mm_store_ps(stream+4, _mm_add_ps(vstream2, _mm_mul_ps(_mm_shuffle_ps(vdataload1, vdataload1, _MM_SHUFFLE(2, 2, 3, 3)), vleftright)));
+            _mm_store_ps(stream+8, _mm_add_ps(vstream3, _mm_mul_ps(_mm_shuffle_ps(vdataload2, vdataload2, _MM_SHUFFLE(0, 0, 1, 1)), vleftright)));
+            _mm_store_ps(stream+12, _mm_add_ps(vstream4, _mm_mul_ps(_mm_shuffle_ps(vdataload2, vdataload2, _MM_SHUFFLE(2, 2, 3, 3)), vleftright)));
+        }
+        for (i = 0; i < leftover; i++, stream += 2) {
+            const float samp = *(data++);
+            stream[0] += samp * left;
+            stream[1] += samp * right;
+        }
+    }
+}
+
+static void mix_float32_c2_sse(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+{
+    const ALfloat left = panning[0];
+    const ALfloat right = panning[1];
+    const int unrolled = mixframes / 4;
+    const int leftover = mixframes % 4;
+    ALsizei i;
+
+    /* We can align this to 16 in one special case. */
+    if ( ((((size_t)stream) % 16) == 8) && ((((size_t)data) % 16) == 8) && mixframes ) {
+        stream[0] += data[0] * left;
+        stream[1] += data[1] * right;
+        stream += 2;
+        data += 2;
+        mix_float32_c2_sse(panning, data + 2, stream + 2, mixframes - 1);
+        return;
     }
 
-    FIXME("make this efficient.  :)");
-    FIXME("currently expects output to be stereo");
+    if ( (((size_t)stream) % 16) || (((size_t)data) % 16) ) {
+        /* unaligned, do scalar version. */
+        mix_float32_c2_scalar(panning, data, stream, mixframes);
+    } else if ((left == 1.0f) && (right == 1.0f)) {
+        for (i = 0; i < unrolled; i++, data += 8, stream += 8) {
+            const __m128 vdata1 = _mm_load_ps(data);
+            const __m128 vdata2 = _mm_load_ps(data+4);
+            const __m128 vstream1 = _mm_load_ps(stream);
+            const __m128 vstream2 = _mm_load_ps(stream+4);
+            _mm_store_ps(stream, _mm_add_ps(vstream1, vdata1));
+            _mm_store_ps(stream+4, _mm_add_ps(vstream2, vdata2));
+        }
+        for (i = 0; i < leftover; i++, stream += 2, data += 2) {
+            stream[0] += data[0];
+            stream[1] += data[1];
+        }
+    } else {
+        const __m128 vleftright = { left, right, left, right };
+        for (i = 0; i < unrolled; i++, data += 8, stream += 8) {
+            const __m128 vdata1 = _mm_load_ps(data);
+            const __m128 vdata2 = _mm_load_ps(data+4);
+            const __m128 vstream1 = _mm_load_ps(stream);
+            const __m128 vstream2 = _mm_load_ps(stream+4);
+            _mm_store_ps(stream, _mm_add_ps(vstream1, _mm_mul_ps(vdata1, vleftright)));
+            _mm_store_ps(stream+4, _mm_add_ps(vstream2, _mm_mul_ps(vdata2, vleftright)));
+        }
+        for (i = 0; i < leftover; i++, stream += 2, data += 2) {
+            stream[0] += data[0] * left;
+            stream[1] += data[1] * right;
+        }
+    }
+}
+#endif
 
-    if (channels == 1) {
-        if ((left == 1.0f) && (right == 1.0f)) {
-            for (i = 0; i < mixframes; i++) {
-                const float samp = *(data++);
-                *(stream++) += samp;
-                *(stream++) += samp;
-            }
-        } else {
-            for (i = 0; i < mixframes; i++) {
-                const float samp = *(data++);
-                *(stream++) += samp * left;
-                *(stream++) += samp * right;
-            }
-        }
-    } else if (channels == 2) {
-        if ((left == 1.0f) && (right == 1.0f)) {
-            for (i = 0; i < mixframes; i++) {
-                *(stream++) += *(data++);
-                *(stream++) += *(data++);
-            }
-        } else {
-            for (i = 0; i < mixframes; i++) {
-                *(stream++) += *(data++) * left;
-                *(stream++) += *(data++) * right;
-            }
-        }
+static void mix_buffer(const ALbuffer *buffer, const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+{
+    const ALfloat left = panning[0];
+    const ALfloat right = panning[1];
+    FIXME("currently expects output to be stereo");
+    if ((left != 0.0f) || (right != 0.0f)) {  /* don't bother mixing in silence. */
+        buffer->mixer(panning, data, stream, mixframes);
     }
 }
 
@@ -611,7 +788,7 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
                 const int mixbufframes = mixbuflen / bufferframesize;
                 const int getframes = SDL_min(remainingmixframes, mixbufframes);
                 SDL_AudioStreamGet(src->stream, mixbuf, getframes * bufferframesize);
-                mix_source_data_float32(ctx, src, buffer->channels, panning, mixbuf, *stream, getframes);
+                mix_buffer(buffer, panning, mixbuf, *stream, getframes);
                 *len -= getframes * deviceframesize;
                 *stream += getframes * ctx->device->channels;
                 remainingmixframes -= getframes;
@@ -619,7 +796,7 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
         } else {
             const int framesavail = (buffer->len - src->offset) / bufferframesize;
             const int mixframes = SDL_min(framesneeded, framesavail);
-            mix_source_data_float32(ctx, src, buffer->channels, panning, data, *stream, mixframes);
+            mix_buffer(buffer, panning, data, *stream, mixframes);
             src->offset += mixframes * bufferframesize;
             *len -= mixframes * deviceframesize;
             *stream += mixframes * ctx->device->channels;
@@ -3148,6 +3325,9 @@ void alSourceUnqueueBuffers(ALuint name, ALsizei nb, ALuint *bufnames)
     } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, ptr, queue));
 }
 
+static void mix_no_op(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes) { /* does nothing. */ }
+
+
 void alGenBuffers(ALsizei n, ALuint *names)
 {
     ALCcontext *ctx = get_current_context();
@@ -3223,6 +3403,7 @@ void alGenBuffers(ALsizei n, ALuint *names)
         buffer->frequency = 0;
         buffer->len = 0;
         buffer->data = NULL;
+        buffer->mixer = mix_no_op;
         SDL_AtomicSet(&buffer->refcount, 0);
         SDL_AtomicSet(&buffer->allocated, 1);  /* we officially own it. */
     }
@@ -3289,12 +3470,28 @@ void alBufferData(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, A
     ALCsizei framesize;
     int rc;
     int prevrefcount;
+    BufferMixerFn mixer;
 
     if (!buffer) return;
 
     if (!alcfmt_to_sdlfmt(alfmt, &sdlfmt, &channels, &framesize)) {
         set_al_error(ctx, AL_INVALID_VALUE);
         return;
+    }
+
+    if (channels == 1) {
+        #ifdef __SSE__
+        if (SDL_HasSSE()) { mixer = mix_float32_c1_sse; } else
+        #endif
+        { mixer = mix_float32_c1_scalar; }
+    } else if (channels == 2) {
+        #ifdef __SSE__
+        if (SDL_HasSSE()) { mixer = mix_float32_c2_sse; } else
+        #endif
+        { mixer = mix_float32_c2_scalar; }
+    } else {
+        SDL_assert(!"uhoh, no mixer function for this format!");
+        mixer = mix_no_op;
     }
 
     /* increment refcount so this can't be deleted or alBufferData'd from another thread */
@@ -3350,7 +3547,7 @@ void alBufferData(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, A
     buffer->bits = (ALint) SDL_AUDIO_BITSIZE(sdlfmt);  /* we're in float32, though. */
     buffer->frequency = freq;
     buffer->len = (ALsizei) sdlcvt.len_cvt;
-
+    buffer->mixer = mixer;
     (void) SDL_AtomicDecRef(&buffer->refcount);  /* ready to go! */
 }
 
