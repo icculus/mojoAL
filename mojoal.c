@@ -259,8 +259,6 @@ static ALCsizei ring_buffer_get(RingBuffer *ring, void *_data, ALCsizei size)
     return size;  /* may have been clamped if there wasn't enough data... */
 }
 
-typedef void (*BufferMixerFn)(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes);
-
 typedef struct ALbuffer
 {
     SDL_atomic_t allocated;
@@ -270,7 +268,6 @@ typedef struct ALbuffer
     ALsizei frequency;
     ALsizei len;   /* length of data in bytes. */
     const float *data;  /* we only work in Float32 format. */
-    BufferMixerFn mixer;
     SDL_atomic_t refcount;  /* if zero, can be deleted or alBufferData'd */
 } ALbuffer;
 
@@ -787,7 +784,22 @@ static void mix_buffer(const ALbuffer *buffer, const ALfloat * restrict panning,
     const ALfloat right = panning[1];
     FIXME("currently expects output to be stereo");
     if ((left != 0.0f) || (right != 0.0f)) {  /* don't bother mixing in silence. */
-        buffer->mixer(panning, data, stream, mixframes);
+        if (buffer->channels == 1) {
+            #ifdef __SSE__
+            mix_float32_c1_sse(panning, data, stream, mixframes);;
+            #endif
+            #if NEED_SCALAR_FALLBACK
+            mix_float32_c1_scalar(panning, data, stream, mixframes);;
+            #endif
+        } else {
+            SDL_assert(buffer->channels == 2);
+            #ifdef __SSE__
+            mix_float32_c2_sse(panning, data, stream, mixframes);;
+            #endif
+            #if NEED_SCALAR_FALLBACK
+            mix_float32_c2_scalar(panning, data, stream, mixframes);;
+            #endif
+        }
     }
 }
 
@@ -3526,9 +3538,6 @@ void alSourceUnqueueBuffers(ALuint name, ALsizei nb, ALuint *bufnames)
     } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, ptr, queue));
 }
 
-static void mix_no_op(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes) { /* does nothing. */ }
-
-
 void alGenBuffers(ALsizei n, ALuint *names)
 {
     ALCcontext *ctx = get_current_context();
@@ -3604,7 +3613,6 @@ void alGenBuffers(ALsizei n, ALuint *names)
         buffer->frequency = 0;
         buffer->len = 0;
         buffer->data = NULL;
-        buffer->mixer = mix_no_op;
         SDL_AtomicSet(&buffer->refcount, 0);
         SDL_AtomicSet(&buffer->allocated, 1);  /* we officially own it. */
     }
@@ -3671,28 +3679,12 @@ void alBufferData(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, A
     ALCsizei framesize;
     int rc;
     int prevrefcount;
-    BufferMixerFn mixer;
 
     if (!buffer) return;
 
     if (!alcfmt_to_sdlfmt(alfmt, &sdlfmt, &channels, &framesize)) {
         set_al_error(ctx, AL_INVALID_VALUE);
         return;
-    }
-
-    if (channels == 1) {
-        #ifdef __SSE__
-        if (has_sse) { mixer = mix_float32_c1_sse; } else
-        #endif
-        { mixer = mix_float32_c1_scalar; }
-    } else if (channels == 2) {
-        #ifdef __SSE__
-        if (has_sse) { mixer = mix_float32_c2_sse; } else
-        #endif
-        { mixer = mix_float32_c2_scalar; }
-    } else {
-        SDL_assert(!"uhoh, no mixer function for this format!");
-        mixer = mix_no_op;
     }
 
     /* increment refcount so this can't be deleted or alBufferData'd from another thread */
@@ -3748,7 +3740,6 @@ void alBufferData(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, A
     buffer->bits = (ALint) SDL_AUDIO_BITSIZE(sdlfmt);  /* we're in float32, though. */
     buffer->frequency = freq;
     buffer->len = (ALsizei) sdlcvt.len_cvt;
-    buffer->mixer = mixer;
     (void) SDL_AtomicDecRef(&buffer->refcount);  /* ready to go! */
 }
 
