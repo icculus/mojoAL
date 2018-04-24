@@ -167,6 +167,11 @@
 #define SIMDALIGNEDSTRUCT struct
 #endif
 
+#ifdef __SSE__  /* if you are on x86 or x86-64, we assume you have SSE1 by now. */
+#define NEED_SCALAR_FALLBACK 0
+#else
+#define NEED_SCALAR_FALLBACK 1
+#endif
 
 /* lifted this ring buffer code from my al_osx project; I wrote it all, so it's stealable. */
 typedef struct
@@ -382,9 +387,6 @@ struct ALCcontext_struct
     ALCcontext *next;
 };
 
-#ifdef __SSE__
-static int has_sse = 0;
-#endif
 
 /* ALC implementation... */
 
@@ -423,7 +425,10 @@ ALCdevice *alcOpenDevice(const ALCchar *devicename)
     }
 
     #ifdef __SSE__
-    has_sse = SDL_HasSSE();
+    if (!SDL_HasSSE()) {
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        return NULL;  /* whoa! Better order a new Pentium III from Gateway 2000! */
+    }
     #endif
 
     dev = (ALCdevice *) SDL_calloc(1, sizeof (ALCdevice));
@@ -668,7 +673,6 @@ static void mix_float32_c2_scalar(const ALfloat * restrict panning, const float 
     }
 }
 
-
 #ifdef __SSE__
 static void mix_float32_c1_sse(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
 {
@@ -909,6 +913,7 @@ static ALCboolean mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, Buffer
     Basically takes two vectors and gives you a vector that's perpendicular
     to both.
 */
+#if NEED_SCALAR_FALLBACK
 static void xyzzy(ALfloat *v, const ALfloat *a, const ALfloat *b)
 {
     v[0] = (a[1] * b[2]) - (a[2] * b[1]);
@@ -943,6 +948,7 @@ static void normalize(ALfloat *v)
         v[2] /= mag;
     }
 }
+#endif
 
 #ifdef __SSE__
 static __m128 xyzzy_sse(const __m128 a, const __m128 b)
@@ -1048,10 +1054,13 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
     ALfloat distance;
     ALfloat gain;
     ALfloat radians;
-    ALfloat position[3];
 
     #ifdef __SSE__
     __m128 position_sse;
+    #endif
+
+    #if NEED_SCALAR_FALLBACK
+    ALfloat position[3];
     #endif
 
     /* this goes through the steps the AL spec dictates for gain and distance attenuation... */
@@ -1064,25 +1073,24 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
     }
 
     #ifdef __SSE__
-    if (has_sse) {
-        position_sse = _mm_load_ps(src->position);
-        /* if values aren't source-relative, then convert it to be so. */
-        if (!src->source_relative) {
-            position_sse = _mm_sub_ps(position_sse, _mm_load_ps(ctx->listener.position));
-        }
-        distance = magnitude_sse(position_sse);
-    } else
-    #endif
-    {
-        SDL_memcpy(position, src->position, sizeof (position));
-        /* if values aren't source-relative, then convert it to be so. */
-        if (!src->source_relative) {
-            position[0] -= ctx->listener.position[0];
-            position[1] -= ctx->listener.position[1];
-            position[2] -= ctx->listener.position[2];
-        }
-        distance = magnitude(position);
+    position_sse = _mm_load_ps(src->position);
+    /* if values aren't source-relative, then convert it to be so. */
+    if (!src->source_relative) {
+        position_sse = _mm_sub_ps(position_sse, _mm_load_ps(ctx->listener.position));
     }
+    distance = magnitude_sse(position_sse);
+    #endif
+
+    #if NEED_SCALAR_FALLBACK
+    SDL_memcpy(position, src->position, sizeof (position));
+    /* if values aren't source-relative, then convert it to be so. */
+    if (!src->source_relative) {
+        position[0] -= ctx->listener.position[0];
+        position[1] -= ctx->listener.position[1];
+        position[2] -= ctx->listener.position[2];
+    }
+    distance = magnitude(position);
+    #endif
 
     /* AL SPEC: ""1. Distance attenuation is calculated first, including
        minimum (AL_REFERENCE_DISTANCE) and maximum (AL_MAX_DISTANCE)
@@ -1135,8 +1143,9 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
 
        XYZZY!! https://en.wikipedia.org/wiki/Cross_product#Mnemonic
     */
-    #ifdef __SSE__
-    if (has_sse) {  /* (the math is explained in the scalar version.) */
+
+    #ifdef __SSE__ /* (the math is explained in the scalar version.) */
+    {
         const __m128 at_sse = _mm_load_ps(at);
         const __m128 U_sse = normalize_sse(xyzzy_sse(at_sse, _mm_load_ps(up)));
         const __m128 V_sse = xyzzy_sse(at_sse, U_sse);
@@ -1153,8 +1162,10 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
         if (_mm_comilt_ss(rotated_sse, _mm_setzero_ps())) {
             radians = -radians;
         }
-    } else
+    }
     #endif
+
+    #if NEED_SCALAR_FALLBACK
     {
         ALfloat U[3];
         ALfloat V[3];
@@ -1198,6 +1209,7 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
             radians = -radians;
         }
     }
+    #endif
 
     /* here comes the Constant Power Panning magic... */
     #define SQRT2_DIV2 0.7071067812f  /* sqrt(2.0) / 2.0 ... */
