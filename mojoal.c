@@ -375,6 +375,9 @@ struct ALCcontext_struct
     ALfloat doppler_velocity;
     ALfloat speed_of_sound;
 
+    SDL_atomic_t to_be_played[OPENAL_MAX_SOURCES / (sizeof (SDL_atomic_t) * 8)];
+    int playlist[OPENAL_MAX_SOURCES / (sizeof (SDL_atomic_t) * 8)];
+
     ALCcontext *prev;  /* contexts are in a double-linked list */
     ALCcontext *next;
 };
@@ -396,7 +399,6 @@ static ALCenum null_device_error = ALC_NO_ERROR;
 
 #define AL_EXTENSION_ITEMS \
     AL_EXTENSION_ITEM(AL_EXT_FLOAT32)
-
 
 
 static void set_alc_error(ALCdevice *device, const ALCenum error)
@@ -844,8 +846,10 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
     return processed;
 }
 
-static inline void mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, BufferQueueItem *queue, float *stream, int len)
+static ALCboolean mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, BufferQueueItem *queue, float *stream, int len)
 {
+    ALCboolean keep = ALC_TRUE;
+
     while ((len > 0) && (mix_source_buffer(ctx, src, queue, &stream, &len))) {
         /* Finished this buffer! */
         BufferQueueItem *item = queue;
@@ -886,10 +890,13 @@ static inline void mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, Buffe
                 }
             } else {
                 src->state = AL_STOPPED;
+                keep = ALC_FALSE;
             }
             break;  /* nothing else to mix here, so stop. */
         }
     }
+
+    return keep;
 }
 
 /* All the 3D math here is way overcommented because I HAVE NO IDEA WHAT I'M
@@ -1234,11 +1241,14 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
 }
 
 
-static void mix_source(ALCcontext *ctx, ALsource *src, float *stream, int len, const ALboolean force_recalc)
+static ALCboolean mix_source(ALCcontext *ctx, ALsource *src, float *stream, int len, const ALboolean force_recalc)
 {
+    ALCboolean keep;
+
     SDL_AtomicLock(&src->lock);
 
-    if ((SDL_AtomicGet(&src->allocated) == 1) && (src->state == AL_PLAYING)) {
+    keep = ((SDL_AtomicGet(&src->allocated) == 1) && (src->state == AL_PLAYING));
+    if (keep) {
         if (src->recalc || force_recalc) {
             SDL_MemoryBarrierAcquire();
             src->recalc = AL_FALSE;
@@ -1246,31 +1256,60 @@ static void mix_source(ALCcontext *ctx, ALsource *src, float *stream, int len, c
         }
         if (src->type == AL_STATIC) {
             BufferQueueItem fakequeue = { src->buffer, NULL };
-            mix_source_buffer_queue(ctx, src, &fakequeue, stream, len);
+            keep = mix_source_buffer_queue(ctx, src, &fakequeue, stream, len);
         } else if (src->type == AL_STREAMING) {
             obtain_newly_queued_buffers(&src->buffer_queue);
-            mix_source_buffer_queue(ctx, src, src->buffer_queue.head, stream, len);
+            keep = mix_source_buffer_queue(ctx, src, src->buffer_queue.head, stream, len);
         } else {
             SDL_assert(!"unknown source type");
         }
     }
 
     SDL_AtomicUnlock(&src->lock);
+
+    return keep;
+}
+
+/* move new play requests over to the mixer thread. */
+static void migrate_playlist_requests(ALCcontext *ctx)
+{
+    int idx, bits;
+    for (idx = 0; idx < SDL_arraysize(ctx->to_be_played); idx++) {
+        SDL_atomic_t *atom = &ctx->to_be_played[idx];
+        do {
+            bits = SDL_AtomicGet(atom);
+        } while (!SDL_AtomicCAS(atom, bits, 0));
+        ctx->playlist[idx] |= bits;
+    }
 }
 
 static void mix_context(ALCcontext *ctx, float *stream, int len)
 {
     const ALboolean force_recalc = ctx->recalc;
-    ALsizei i;
+    int idx = 0;
+    int base = 0;
+    int bits;
+    int i;
 
     if (force_recalc) {
         SDL_MemoryBarrierAcquire();
         ctx->recalc = AL_FALSE;
     }
 
-    FIXME("keep a small array of playing sources so we don't have to walk the whole array");
-    for (i = 0; i < OPENAL_MAX_SOURCES; i++) {
-        mix_source(ctx, &ctx->sources[i], stream, len, force_recalc);
+    migrate_playlist_requests(ctx);
+
+    /* rather than iterate all sources looking for what's playing, we just look at a handful of ints. */
+    for (idx = 0; idx < SDL_arraysize(ctx->playlist); idx++, base += (sizeof (bits) * 8)) {
+        int bits = ctx->playlist[idx];
+        if (!bits) { continue; }  /* don't iterate at all if they're all zero. */
+        for (i = 0; i < (sizeof (bits) * 8); i++) {
+            if ((bits & (1 << i)) == 0) { continue; }  /* not in the playlist */
+            if (!mix_source(ctx, &ctx->sources[base+i], stream, len, force_recalc)) {
+                /* take it out of the playlist. It it wasn't actually playing or it just finished. */
+                bits &= ~(1 << i);
+                ctx->playlist[idx] = bits;
+            }
+        }
     }
 }
 
@@ -1278,35 +1317,46 @@ static void mix_context(ALCcontext *ctx, float *stream, int len)
 /* Disconnected devices move all PLAYING sources to STOPPED, making their buffer queues processed. */
 static void mix_disconnected_context(ALCcontext *ctx)
 {
-    ALsizei i;
-    FIXME("keep a small array of playing sources so we don't have to walk the whole array");
-    for (i = 0; i < OPENAL_MAX_SOURCES; i++) {
-        ALsource *src = &ctx->sources[i];
-        if (SDL_AtomicGet(&src->allocated) != 1) {
-            continue;  /* not in use */
-        }
+    ALsource *src;
+    int idx = 0;
+    int base = 0;
+    int bits;
+    int i;
 
-        obtain_newly_queued_buffers(&src->buffer_queue);
+    migrate_playlist_requests(ctx);
 
-        if (src->state == AL_PLAYING) {
-            src->state = AL_STOPPED;
-            if (src->type == AL_STREAMING) {  /* mark buffers processed. */
-                while (src->buffer_queue.head) {
-                    void *ptr;
-                    BufferQueueItem *item = src->buffer_queue.head;
-                    src->buffer_queue.head = item->next;
-                    SDL_AtomicAdd(&src->buffer_queue.num_items, -1);
+    /* rather than iterate all sources looking for what's playing, we just look at a handful of ints. */
+    for (idx = 0; idx < SDL_arraysize(ctx->playlist); idx++, base += (sizeof (bits) * 8)) {
+        int bits = ctx->playlist[idx];
+        if (!bits) { continue; }  /* don't iterate at all if they're all zero. */
+        for (i = 0; i < (sizeof (bits) * 8); i++) {
+            if ((bits & (1 << i)) == 0) { continue; }
+            src = &ctx->sources[base+i];
+            if ((SDL_AtomicGet(&src->allocated) == 1) && (src->state == AL_PLAYING)) {
+                obtain_newly_queued_buffers(&src->buffer_queue);
+                if (src->type == AL_STREAMING) {  /* mark buffers processed. */
+                    while (src->buffer_queue.head) {
+                        void *ptr;
+                        BufferQueueItem *item = src->buffer_queue.head;
+                        src->buffer_queue.head = item->next;
+                        SDL_AtomicAdd(&src->buffer_queue.num_items, -1);
 
-                    /* Move it to the processed queue for alSourceUnqueueBuffers() to pick up. */
-                    do {
-                        ptr = SDL_AtomicGetPtr(&src->buffer_queue_processed.just_queued);
-                        SDL_AtomicSetPtr(&item->next, ptr);
-                    } while (!SDL_AtomicCASPtr(&src->buffer_queue_processed.just_queued, ptr, item));
+                        /* Move it to the processed queue for alSourceUnqueueBuffers() to pick up. */
+                        do {
+                            ptr = SDL_AtomicGetPtr(&src->buffer_queue_processed.just_queued);
+                            SDL_AtomicSetPtr(&item->next, ptr);
+                        } while (!SDL_AtomicCASPtr(&src->buffer_queue_processed.just_queued, ptr, item));
 
-                    SDL_AtomicAdd(&src->buffer_queue_processed.num_items, 1);
+                        SDL_AtomicAdd(&src->buffer_queue_processed.num_items, 1);
+                    }
+                    src->buffer_queue.tail = NULL;
                 }
-                src->buffer_queue.tail = NULL;
+                src->state = AL_STOPPED;
             }
+
+            /* remove from playlist; all playing things got stopped, paused/initial/stopped shouldn't be listed. */
+            bits &= ~(1 << i);
+            ctx->playlist[idx] = bits;
         }
     }
 }
@@ -3141,6 +3191,10 @@ static void source_play(ALCcontext *ctx, const ALuint name)
 {
     ALsource *src = get_source(ctx, name);
     if (src) {
+        SDL_atomic_t *playlist_atomic;
+        int oldval;
+        int bit;
+
         FIXME("this could be lock free if we maintain a queue of playing sources");
         SDL_AtomicLock(&src->lock);
         if (src->offset_latched) {
@@ -3155,6 +3209,17 @@ static void source_play(ALCcontext *ctx, const ALuint name)
             src->state = AL_STOPPED;  /* disconnected devices promote directly to STOPPED */
         }
         SDL_AtomicUnlock(&src->lock);
+
+        /* put this in to_be_played so the mixer thread will notice. */
+        SDL_assert(sizeof (ctx->to_be_played[0]) == sizeof (ctx->to_be_played[0].value));
+        SDL_assert(sizeof (ctx->to_be_played[0].value) == sizeof (int));
+        playlist_atomic = &ctx->to_be_played[(name-1) / (sizeof (SDL_atomic_t) * 8)];
+        bit = (name-1) % (sizeof (SDL_atomic_t) * 8);
+
+        SDL_assert(bit <= 31);
+        do {
+            oldval = SDL_AtomicGet(playlist_atomic);
+        } while (!SDL_AtomicCAS(playlist_atomic, oldval, oldval | (1 << bit)));
     }
 }
 
