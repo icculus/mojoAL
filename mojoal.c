@@ -14,7 +14,7 @@
 #include <float.h>
 
 #ifdef __SSE__
-#include <mmintrin.h>
+#include <xmmintrin.h>
 #endif
 
 #include "AL/al.h"
@@ -159,6 +159,15 @@
 }
 #endif
 
+#ifdef _MSC_VER
+#define SIMDALIGNEDSTRUCT __declspec(align(16)) struct
+#elif (defined(__GNUC__) || defined(__clang__))
+#define SIMDALIGNEDSTRUCT struct __attribute__((aligned(16)))
+#else
+#define SIMDALIGNEDSTRUCT struct
+#endif
+
+
 /* lifted this ring buffer code from my al_osx project; I wrote it all, so it's stealable. */
 typedef struct
 {
@@ -280,8 +289,15 @@ typedef struct BufferQueue
     SDL_atomic_t num_items;  /* counts just_queued+head/tail */
 } BufferQueue;
 
-typedef struct ALsource
+typedef struct ALsource ALsource;
+
+SIMDALIGNEDSTRUCT ALsource
 {
+    /* keep these first to help guarantee that its elements are aligned for SIMD */
+    ALfloat position[4];
+    ALfloat velocity[4];
+    ALfloat direction[4];
+    ALfloat panning[2];  /* we only do stereo for now */
     SDL_atomic_t allocated;
     SDL_SpinLock lock;
     ALenum state;  /* initial, playing, paused, stopped */
@@ -292,10 +308,6 @@ typedef struct ALsource
     ALfloat gain;
     ALfloat min_gain;
     ALfloat max_gain;
-    ALfloat position[3];
-    ALfloat velocity[3];
-    ALfloat direction[3];
-    ALfloat panning[2];  /* we only do stereo for now */
     ALfloat reference_distance;
     ALfloat max_distance;
     ALfloat rolloff_factor;
@@ -312,7 +324,8 @@ typedef struct ALsource
     ALboolean offset_latched;  /* AL_SEC_OFFSET, etc, say set values apply to next alSourcePlay if not currently playing! */
     ALint queue_channels;
     ALsizei queue_frequency;
-} ALsource;
+};
+
 
 struct ALCdevice_struct
 {
@@ -340,29 +353,35 @@ struct ALCdevice_struct
 
 struct ALCcontext_struct
 {
+    /* keep these first to help guarantee that its elements are aligned for SIMD */
+    ALsource sources[OPENAL_MAX_SOURCES];   /* this array is indexed by ALuint source name. */
+
+    SIMDALIGNEDSTRUCT {
+        ALfloat position[4];
+        ALfloat velocity[4];
+        ALfloat orientation[8];
+        ALfloat gain;
+    } listener;
+
     ALCdevice *device;
     SDL_atomic_t processing;
     ALenum error;
     ALCint *attributes;
     ALCsizei attributes_count;
-    struct {
-        ALfloat gain;
-        ALfloat position[3];
-        ALfloat velocity[3];
-        ALfloat orientation[6];
-    } listener;
 
     ALCboolean recalc;
     ALenum distance_model;
     ALfloat doppler_factor;
     ALfloat doppler_velocity;
     ALfloat speed_of_sound;
-    ALsource sources[OPENAL_MAX_SOURCES];   /* this array is indexed by ALuint source name. */
 
     ALCcontext *prev;  /* contexts are in a double-linked list */
     ALCcontext *next;
 };
 
+#ifdef __SSE__
+static int has_sse = 0;
+#endif
 
 /* ALC implementation... */
 
@@ -400,6 +419,10 @@ ALCdevice *alcOpenDevice(const ALCchar *devicename)
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) == -1) {
         return NULL;
     }
+
+    #ifdef __SSE__
+    has_sse = SDL_HasSSE();
+    #endif
 
     dev = (ALCdevice *) SDL_calloc(1, sizeof (ALCdevice));
     if (!dev) {
@@ -873,6 +896,8 @@ static inline void mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, Buffe
    DOING and had to research the hell out of what are probably pretty simple
    concepts. Pay attention in math class, kids. */
 
+/* The scalar versions have explanitory comments and links. The SIMD versions don't. */
+
 /* calculates cross product. https://en.wikipedia.org/wiki/Cross_product
     Basically takes two vectors and gives you a vector that's perpendicular
     to both.
@@ -912,6 +937,44 @@ static void normalize(ALfloat *v)
     }
 }
 
+#ifdef __SSE__
+static __m128 xyzzy_sse(const __m128 a, const __m128 b)
+{
+    /* http://fastcpp.blogspot.com/2011/04/vector-cross-product-using-sse-code.html
+        this is the "three shuffle" version in the comments, plus the variables swapped around for handedness in the later comment. */
+    const __m128 v = _mm_sub_ps(
+        _mm_mul_ps(a, _mm_shuffle_ps(b, b, _MM_SHUFFLE(3, 0, 2, 1))),
+        _mm_mul_ps(b, _mm_shuffle_ps(a, a, _MM_SHUFFLE(3, 0, 2, 1)))
+    );
+    return _mm_shuffle_ps(v, v, _MM_SHUFFLE(3, 0, 2, 1));
+}
+
+static ALfloat dotproduct_sse(const __m128 a, const __m128 b)
+{
+    FIXME("this can use _mm_hadd_ps in SSE3, or _mm_dp_ps in SSE4.1");
+    const __m128 prod = _mm_mul_ps(a, b);
+    const __m128 sum1 = _mm_add_ps(prod, _mm_shuffle_ps(prod, prod, _MM_SHUFFLE(1, 0, 3, 2)));
+    const __m128 sum2 = _mm_add_ps(sum1, _mm_shuffle_ps(sum1, sum1, _MM_SHUFFLE(2, 2, 0, 0)));
+    return sum2[3];
+}
+
+static ALfloat magnitude_sse(const __m128 v)
+{
+    return sqrtf(dotproduct_sse(v, v));
+}
+
+static __m128 normalize_sse(const __m128 v)
+{
+    const ALfloat mag = magnitude_sse(v);
+    if (mag == 0.0f) {
+        return _mm_setzero_ps();
+    }
+    return _mm_div_ps(v, _mm_set_ps1(mag));
+}
+#endif
+
+
+
 /* Get the sin(angle) and cos(angle) at the same time. Ideally, with one
    instruction, like what is offered on the x86.
    angle is in radians, not degrees. */
@@ -925,12 +988,8 @@ static void calculate_sincos(const ALfloat angle, ALfloat *_sin, ALfloat *_cos)
 #endif
 }
 
-static ALfloat calculate_distance_attenuation(const ALCcontext *ctx, const ALsource *src, const ALfloat *position)
+static ALfloat calculate_distance_attenuation(const ALCcontext *ctx, const ALsource *src, ALfloat distance)
 {
-    ALfloat distance;
-
-    distance = magnitude(position);
-
     /* AL SPEC: "With all the distance models, if the formula can not be
        evaluated then the source will not be attenuated. For example, if a
        linear model is being used with AL_REFERENCE_DISTANCE equal to
@@ -976,15 +1035,17 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
                                  (src->queue_channels == 1) &&
                                  (src->rolloff_factor != 0.0f);
 
+    const ALfloat *at = &ctx->listener.orientation[0];
+    const ALfloat *up = &ctx->listener.orientation[4];
 
-    ALfloat U[3];
-    ALfloat V[3];
-    ALfloat N[3];
-    ALfloat rotated[3];
+    ALfloat distance;
     ALfloat gain;
+    ALfloat radians;
     ALfloat position[3];
 
-    FIXME("SIMD all of this");
+    #ifdef __SSE__
+    __m128 position_sse;
+    #endif
 
     /* this goes through the steps the AL spec dictates for gain and distance attenuation... */
 
@@ -995,19 +1056,31 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
         return;
     }
 
-    SDL_memcpy(position, src->position, sizeof (position));
-
-    /* if values aren't source-relative, then convert it to be so. */
-    if (!src->source_relative) {
-        position[0] -= ctx->listener.position[0];
-        position[1] -= ctx->listener.position[1];
-        position[2] -= ctx->listener.position[2];
+    #ifdef __SSE__
+    if (has_sse) {
+        position_sse = _mm_load_ps(src->position);
+        /* if values aren't source-relative, then convert it to be so. */
+        if (!src->source_relative) {
+            position_sse = _mm_sub_ps(position_sse, _mm_load_ps(ctx->listener.position));
+        }
+        distance = magnitude_sse(position_sse);
+    } else
+    #endif
+    {
+        SDL_memcpy(position, src->position, sizeof (position));
+        /* if values aren't source-relative, then convert it to be so. */
+        if (!src->source_relative) {
+            position[0] -= ctx->listener.position[0];
+            position[1] -= ctx->listener.position[1];
+            position[2] -= ctx->listener.position[2];
+        }
+        distance = magnitude(position);
     }
 
     /* AL SPEC: ""1. Distance attenuation is calculated first, including
        minimum (AL_REFERENCE_DISTANCE) and maximum (AL_MAX_DISTANCE)
        thresholds." */
-    gain = calculate_distance_attenuation(ctx, src, position);
+    gain = calculate_distance_attenuation(ctx, src, distance);
 
     /* AL SPEC: "2. The result is then multiplied by source gain (AL_GAIN)." */
     gain *= src->gain;
@@ -1055,42 +1128,68 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
 
        XYZZY!! https://en.wikipedia.org/wiki/Cross_product#Mnemonic
     */
-    /* cross product of listener At and Up... */
-    xyzzy(U, &ctx->listener.orientation[0], &ctx->listener.orientation[3]);
-    normalize(U);
-    xyzzy(V, &ctx->listener.orientation[0], U);
-    SDL_memcpy(N, &ctx->listener.orientation[0], sizeof (N));
-    normalize(N);
+    #ifdef __SSE__
+    if (has_sse) {  /* (the math is explained in the scalar version.) */
+        const __m128 at_sse = _mm_load_ps(at);
+        const __m128 U_sse = normalize_sse(xyzzy_sse(at_sse, _mm_load_ps(up)));
+        const __m128 V_sse = xyzzy_sse(at_sse, U_sse);
+        const __m128 N_sse = normalize_sse(at_sse);
+        const __m128 rotated_sse = {
+            dotproduct_sse(position_sse, U_sse),
+            -dotproduct_sse(position_sse, V_sse),
+            -dotproduct_sse(position_sse, N_sse),
+            0.0f
+        };
 
-    /* we don't need the bottom row of the gluLookAt matrix, since we don't
-       translate. (Matrix * Vector) is just filling in each element of the
-       output vector with the dot product of a row of the matrix and the
-       vector. I made some of these negative to make it work for my purposes,
-       but that's not what GLU does here.
+        const ALfloat mags = magnitude_sse(at_sse) * magnitude_sse(rotated_sse);
+        radians = (mags == 0.0f) ? 0.0f : acosf(dotproduct_sse(at_sse, rotated_sse) / mags);
+        if (_mm_comilt_ss(rotated_sse, _mm_setzero_ps())) {
+            radians = -radians;
+        }
+    } else
+    #endif
+    {
+        ALfloat U[3];
+        ALfloat V[3];
+        ALfloat N[3];
+        ALfloat rotated[3];
+        ALfloat mags;
 
-       (This says gluLookAt is left-handed, so maybe that's part of it?)
-        https://stackoverflow.com/questions/25933581/how-u-v-n-camera-coordinate-system-explained-with-opengl
-     */
-    rotated[0] = dotproduct(position, U);
-    rotated[1] = -dotproduct(position, V);
-    rotated[2] = -dotproduct(position, N);
+        xyzzy(U, at, up);
+        normalize(U);
+        xyzzy(V, at, U);
+        SDL_memcpy(N, at, sizeof (N));
+        normalize(N);
 
-    /* At this point, we have rotated vector and we can calculate the angle
-       from 0 (directly in front of where the listener is facing) to 180
-       degrees (directly behind) ... */
+        /* we don't need the bottom row of the gluLookAt matrix, since we don't
+           translate. (Matrix * Vector) is just filling in each element of the
+           output vector with the dot product of a row of the matrix and the
+           vector. I made some of these negative to make it work for my purposes,
+           but that's not what GLU does here.
 
-    const ALfloat *at = &ctx->listener.orientation[0];
-    const ALfloat mags = magnitude(at) * magnitude(rotated);
-    ALfloat radians = (mags == 0.0f) ? 0.0f : acosf(dotproduct(at, rotated) / mags);
+           (This says gluLookAt is left-handed, so maybe that's part of it?)
+            https://stackoverflow.com/questions/25933581/how-u-v-n-camera-coordinate-system-explained-with-opengl
+         */
+        rotated[0] = dotproduct(position, U);
+        rotated[1] = -dotproduct(position, V);
+        rotated[2] = -dotproduct(position, N);
 
-    /* and we already have what we need to decide if those degrees are on the
-       listener's left or right...
-       https://gamedev.stackexchange.com/questions/43897/determining-if-something-is-on-the-right-or-left-side-of-an-object
-       ...we already did this dot product: it's in rotated[0]. */
+        /* At this point, we have rotated vector and we can calculate the angle
+           from 0 (directly in front of where the listener is facing) to 180
+           degrees (directly behind) ... */
 
-    /* make it negative to the left, positive to the right. */
-    if (rotated[0] < 0.0f) {
-        radians = -radians;
+        mags = magnitude(at) * magnitude(rotated);
+        radians = (mags == 0.0f) ? 0.0f : acosf(dotproduct(at, rotated) / mags);
+
+        /* and we already have what we need to decide if those degrees are on the
+           listener's left or right...
+           https://gamedev.stackexchange.com/questions/43897/determining-if-something-is-on-the-right-or-left-side-of-an-object
+           ...we already did this dot product: it's in rotated[0]. */
+
+        /* make it negative to the left, positive to the right. */
+        if (rotated[0] < 0.0f) {
+            radians = -radians;
+        }
     }
 
     /* here comes the Constant Power Panning magic... */
@@ -1128,15 +1227,6 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
         gains[0] = (SQRT2_DIV2 * (cosine - sine));
         gains[1] = (SQRT2_DIV2 * (cosine + sine));
     }
-
-    #if 0
-    static ALfloat saved[3];
-    if (SDL_memcmp(saved, src->position, sizeof (saved)) != 0) {
-        const ALfloat degrees = radians * (180.0 / M_PI);
-        printf("srcpos=(%f, %f, %f) rotated=(%f, %f, %f) degrees=%f left=%f right=%f gain=%f\n", src->position[0], src->position[1], src->position[2], rotated[0], rotated[1], rotated[2], degrees, gains[0], gains[1], gain);
-        SDL_memcpy(saved, src->position, sizeof (saved));
-    }
-    #endif
 
     /* apply distance attenuation and gain to positioning. */
     gains[0] *= gain;
@@ -1287,6 +1377,15 @@ ALCcontext* alcCreateContext(ALCdevice *device, const ALCint* attrlist)
         return NULL;
     }
 
+    /* Make sure everything that wants to use SIMD is aligned for it. */
+    SDL_assert( (((size_t) &retval->sources[0].position[0]) % 16) == 0 );
+    SDL_assert( (((size_t) &retval->sources[0].velocity[0]) % 16) == 0 );
+    SDL_assert( (((size_t) &retval->sources[0].direction[0]) % 16) == 0 );
+    SDL_assert( (((size_t) &retval->sources[1].position[0]) % 16) == 0 );
+    SDL_assert( (((size_t) &retval->listener.position[0]) % 16) == 0 );
+    SDL_assert( (((size_t) &retval->listener.orientation[0]) % 16) == 0 );
+    SDL_assert( (((size_t) &retval->listener.velocity[0]) % 16) == 0 );
+
     retval->attributes = (ALCint *) SDL_malloc(attrcount * sizeof (ALCint));
     if (!retval->attributes) {
         set_alc_error(device, ALC_OUT_OF_MEMORY);
@@ -1332,7 +1431,7 @@ ALCcontext* alcCreateContext(ALCdevice *device, const ALCint* attrlist)
     retval->speed_of_sound = 343.3f;
     retval->listener.gain = 1.0f;
     retval->listener.orientation[2] = -1.0f;
-    retval->listener.orientation[4] = 1.0f;
+    retval->listener.orientation[5] = 1.0f;
     retval->device = device;
     context_needs_recalc(retval);
     SDL_AtomicSet(&retval->processing, 1);  /* contexts default to processing */
@@ -2373,7 +2472,8 @@ void alListenerfv(ALenum param, const ALfloat *values)
             break;
 
         case AL_ORIENTATION:
-            SDL_memcpy(ctx->listener.orientation, values, sizeof (*values) * 6);
+            SDL_memcpy(&ctx->listener.orientation[0], &values[0], sizeof (*values) * 3);
+            SDL_memcpy(&ctx->listener.orientation[4], &values[3], sizeof (*values) * 3);
             break;
 
         default: set_al_error(ctx, AL_INVALID_ENUM); return;
@@ -2432,9 +2532,9 @@ void alListeneriv(ALenum param, const ALint *values)
             ctx->listener.orientation[0] = (ALfloat) values[0];
             ctx->listener.orientation[1] = (ALfloat) values[1];
             ctx->listener.orientation[2] = (ALfloat) values[2];
-            ctx->listener.orientation[3] = (ALfloat) values[3];
-            ctx->listener.orientation[4] = (ALfloat) values[4];
-            ctx->listener.orientation[5] = (ALfloat) values[5];
+            ctx->listener.orientation[4] = (ALfloat) values[3];
+            ctx->listener.orientation[5] = (ALfloat) values[4];
+            ctx->listener.orientation[6] = (ALfloat) values[5];
             break;
 
         default: set_al_error(ctx, AL_INVALID_ENUM); return;
@@ -2497,7 +2597,8 @@ void alGetListenerfv(ALenum param, ALfloat *values)
             return;
 
         case AL_ORIENTATION:
-            SDL_memcpy(values, ctx->listener.orientation, sizeof (ALfloat) * 6);
+            SDL_memcpy(&values[0], &ctx->listener.orientation[0], sizeof (ALfloat) * 3);
+            SDL_memcpy(&values[3], &ctx->listener.orientation[4], sizeof (ALfloat) * 3);
             return;
 
         default: break;
@@ -2556,9 +2657,9 @@ void alGetListeneriv(ALenum param, ALint *values)
             values[0] = (ALint) ctx->listener.orientation[0];
             values[1] = (ALint) ctx->listener.orientation[1];
             values[2] = (ALint) ctx->listener.orientation[2];
-            values[3] = (ALint) ctx->listener.orientation[3];
-            values[4] = (ALint) ctx->listener.orientation[4];
-            values[5] = (ALint) ctx->listener.orientation[5];
+            values[3] = (ALint) ctx->listener.orientation[4];
+            values[4] = (ALint) ctx->listener.orientation[5];
+            values[5] = (ALint) ctx->listener.orientation[6];
             return;
 
         default: break;
@@ -3504,12 +3605,12 @@ void alBufferData(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, A
 
     if (channels == 1) {
         #ifdef __SSE__
-        if (SDL_HasSSE()) { mixer = mix_float32_c1_sse; } else
+        if (has_sse) { mixer = mix_float32_c1_sse; } else
         #endif
         { mixer = mix_float32_c1_scalar; }
     } else if (channels == 2) {
         #ifdef __SSE__
-        if (SDL_HasSSE()) { mixer = mix_float32_c2_sse; } else
+        if (has_sse) { mixer = mix_float32_c2_sse; } else
         #endif
         { mixer = mix_float32_c2_scalar; }
     } else {
