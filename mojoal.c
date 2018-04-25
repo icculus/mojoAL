@@ -14,6 +14,10 @@
 #include <xmmintrin.h>
 #endif
 
+#ifdef __ARM_NEON__
+#include <arm_neon.h>
+#endif
+
 #include "AL/al.h"
 #include "AL/alc.h"
 #include "SDL.h"
@@ -166,9 +170,28 @@
 
 #ifdef __SSE__  /* if you are on x86 or x86-64, we assume you have SSE1 by now. */
 #define NEED_SCALAR_FALLBACK 0
+#elif (defined(__ARM_ARCH) && (__ARM_ARCH >= 8))  /* ARMv8 always has NEON. */
+#define NEED_SCALAR_FALLBACK 0
+#elif (defined(__APPLE__) && defined(__ARM_ARCH) && (__ARM_ARCH >= 7))   /* All ARMv7 chips from Apple have NEON. */
+#define NEED_SCALAR_FALLBACK 0
+#elif (defined(__WINDOWS__) || defined(__WINRT__)) && defined(_M_ARM)  /* all WinRT-level Microsoft devices have NEON */
+#define NEED_SCALAR_FALLBACK 0
 #else
 #define NEED_SCALAR_FALLBACK 1
 #endif
+
+#ifdef __SSE__  /* we assume you always have this on x86/x86-64 chips. SSE1 is 20 years old! */
+#define has_sse 1
+#endif
+
+#ifdef __ARM_NEON__
+#if NEED_SCALAR_FALLBACK
+static int has_neon = 0;
+#else
+#define has_neon 1
+#endif
+#endif
+
 
 /* lifted this ring buffer code from my al_osx project; I wrote it all, so it's stealable. */
 typedef struct
@@ -236,12 +259,12 @@ static ALCsizei ring_buffer_get(RingBuffer *ring, void *_data, ALCsizei size)
     /* Clamp amount to read to available data... */
     if (size > avail)
         size = avail;
-    
+
     /* Clip to end of buffer and copy first block... */
     cpy = ring->size - ring->read;
     if (cpy > size) cpy = size;
     if (cpy) SDL_memcpy(data, ring->buffer + ring->read, cpy);
-    
+
     /* Wrap around to front of ring buffer and copy remaining data... */
     avail = size - cpy;
     if (avail) SDL_memcpy(data + cpy, ring->buffer, avail);
@@ -255,6 +278,32 @@ static ALCsizei ring_buffer_get(RingBuffer *ring, void *_data, ALCsizei size)
 
     return size;  /* may have been clamped if there wasn't enough data... */
 }
+
+
+static void *calloc_simd_aligned(const size_t len)
+{
+    Uint8 *retval = NULL;
+    Uint8 *ptr = (Uint8 *) SDL_calloc(1, len + 16 + sizeof (void *));
+    if (ptr) {
+        void **storeptr;
+        retval = ptr + sizeof (void *);
+        retval += 16 - (((size_t) retval) % 16);
+        storeptr = (void **) retval;
+        storeptr--;
+        *storeptr = ptr;
+    }
+    return retval;
+}
+
+static void free_simd_aligned(void *ptr)
+{
+    if (ptr) {
+        void **realptr = (void **) ptr;
+        realptr--;
+        SDL_free(*realptr);
+    }
+}
+
 
 typedef struct ALbuffer
 {
@@ -423,6 +472,15 @@ ALCdevice *alcOpenDevice(const ALCchar *devicename)
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return NULL;  /* whoa! Better order a new Pentium III from Gateway 2000! */
     }
+    #endif
+
+    #if defined(__ARM_NEON__) && !NEED_SCALAR_FALLBACK
+    if (!SDL_HasNEON()) {
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        return NULL;  /* :( */
+    }
+    #elif defined(__ARM_NEON__) && NEED_SCALAR_FALLBACK
+    has_neon = SDL_HasNEON();
     #endif
 
     dev = (ALCdevice *) SDL_calloc(1, sizeof (ALCdevice));
@@ -775,6 +833,116 @@ static void mix_float32_c2_sse(const ALfloat * restrict panning, const float * r
 }
 #endif
 
+#ifdef __ARM_NEON__
+/* !!! FIXME: there are more NEON registers than SSE...we might be able to get a win from more unrolling. */
+static void mix_float32_c1_neon(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+{
+    const ALfloat left = panning[0];
+    const ALfloat right = panning[1];
+    const int unrolled = mixframes / 8;
+    const int leftover = mixframes % 8;
+    ALsizei i;
+
+    if ( (((size_t)stream) % 16) || (((size_t)data) % 16) ) {
+        /* unaligned, do scalar version. */
+        mix_float32_c1_scalar(panning, data, stream, mixframes);
+    } else if ((left == 1.0f) && (right == 1.0f)) {
+        for (i = 0; i < unrolled; i++, data += 8, stream += 16) {
+            const float32x4_t vdataload1 = vld1q_f32(data);
+            const float32x4_t vdataload2 = vld1q_f32(data+4);
+            const float32x4_t vstream1 = vld1q_f32(stream);
+            const float32x4_t vstream2 = vld1q_f32(stream+4);
+            const float32x4_t vstream3 = vld1q_f32(stream+8);
+            const float32x4_t vstream4 = vld1q_f32(stream+12);
+            const float32x4x2_t vzipped1 = vzipq_f32(vdataload1, vdataload1);
+            const float32x4x2_t vzipped2 = vzipq_f32(vdataload2, vdataload2);
+            vst1q_f32(stream, vaddq_f32(vstream1, vzipped1.val[0]));
+            vst1q_f32(stream+4, vaddq_f32(vstream2, vzipped1.val[1]));
+            vst1q_f32(stream+8, vaddq_f32(vstream3, vzipped2.val[0]));
+            vst1q_f32(stream+12, vaddq_f32(vstream4, vzipped2.val[1]));
+        }
+        for (i = 0; i < leftover; i++, stream += 2) {
+            const float samp = *(data++);
+            stream[0] += samp;
+            stream[1] += samp;
+        }
+    } else {
+        const float32x4_t vleftright = { left, right, left, right };
+        for (i = 0; i < unrolled; i++, data += 8, stream += 16) {
+            const float32x4_t vdataload1 = vld1q_f32(data);
+            const float32x4_t vdataload2 = vld1q_f32(data+4);
+            const float32x4_t vstream1 = vld1q_f32(stream);
+            const float32x4_t vstream2 = vld1q_f32(stream+4);
+            const float32x4_t vstream3 = vld1q_f32(stream+8);
+            const float32x4_t vstream4 = vld1q_f32(stream+12);
+            const float32x4x2_t vzipped1 = vzipq_f32(vdataload1, vdataload1);
+            const float32x4x2_t vzipped2 = vzipq_f32(vdataload2, vdataload2);
+            vst1q_f32(stream, vmlaq_f32(vstream1, vzipped1.val[0], vleftright));
+            vst1q_f32(stream+4, vmlaq_f32(vstream2, vzipped1.val[1], vleftright));
+            vst1q_f32(stream+8, vmlaq_f32(vstream3, vzipped2.val[0], vleftright));
+            vst1q_f32(stream+12, vmlaq_f32(vstream4, vzipped2.val[1], vleftright));
+        }
+        for (i = 0; i < leftover; i++, stream += 2) {
+            const float samp = *(data++);
+            stream[0] += samp * left;
+            stream[1] += samp * right;
+        }
+    }
+}
+
+static void mix_float32_c2_neon(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+{
+    const ALfloat left = panning[0];
+    const ALfloat right = panning[1];
+    const int unrolled = mixframes / 4;
+    const int leftover = mixframes % 4;
+    ALsizei i;
+
+    /* We can align this to 16 in one special case. */
+    if ( ((((size_t)stream) % 16) == 8) && ((((size_t)data) % 16) == 8) && mixframes ) {
+        stream[0] += data[0] * left;
+        stream[1] += data[1] * right;
+        stream += 2;
+        data += 2;
+        mix_float32_c2_neon(panning, data + 2, stream + 2, mixframes - 1);
+        return;
+    }
+
+    if ( (((size_t)stream) % 16) || (((size_t)data) % 16) ) {
+        /* unaligned, do scalar version. */
+        mix_float32_c2_scalar(panning, data, stream, mixframes);
+    } else if ((left == 1.0f) && (right == 1.0f)) {
+        for (i = 0; i < unrolled; i++, data += 8, stream += 8) {
+            const float32x4_t vdata1 = vld1q_f32(data);
+            const float32x4_t vdata2 = vld1q_f32(data+4);
+            const float32x4_t vstream1 = vld1q_f32(stream);
+            const float32x4_t vstream2 = vld1q_f32(stream+4);
+            vst1q_f32(stream, vaddq_f32(vstream1, vdata1));
+            vst1q_f32(stream+4, vaddq_f32(vstream2, vdata2));
+        }
+        for (i = 0; i < leftover; i++, stream += 2, data += 2) {
+            stream[0] += data[0];
+            stream[1] += data[1];
+        }
+    } else {
+        const float32x4_t vleftright = { left, right, left, right };
+        for (i = 0; i < unrolled; i++, data += 8, stream += 8) {
+            const float32x4_t vdata1 = vld1q_f32(data);
+            const float32x4_t vdata2 = vld1q_f32(data+4);
+            const float32x4_t vstream1 = vld1q_f32(stream);
+            const float32x4_t vstream2 = vld1q_f32(stream+4);
+            vst1q_f32(stream, vmlaq_f32(vstream1, vdata1, vleftright));
+            vst1q_f32(stream+4, vmlaq_f32(vstream2, vdata2, vleftright));
+        }
+        for (i = 0; i < leftover; i++, stream += 2, data += 2) {
+            stream[0] += data[0] * left;
+            stream[1] += data[1] * right;
+        }
+    }
+}
+#endif
+
+
 static void mix_buffer(const ALbuffer *buffer, const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
 {
     const ALfloat left = panning[0];
@@ -783,19 +951,27 @@ static void mix_buffer(const ALbuffer *buffer, const ALfloat * restrict panning,
     if ((left != 0.0f) || (right != 0.0f)) {  /* don't bother mixing in silence. */
         if (buffer->channels == 1) {
             #ifdef __SSE__
-            mix_float32_c1_sse(panning, data, stream, mixframes);;
+            if (has_sse) { mix_float32_c1_sse(panning, data, stream, mixframes); } else
+            #elif defined(__ARM_NEON__)
+            if (has_neon) { mix_float32_c1_neon(panning, data, stream, mixframes); } else
             #endif
+            {
             #if NEED_SCALAR_FALLBACK
-            mix_float32_c1_scalar(panning, data, stream, mixframes);;
+            mix_float32_c1_scalar(panning, data, stream, mixframes);
             #endif
+            }
         } else {
             SDL_assert(buffer->channels == 2);
             #ifdef __SSE__
-            mix_float32_c2_sse(panning, data, stream, mixframes);;
+            if (has_sse) { mix_float32_c2_sse(panning, data, stream, mixframes); } else
+            #elif defined(__ARM_NEON__)
+            if (has_neon) { mix_float32_c2_neon(panning, data, stream, mixframes); } else
             #endif
+            {
             #if NEED_SCALAR_FALLBACK
-            mix_float32_c2_scalar(panning, data, stream, mixframes);;
+            mix_float32_c2_scalar(panning, data, stream, mixframes);
             #endif
+            }
         }
     }
 }
@@ -995,6 +1171,40 @@ static __m128 normalize_sse(const __m128 v)
 }
 #endif
 
+#ifdef __ARM_NEON__
+static float32x4_t xyzzy_neon(const float32x4_t a, const float32x4_t b)
+{
+    FIXME("need a better permute");
+    const float32x4_t shuf_a = { a[1], a[2], a[0], a[3] };
+    const float32x4_t shuf_b = { b[1], b[2], b[0], b[3] };
+    const float32x4_t v = vsubq_f32(vmulq_f32(a, shuf_b), vmulq_f32(b, shuf_a));
+    const float32x4_t retval = { v[1], v[2], v[0], v[3] };
+    return retval;
+}
+
+static ALfloat dotproduct_neon(const float32x4_t a, const float32x4_t b)
+{
+    const float32x4_t prod = vmulq_f32(a, b);
+    const float32x4_t sum1 = vaddq_f32(prod, vrev64q_f32(prod));
+    const float32x4_t sum2 = vaddq_f32(sum1, vcombine_f32(vget_high_f32(sum1), vget_low_f32(sum1)));
+    return sum2[3];
+}
+
+static ALfloat magnitude_neon(const float32x4_t v)
+{
+    return SDL_sqrtf(dotproduct_neon(v, v));
+}
+
+static float32x4_t normalize_neon(const float32x4_t v)
+{
+    const ALfloat mag = magnitude_neon(v);
+    if (mag == 0.0f) {
+        return vdupq_n_f32(0.0f);
+    }
+    return vmulq_f32(v, vdupq_n_f32(1.0f / mag));
+}
+#endif
+
 
 
 /* Get the sin(angle) and cos(angle) at the same time. Ideally, with one
@@ -1062,6 +1272,8 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
 
     #ifdef __SSE__
     __m128 position_sse;
+    #elif defined(__ARM_NEON__)
+    float32x4_t position_neon = vdupq_n_f32(0.0f);
     #endif
 
     #if NEED_SCALAR_FALLBACK
@@ -1078,14 +1290,24 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
     }
 
     #ifdef __SSE__
-    position_sse = _mm_load_ps(src->position);
-    /* if values aren't source-relative, then convert it to be so. */
-    if (!src->source_relative) {
-        position_sse = _mm_sub_ps(position_sse, _mm_load_ps(ctx->listener.position));
-    }
-    distance = magnitude_sse(position_sse);
+    if (has_sse) {
+        position_sse = _mm_load_ps(src->position);
+        if (!src->source_relative) {
+            position_sse = _mm_sub_ps(position_sse, _mm_load_ps(ctx->listener.position));
+        }
+        distance = magnitude_sse(position_sse);
+    } else
+    #elif defined(__ARM_NEON__)
+    if (has_neon) {
+        position_neon = vld1q_f32(src->position);
+        if (!src->source_relative) {
+            position_neon = vsubq_f32(position_neon, vld1q_f32(ctx->listener.position));
+        }
+        distance = magnitude_neon(position_neon);
+    } else
     #endif
 
+    {
     #if NEED_SCALAR_FALLBACK
     SDL_memcpy(position, src->position, sizeof (position));
     /* if values aren't source-relative, then convert it to be so. */
@@ -1096,6 +1318,7 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
     }
     distance = magnitude(position);
     #endif
+    }
 
     /* AL SPEC: ""1. Distance attenuation is calculated first, including
        minimum (AL_REFERENCE_DISTANCE) and maximum (AL_MAX_DISTANCE)
@@ -1150,7 +1373,7 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
     */
 
     #ifdef __SSE__ /* (the math is explained in the scalar version.) */
-    {
+    if (has_sse) {
         const __m128 at_sse = _mm_load_ps(at);
         const __m128 U_sse = normalize_sse(xyzzy_sse(at_sse, _mm_load_ps(up)));
         const __m128 V_sse = xyzzy_sse(at_sse, U_sse);
@@ -1167,11 +1390,32 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
         if (_mm_comilt_ss(rotated_sse, _mm_setzero_ps())) {
             radians = -radians;
         }
-    }
+    } else
     #endif
 
-    #if NEED_SCALAR_FALLBACK
+    #ifdef __ARM_NEON__  /* (the math is explained in the scalar version.) */
+    if (has_neon) {
+        const float32x4_t at_neon = vld1q_f32(at);
+        const float32x4_t U_neon = normalize_neon(xyzzy_neon(at_neon, vld1q_f32(up)));
+        const float32x4_t V_neon = xyzzy_neon(at_neon, U_neon);
+        const float32x4_t N_neon = normalize_neon(at_neon);
+        const float32x4_t rotated_neon = {
+            dotproduct_neon(position_neon, U_neon),
+            -dotproduct_neon(position_neon, V_neon),
+            -dotproduct_neon(position_neon, N_neon),
+            0.0f
+        };
+
+        const ALfloat mags = magnitude_neon(at_neon) * magnitude_neon(rotated_neon);
+        radians = (mags == 0.0f) ? 0.0f : SDL_acosf(dotproduct_neon(at_neon, rotated_neon) / mags);
+        if (rotated_neon[0] < 0.0f) {
+            radians = -radians;
+        }
+    } else
+    #endif
+
     {
+    #if NEED_SCALAR_FALLBACK
         ALfloat U[3];
         ALfloat V[3];
         ALfloat N[3];
@@ -1213,8 +1457,8 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
         if (rotated[0] < 0.0f) {
             radians = -radians;
         }
-    }
     #endif
+    }
 
     /* here comes the Constant Power Panning magic... */
     #define SQRT2_DIV2 0.7071067812f  /* sqrt(2.0) / 2.0 ... */
@@ -1438,7 +1682,7 @@ ALCcontext* alcCreateContext(ALCdevice *device, const ALCint* attrlist)
 
     FIXME("use these variables at some point"); (void) refresh; (void) sync;
 
-    retval = (ALCcontext *) SDL_calloc(1, sizeof (ALCcontext));
+    retval = (ALCcontext *) calloc_simd_aligned(sizeof (ALCcontext));
     if (!retval) {
         set_alc_error(device, ALC_OUT_OF_MEMORY);
         return NULL;
@@ -1456,7 +1700,7 @@ ALCcontext* alcCreateContext(ALCdevice *device, const ALCint* attrlist)
     retval->attributes = (ALCint *) SDL_malloc(attrcount * sizeof (ALCint));
     if (!retval->attributes) {
         set_alc_error(device, ALC_OUT_OF_MEMORY);
-        SDL_free(retval);
+        free_simd_aligned(retval);
         return NULL;
     }
     SDL_memcpy(retval->attributes, attrlist, attrcount * sizeof (ALCint));
@@ -1482,7 +1726,7 @@ ALCcontext* alcCreateContext(ALCdevice *device, const ALCint* attrlist)
         device->sdldevice = SDL_OpenAudioDevice(devicename, 0, &desired, NULL, 0);
         if (!device->sdldevice) {
             SDL_free(retval->attributes);
-            SDL_free(retval);
+            free_simd_aligned(retval);
             FIXME("What error do you set for this?");
             return NULL;
         }
@@ -1605,7 +1849,7 @@ void alcDestroyContext(ALCcontext *ctx)
     }
 
     SDL_free(ctx->attributes);
-    SDL_free(ctx);
+    free_simd_aligned(ctx);
 }
 
 ALCcontext *alcGetCurrentContext(void)
