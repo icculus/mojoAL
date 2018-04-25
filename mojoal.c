@@ -1118,7 +1118,7 @@ static ALfloat dotproduct(const ALfloat *a, const ALfloat *b)
 static ALfloat magnitude(const ALfloat *v)
 {
     /* technically, the inital part on this is just a dot product of itself. */
-    return sqrtf((v[0] * v[0]) + (v[1] * v[1]) + (v[2] * v[2]));
+    return SDL_sqrtf((v[0] * v[0]) + (v[1] * v[1]) + (v[2] * v[2]));
 }
 
 /* https://www.khanacademy.org/computing/computer-programming/programming-natural-simulations/programming-vectors/a/vector-magnitude-normalization */
@@ -1158,7 +1158,7 @@ static ALfloat dotproduct_sse(const __m128 a, const __m128 b)
 
 static ALfloat magnitude_sse(const __m128 v)
 {
-    return sqrtf(dotproduct_sse(v, v));
+    return SDL_sqrtf(dotproduct_sse(v, v));
 }
 
 static __m128 normalize_sse(const __m128 v)
@@ -1386,7 +1386,7 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
         };
 
         const ALfloat mags = magnitude_sse(at_sse) * magnitude_sse(rotated_sse);
-        radians = (mags == 0.0f) ? 0.0f : acosf(dotproduct_sse(at_sse, rotated_sse) / mags);
+        radians = (mags == 0.0f) ? 0.0f : SDL_acosf(dotproduct_sse(at_sse, rotated_sse) / mags);
         if (_mm_comilt_ss(rotated_sse, _mm_setzero_ps())) {
             radians = -radians;
         }
@@ -1446,8 +1446,7 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
            degrees (directly behind) ... */
 
         mags = magnitude(at) * magnitude(rotated);
-        radians = (mags == 0.0f) ? 0.0f : acosf(dotproduct(at, rotated) / mags);
-
+        radians = (mags == 0.0f) ? 0.0f : SDL_acosf(dotproduct(at, rotated) / mags);
         /* and we already have what we need to decide if those degrees are on the
            listener's left or right...
            https://gamedev.stackexchange.com/questions/43897/determining-if-something-is-on-the-right-or-left-side-of-an-object
