@@ -1659,7 +1659,6 @@ static void SDLCALL playback_device_callback(void *userdata, Uint8 *stream, int 
         }
     }
 
-
     for (ctx = device->playback.contexts; ctx != NULL; ctx = ctx->next) {
         if (SDL_AtomicGet(&ctx->processing)) {
             if (device->connected) {
@@ -3916,7 +3915,7 @@ void alDeleteBuffers(ALsizei n, const ALuint *names)
                 /* uh-oh!! */
             } else {
                 buffer->data = NULL;
-                SDL_free(data);
+                free_simd_aligned(data);
             }
         }
     }
@@ -3974,7 +3973,7 @@ void alBufferData(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, A
     }
 
     sdlcvt.len = sdlcvt.len_cvt = size;
-    sdlcvt.buf = (Uint8 *) SDL_malloc(size * sdlcvt.len_mult);
+    sdlcvt.buf = (Uint8 *) calloc_simd_aligned(size * sdlcvt.len_mult);
     if (!sdlcvt.buf) {
         (void) SDL_AtomicDecRef(&buffer->refcount);
         set_al_error(ctx, AL_OUT_OF_MEMORY);
@@ -3993,7 +3992,7 @@ void alBufferData(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, A
         }
     }
 
-    SDL_free((void *) buffer->data);  /* nuke any previous data. */
+    free_simd_aligned((void *) buffer->data);  /* nuke any previous data. */
     buffer->data = (const float *) sdlcvt.buf;
     buffer->channels = (ALint) channels;
     buffer->bits = (ALint) SDL_AUDIO_BITSIZE(sdlfmt);  /* we're in float32, though. */
