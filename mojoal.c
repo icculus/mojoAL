@@ -6,9 +6,6 @@
  *  This file written by Ryan C. Gordon.
  */
 
-/* this gets us sincos() if using glibc. */
-#define _GNU_SOURCE
-
 #include <stdio.h>
 #include <math.h>
 #include <float.h>
@@ -1005,12 +1002,8 @@ static __m128 normalize_sse(const __m128 v)
    angle is in radians, not degrees. */
 static void calculate_sincos(const ALfloat angle, ALfloat *_sin, ALfloat *_cos)
 {
-#ifdef __GLIBC__
-    sincosf(angle, _sin, _cos);
-#else
-    *_sin = sinf(angle);
-    *_cos = cosf(angle);
-#endif
+    *_sin = SDL_sinf(angle);
+    *_cos = SDL_cosf(angle);
 }
 
 static ALfloat calculate_distance_attenuation(const ALCcontext *ctx, const ALsource *src, ALfloat distance)
