@@ -840,7 +840,6 @@ static void mix_float32_c2_sse(const ALfloat * restrict panning, const float * r
 #endif
 
 #ifdef __ARM_NEON__
-/* !!! FIXME: there are more NEON registers than SSE...we might be able to get a win from more unrolling. */
 static void mix_float32_c1_neon(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
 {
     const ALfloat left = panning[0];
@@ -909,8 +908,8 @@ static void mix_float32_c2_neon(const ALfloat * restrict panning, const float * 
 {
     const ALfloat left = panning[0];
     const ALfloat right = panning[1];
-    const int unrolled = mixframes / 4;
-    const int leftover = mixframes % 4;
+    const int unrolled = mixframes / 8;
+    const int leftover = mixframes % 8;
     ALsizei i;
 
     /* We can align this to 16 in one special case. */
@@ -924,13 +923,19 @@ static void mix_float32_c2_neon(const ALfloat * restrict panning, const float * 
         /* unaligned, do scalar version. */
         mix_float32_c2_scalar(panning, data, stream, mixframes);
     } else if ((left == 1.0f) && (right == 1.0f)) {
-        for (i = 0; i < unrolled; i++, data += 8, stream += 8) {
+        for (i = 0; i < unrolled; i++, data += 16, stream += 16) {
             const float32x4_t vdata1 = vld1q_f32(data);
             const float32x4_t vdata2 = vld1q_f32(data+4);
+            const float32x4_t vdata3 = vld1q_f32(data+8);
+            const float32x4_t vdata4 = vld1q_f32(data+12);
             const float32x4_t vstream1 = vld1q_f32(stream);
             const float32x4_t vstream2 = vld1q_f32(stream+4);
+            const float32x4_t vstream3 = vld1q_f32(stream+8);
+            const float32x4_t vstream4 = vld1q_f32(stream+12);
             vst1q_f32(stream, vaddq_f32(vstream1, vdata1));
             vst1q_f32(stream+4, vaddq_f32(vstream2, vdata2));
+            vst1q_f32(stream+8, vaddq_f32(vstream3, vdata3));
+            vst1q_f32(stream+12, vaddq_f32(vstream4, vdata4));
         }
         for (i = 0; i < leftover; i++, stream += 2, data += 2) {
             stream[0] += data[0];
@@ -938,13 +943,19 @@ static void mix_float32_c2_neon(const ALfloat * restrict panning, const float * 
         }
     } else {
         const float32x4_t vleftright = { left, right, left, right };
-        for (i = 0; i < unrolled; i++, data += 8, stream += 8) {
+        for (i = 0; i < unrolled; i++, data += 16, stream += 16) {
             const float32x4_t vdata1 = vld1q_f32(data);
             const float32x4_t vdata2 = vld1q_f32(data+4);
+            const float32x4_t vdata3 = vld1q_f32(data+8);
+            const float32x4_t vdata4 = vld1q_f32(data+12);
             const float32x4_t vstream1 = vld1q_f32(stream);
             const float32x4_t vstream2 = vld1q_f32(stream+4);
+            const float32x4_t vstream3 = vld1q_f32(stream+8);
+            const float32x4_t vstream4 = vld1q_f32(stream+12);
             vst1q_f32(stream, vmlaq_f32(vstream1, vdata1, vleftright));
             vst1q_f32(stream+4, vmlaq_f32(vstream2, vdata2, vleftright));
+            vst1q_f32(stream+8, vmlaq_f32(vstream3, vdata3, vleftright));
+            vst1q_f32(stream+12, vmlaq_f32(vstream4, vdata4, vleftright));
         }
         for (i = 0; i < leftover; i++, stream += 2, data += 2) {
             stream[0] += data[0] * left;
