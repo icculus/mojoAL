@@ -10,6 +10,15 @@
 #include <math.h>
 #include <float.h>
 
+#ifdef _MSC_VER
+#define AL_API __declspec(dllexport)
+#define ALC_API __declspec(dllexport)
+#endif
+
+#include "AL/al.h"
+#include "AL/alc.h"
+#include "SDL.h"
+
 #ifdef __SSE__
 #include <xmmintrin.h>
 #endif
@@ -17,10 +26,6 @@
 #ifdef __ARM_NEON__
 #include <arm_neon.h>
 #endif
-
-#include "AL/al.h"
-#include "AL/alc.h"
-#include "SDL.h"
 
 #define OPENAL_VERSION_MAJOR 1
 #define OPENAL_VERSION_MINOR 1
@@ -158,6 +163,11 @@
         fprintf(stderr, "FIXME: %s (%s@%s:%d)\n", x, __FUNCTION__, __FILE__, __LINE__); \
     } \
 }
+#endif
+
+/* restrict is from C99, but __restrict works with both Visual Studio and GCC. */
+#if (!defined(__STDC_VERSION__) || (__STDC_VERSION__ < 199901))
+#define restrict __restrict
 #endif
 
 #ifdef _MSC_VER
@@ -1027,8 +1037,8 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
             mixframes = SDL_min(mixlen / bufferframesize, framesneeded);
             remainingmixframes = mixframes;
             while (remainingmixframes > 0) {
-                const int mixbuflen = 1024;
-                float mixbuf[mixbuflen / sizeof (float)];
+                float mixbuf[256];
+                const int mixbuflen = sizeof (mixbuf);
                 const int mixbufframes = mixbuflen / bufferframesize;
                 const int getframes = SDL_min(remainingmixframes, mixbufframes);
                 SDL_AudioStreamGet(src->stream, mixbuf, getframes * bufferframesize);
@@ -1176,7 +1186,7 @@ static ALfloat dotproduct_sse(const __m128 a, const __m128 b)
     const __m128 prod = _mm_mul_ps(a, b);
     const __m128 sum1 = _mm_add_ps(prod, _mm_shuffle_ps(prod, prod, _MM_SHUFFLE(1, 0, 3, 2)));
     const __m128 sum2 = _mm_add_ps(sum1, _mm_shuffle_ps(sum1, sum1, _MM_SHUFFLE(2, 2, 0, 0)));
-    return sum2[3];
+    return _mm_cvtss_f32(_mm_shuffle_ps(sum2, sum2, _MM_SHUFFLE(3, 3, 3, 3)));
 }
 
 static ALfloat magnitude_sse(const __m128 v)
@@ -1508,12 +1518,12 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
         gains[1] = 0.0f;
     } else if (radians < 0.0f) {  /* back left */
         ALfloat sine, cosine;
-        calculate_sincos(-(radians + M_PI), &sine, &cosine);
+        calculate_sincos((ALfloat) -(radians + M_PI), &sine, &cosine);
         gains[0] = (SQRT2_DIV2 * (cosine - sine));
         gains[1] = (SQRT2_DIV2 * (cosine + sine));
     } else { /* back right */
         ALfloat sine, cosine;
-        calculate_sincos(-(radians - M_PI), &sine, &cosine);
+        calculate_sincos((ALfloat) -(radians - M_PI), &sine, &cosine);
         gains[0] = (SQRT2_DIV2 * (cosine - sine));
         gains[1] = (SQRT2_DIV2 * (cosine + sine));
     }
@@ -1906,7 +1916,7 @@ void *alcGetProcAddress(ALCdevice *device, const ALCchar *funcname)
         return NULL;
     }
 
-    #define FN_TEST(fn) if (SDL_strcmp(funcname, #fn) == 0) return fn
+    #define FN_TEST(fn) if (SDL_strcmp(funcname, #fn) == 0) return (void *) fn
     FN_TEST(alcCreateContext);
     FN_TEST(alcMakeContextCurrent);
     FN_TEST(alcProcessContext);
@@ -2587,7 +2597,7 @@ void *alGetProcAddress(const ALchar *funcname)
         return NULL;
     }
 
-    #define FN_TEST(fn) if (SDL_strcmp(funcname, #fn) == 0) return fn
+    #define FN_TEST(fn) if (SDL_strcmp(funcname, #fn) == 0) return (void *) fn
     FN_TEST(alDopplerFactor);
     FN_TEST(alDopplerVelocity);
     FN_TEST(alSpeedOfSound);
