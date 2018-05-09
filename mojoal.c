@@ -441,6 +441,97 @@ struct ALCcontext_struct
 };
 
 
+/* the just_queued list is backwards. Add it to the queue in the correct order. */
+static void queue_new_buffer_items_recursive(BufferQueue *queue, BufferQueueItem *items)
+{
+    if (items == NULL) {
+        return;
+    }
+
+    queue_new_buffer_items_recursive(queue, items->next);
+    items->next = NULL;
+    if (queue->tail) {
+        queue->tail->next = items;
+    } else {
+        queue->head = items;
+    }
+    queue->tail = items;
+}
+
+static void obtain_newly_queued_buffers(BufferQueue *queue)
+{
+    BufferQueueItem *items;
+    do {
+        items = (BufferQueueItem *) SDL_AtomicGetPtr(&queue->just_queued);
+    } while (!SDL_AtomicCASPtr(&queue->just_queued, items, NULL));
+
+    /* Now that we own this pointer, we can just do whatever we want with it.
+       Nothing touches the head/tail fields other than the mixer thread, so we
+       move it there. Not even atomically!  :)
+       When setting up these fields in alSourceUnqueueBuffers, there's a lock
+       used that is never held by the mixer thread (which only touches
+       just_queued atomically when a buffer is completely processed). */
+    SDL_assert((queue->tail != NULL) == (queue->head != NULL));
+
+    queue_new_buffer_items_recursive(queue, items);
+}
+
+/* You probably need to hold a lock before you call this (currently). */
+static void source_mark_all_buffers_processed(ALsource *src)
+{
+    obtain_newly_queued_buffers(&src->buffer_queue);
+    while (src->buffer_queue.head) {
+        void *ptr;
+        BufferQueueItem *item = src->buffer_queue.head;
+        src->buffer_queue.head = item->next;
+        SDL_AtomicAdd(&src->buffer_queue.num_items, -1);
+
+        /* Move it to the processed queue for alSourceUnqueueBuffers() to pick up. */
+        do {
+            ptr = SDL_AtomicGetPtr(&src->buffer_queue_processed.just_queued);
+            SDL_AtomicSetPtr(&item->next, ptr);
+        } while (!SDL_AtomicCASPtr(&src->buffer_queue_processed.just_queued, ptr, item));
+
+        SDL_AtomicAdd(&src->buffer_queue_processed.num_items, 1);
+    }
+    src->buffer_queue.tail = NULL;
+}
+
+/* You probably need to hold a lock before you call this (currently). */
+static void source_release_buffer_queue(ALCcontext *ctx, ALsource *src)
+{
+    BufferQueueItem *i;
+    void *ptr;
+
+    /* move any buffer queue items to the device's available pool for reuse. */
+    obtain_newly_queued_buffers(&src->buffer_queue);
+    if (src->buffer_queue.tail != NULL) {
+        for (i = src->buffer_queue.head; i; i = i->next) {
+            (void) SDL_AtomicDecRef(&i->buffer->refcount);
+        }
+        do {
+            ptr = SDL_AtomicGetPtr(&ctx->device->playback.buffer_queue_pool);
+            SDL_AtomicSetPtr(&src->buffer_queue.tail->next, ptr);
+        } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, ptr, src->buffer_queue.head));
+    }
+    src->buffer_queue.head = src->buffer_queue.tail = NULL;
+
+    SDL_AtomicLock(&src->buffer_queue_lock);
+    obtain_newly_queued_buffers(&src->buffer_queue_processed);
+    if (src->buffer_queue_processed.tail != NULL) {
+        for (i = src->buffer_queue_processed.head; i; i = i->next) {
+            (void) SDL_AtomicDecRef(&i->buffer->refcount);
+        }
+        do {
+            ptr = SDL_AtomicGetPtr(&ctx->device->playback.buffer_queue_pool);
+            SDL_AtomicSetPtr(&src->buffer_queue_processed.tail->next, ptr);
+        } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, ptr, src->buffer_queue_processed.head));
+    }
+    src->buffer_queue_processed.head = src->buffer_queue_processed.tail = NULL;
+    SDL_AtomicUnlock(&src->buffer_queue_lock);
+}
+
+
 /* ALC implementation... */
 
 static void *current_context = NULL;
@@ -606,42 +697,6 @@ static ALCboolean alcfmt_to_sdlfmt(const ALCenum alfmt, SDL_AudioFormat *sdlfmt,
 
     return ALC_TRUE;
 }
-
-/* the just_queued list is backwards. Add it to the queue in the correct order. */
-static void queue_new_buffer_items_recursive(BufferQueue *queue, BufferQueueItem *items)
-{
-    if (items == NULL) {
-        return;
-    }
-
-    queue_new_buffer_items_recursive(queue, items->next);
-    items->next = NULL;
-    if (queue->tail) {
-        queue->tail->next = items;
-    } else {
-        queue->head = items;
-    }
-    queue->tail = items;
-}
-
-static void obtain_newly_queued_buffers(BufferQueue *queue)
-{
-    BufferQueueItem *items;
-    do {
-        items = (BufferQueueItem *) SDL_AtomicGetPtr(&queue->just_queued);
-    } while (!SDL_AtomicCASPtr(&queue->just_queued, items, NULL));
-
-    /* Now that we own this pointer, we can just do whatever we want with it.
-       Nothing touches the head/tail fields other than the mixer thread, so we
-       move it there. Not even atomically!  :)
-       When setting up these fields in alSourceUnqueueBuffers, there's a lock
-       used that is never held by the mixer thread (which only touches
-       just_queued atomically when a buffer is completely processed). */
-    SDL_assert((queue->tail != NULL) == (queue->head != NULL));
-
-    queue_new_buffer_items_recursive(queue, items);
-}
-
 
 static void mix_float32_c1_scalar(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
 {
@@ -1606,7 +1661,6 @@ static void mix_context(ALCcontext *ctx, float *stream, int len)
     }
 }
 
-
 /* Disconnected devices move all PLAYING sources to STOPPED, making their buffer queues processed. */
 static void mix_disconnected_context(ALCcontext *ctx)
 {
@@ -1625,27 +1679,12 @@ static void mix_disconnected_context(ALCcontext *ctx)
         for (i = 0; i < (sizeof (bits) * 8); i++) {
             if ((bits & (1 << i)) == 0) { continue; }
             src = &ctx->sources[base+i];
+            SDL_AtomicLock(&src->lock);
             if ((SDL_AtomicGet(&src->allocated) == 1) && (src->state == AL_PLAYING)) {
-                obtain_newly_queued_buffers(&src->buffer_queue);
-                if (src->type == AL_STREAMING) {  /* mark buffers processed. */
-                    while (src->buffer_queue.head) {
-                        void *ptr;
-                        BufferQueueItem *item = src->buffer_queue.head;
-                        src->buffer_queue.head = item->next;
-                        SDL_AtomicAdd(&src->buffer_queue.num_items, -1);
-
-                        /* Move it to the processed queue for alSourceUnqueueBuffers() to pick up. */
-                        do {
-                            ptr = SDL_AtomicGetPtr(&src->buffer_queue_processed.just_queued);
-                            SDL_AtomicSetPtr(&item->next, ptr);
-                        } while (!SDL_AtomicCASPtr(&src->buffer_queue_processed.just_queued, ptr, item));
-
-                        SDL_AtomicAdd(&src->buffer_queue_processed.num_items, 1);
-                    }
-                    src->buffer_queue.tail = NULL;
-                }
                 src->state = AL_STOPPED;
+                source_mark_all_buffers_processed(src);
             }
+            SDL_AtomicUnlock(&src->lock);
 
             /* remove from playlist; all playing things got stopped, paused/initial/stopped shouldn't be listed. */
             bits &= ~(1 << i);
@@ -1680,7 +1719,7 @@ static void SDLCALL playback_device_callback(void *userdata, Uint8 *stream, int 
     }
 }
 
-ALCcontext* alcCreateContext(ALCdevice *device, const ALCint* attrlist)
+ALCcontext *alcCreateContext(ALCdevice *device, const ALCint* attrlist)
 {
     ALCcontext *retval = NULL;
     ALCsizei attrcount = 0;
@@ -1854,29 +1893,12 @@ void alcDestroyContext(ALCcontext *ctx)
 
     for (i = 0; i < SDL_arraysize(ctx->sources); i++) {
         ALsource *src = &ctx->sources[i];
-        void *ptr;
         if (SDL_AtomicGet(&src->allocated) != 1) {
             continue;
         }
 
         SDL_FreeAudioStream(src->stream);
-
-        /* move any buffer queue items to the device's available pool for reuse. */
-        obtain_newly_queued_buffers(&src->buffer_queue);
-        if (src->buffer_queue.tail != NULL) {
-            do {
-                ptr = SDL_AtomicGetPtr(&ctx->device->playback.buffer_queue_pool);
-                SDL_AtomicSetPtr(&src->buffer_queue.tail->next, ptr);
-            } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, ptr, src->buffer_queue.head));
-        }
-
-        obtain_newly_queued_buffers(&src->buffer_queue_processed);
-        if (src->buffer_queue_processed.tail != NULL) {
-            do {
-                ptr = SDL_AtomicGetPtr(&ctx->device->playback.buffer_queue_pool);
-                SDL_AtomicSetPtr(&src->buffer_queue_processed.tail->next, ptr);
-            } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, ptr, src->buffer_queue_processed.head));
-        }
+        source_release_buffer_queue(ctx, src);
     }
 
     SDL_free(ctx->attributes);
@@ -2172,7 +2194,7 @@ static void SDLCALL capture_device_callback(void *userdata, Uint8 *stream, int l
     }
 }
 
-ALCdevice* alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, ALCenum format, ALCsizei buffersize)
+ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, ALCenum format, ALCsizei buffersize)
 {
     ALCdevice *device = NULL;
     SDL_AudioSpec desired;
@@ -2448,7 +2470,7 @@ ALboolean alIsEnabled(ALenum capability)
     return AL_FALSE;
 }
 
-const ALchar* alGetString(ALenum param)
+const ALchar *alGetString(ALenum param)
 {
     switch (param) {
         case AL_EXTENSIONS: {
@@ -3101,7 +3123,7 @@ void alDeleteSources(ALsizei n, const ALuint *names)
         if (name != 0) {
             ALsource *src = &ctx->sources[name - 1];
             SDL_AtomicLock(&src->lock);
-            FIXME("clear buffer queue");
+            source_release_buffer_queue(ctx, src);
             if (src->stream) {
                 SDL_FreeAudioStream(src->stream);
                 src->stream = NULL;
@@ -3267,7 +3289,7 @@ static void set_source_static_buffer(ALCcontext *ctx, ALsource *src, const ALuin
             src->queue_channels = buffer ? buffer->channels : 0;
             src->queue_frequency = 0;
 
-            FIXME("must dump buffer queue");
+            source_release_buffer_queue(ctx, src);
 
             if (src->stream != stream) {
                 freestream = src->stream;  /* free this after unlocking. */
@@ -3487,7 +3509,7 @@ static void source_play(ALCcontext *ctx, const ALuint name)
         int oldval;
         int bit;
 
-        FIXME("this could be lock free if we maintain a queue of playing sources");
+        FIXME("this could be lock free if we maintain a queue of playing sources");  /* we do this now, but need to check other side effects */
         SDL_AtomicLock(&src->lock);
         if (src->offset_latched) {
             src->offset_latched = AL_FALSE;
@@ -3497,7 +3519,7 @@ static void source_play(ALCcontext *ctx, const ALuint name)
         if (ctx->device->connected) {
             src->state = AL_PLAYING;
         } else {
-            FIXME("buffer queue needs to promote to processed");
+            source_mark_all_buffers_processed(src);
             src->state = AL_STOPPED;  /* disconnected devices promote directly to STOPPED */
         }
         SDL_AtomicUnlock(&src->lock);
@@ -3519,9 +3541,9 @@ static void source_stop(ALCcontext *ctx, const ALuint name)
 {
     ALsource *src = get_source(ctx, name);
     if (src) {
-        FIXME("buffer queue needs to promote to processed");
         SDL_AtomicLock(&src->lock);
         if (src->state != AL_INITIAL) {
+            source_mark_all_buffers_processed(src);
             src->state = AL_STOPPED;
         }
         SDL_AtomicUnlock(&src->lock);
