@@ -3941,8 +3941,9 @@ void alDeleteBuffers(ALsizei n, const ALuint *names)
         const ALuint name = names[i];
         if (name != 0) {
             ALbuffer *buffer = get_buffer(ctx, name);
+            void *data;
             SDL_assert(buffer != NULL);
-            void *data = (void *) buffer->data;
+            data = (void *) buffer->data;
             if (!SDL_AtomicCAS(&buffer->allocated, 1, 0)) {
                 /* uh-oh!! */
             } else {
