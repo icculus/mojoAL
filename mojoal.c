@@ -11,8 +11,11 @@
 #include <float.h>
 
 #ifdef _MSC_VER
-#define AL_API __declspec(dllexport)
-#define ALC_API __declspec(dllexport)
+  #define AL_API __declspec(dllexport)
+  #define ALC_API __declspec(dllexport)
+  #if !defined(inline) && !defined(__cplusplus)
+    #define inline __inline
+  #endif
 #endif
 
 #include "AL/al.h"
@@ -82,7 +85,7 @@
   so deleting one while another thread is using it is your own fault. Don't
   do that.
 
-- Create or destroying a context will lock the SDL audio device, serializing
+- Creating or destroying a context will lock the SDL audio device, serializing
   these calls vs the mixer thread while we add/remove the context on the
   device's list. So don't do this in time-critical code.
 
@@ -166,7 +169,7 @@
 #endif
 
 /* restrict is from C99, but __restrict works with both Visual Studio and GCC. */
-#if (!defined(__STDC_VERSION__) || (__STDC_VERSION__ < 199901))
+#if !defined(restrict) && ((!defined(__STDC_VERSION__) || (__STDC_VERSION__ < 199901)))
 #define restrict __restrict
 #endif
 
@@ -1237,10 +1240,10 @@ static __m128 xyzzy_sse(const __m128 a, const __m128 b)
 
 static ALfloat dotproduct_sse(const __m128 a, const __m128 b)
 {
-    FIXME("this can use _mm_hadd_ps in SSE3, or _mm_dp_ps in SSE4.1");
     const __m128 prod = _mm_mul_ps(a, b);
     const __m128 sum1 = _mm_add_ps(prod, _mm_shuffle_ps(prod, prod, _MM_SHUFFLE(1, 0, 3, 2)));
     const __m128 sum2 = _mm_add_ps(sum1, _mm_shuffle_ps(sum1, sum1, _MM_SHUFFLE(2, 2, 0, 0)));
+    FIXME("this can use _mm_hadd_ps in SSE3, or _mm_dp_ps in SSE4.1");
     return _mm_cvtss_f32(_mm_shuffle_ps(sum2, sum2, _MM_SHUFFLE(3, 3, 3, 3)));
 }
 
@@ -1262,11 +1265,11 @@ static __m128 normalize_sse(const __m128 v)
 #ifdef __ARM_NEON__
 static float32x4_t xyzzy_neon(const float32x4_t a, const float32x4_t b)
 {
-    FIXME("need a better permute");
     const float32x4_t shuf_a = { a[1], a[2], a[0], a[3] };
     const float32x4_t shuf_b = { b[1], b[2], b[0], b[3] };
     const float32x4_t v = vsubq_f32(vmulq_f32(a, shuf_b), vmulq_f32(b, shuf_a));
     const float32x4_t retval = { v[1], v[2], v[0], v[3] };
+    FIXME("need a better permute");
     return retval;
 }
 
