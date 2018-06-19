@@ -22,6 +22,25 @@
 #include "AL/alc.h"
 #include "SDL.h"
 
+#ifdef __SSE__  /* if you are on x86 or x86-64, we assume you have SSE1 by now. */
+#define NEED_SCALAR_FALLBACK 0
+#elif (defined(__ARM_ARCH) && (__ARM_ARCH >= 8))  /* ARMv8 always has NEON. */
+#define NEED_SCALAR_FALLBACK 0
+#elif (defined(__APPLE__) && defined(__ARM_ARCH) && (__ARM_ARCH >= 7))   /* All ARMv7 chips from Apple have NEON. */
+#define NEED_SCALAR_FALLBACK 0
+#elif (defined(__WINDOWS__) || defined(__WINRT__)) && defined(_M_ARM)  /* all WinRT-level Microsoft devices have NEON */
+#define NEED_SCALAR_FALLBACK 0
+#else
+#define NEED_SCALAR_FALLBACK 1
+#endif
+
+/* Some platforms fail to define __ARM_NEON__, others need it or arm_neon.h will fail. */
+#if (defined(__ARM_ARCH) || defined(_M_ARM))
+#  if !NEED_SCALAR_FALLBACK && !defined(__ARM_NEON__)
+#    define __ARM_NEON__ 1
+#  endif
+#endif
+
 #ifdef __SSE__
 #include <xmmintrin.h>
 #endif
@@ -179,18 +198,6 @@
 #define SIMDALIGNEDSTRUCT struct __attribute__((aligned(16)))
 #else
 #define SIMDALIGNEDSTRUCT struct
-#endif
-
-#ifdef __SSE__  /* if you are on x86 or x86-64, we assume you have SSE1 by now. */
-#define NEED_SCALAR_FALLBACK 0
-#elif (defined(__ARM_ARCH) && (__ARM_ARCH >= 8))  /* ARMv8 always has NEON. */
-#define NEED_SCALAR_FALLBACK 0
-#elif (defined(__APPLE__) && defined(__ARM_ARCH) && (__ARM_ARCH >= 7))   /* All ARMv7 chips from Apple have NEON. */
-#define NEED_SCALAR_FALLBACK 0
-#elif (defined(__WINDOWS__) || defined(__WINRT__)) && defined(_M_ARM)  /* all WinRT-level Microsoft devices have NEON */
-#define NEED_SCALAR_FALLBACK 0
-#else
-#define NEED_SCALAR_FALLBACK 1
 #endif
 
 #ifdef __SSE__  /* we assume you always have this on x86/x86-64 chips. SSE1 is 20 years old! */
@@ -1049,6 +1056,8 @@ static void mix_buffer(const ALbuffer *buffer, const ALfloat * restrict panning,
             {
             #if NEED_SCALAR_FALLBACK
             mix_float32_c1_scalar(panning, data, stream, mixframes);
+            #else
+            SDL_assert(!"uhoh, we didn't compile in enough mixers!");
             #endif
             }
         } else {
@@ -1061,6 +1070,8 @@ static void mix_buffer(const ALbuffer *buffer, const ALfloat * restrict panning,
             {
             #if NEED_SCALAR_FALLBACK
             mix_float32_c2_scalar(panning, data, stream, mixframes);
+            #else
+            SDL_assert(!"uhoh, we didn't compile in enough mixers!");
             #endif
             }
         }
