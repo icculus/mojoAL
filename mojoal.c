@@ -423,7 +423,6 @@ SIMDALIGNEDSTRUCT ALsource
     SDL_AudioStream *stream;  /* for resampling. */
     BufferQueue buffer_queue;
     BufferQueue buffer_queue_processed;
-    SDL_SpinLock buffer_queue_lock;  /* this serializes access to the API end. The mixer does not acquire this! */
     ALsizei offset;  /* offset in bytes for converted stream! */
     ALboolean offset_latched;  /* AL_SEC_OFFSET, etc, say set values apply to next alSourcePlay if not currently playing! */
     ALint queue_channels;
@@ -561,7 +560,6 @@ static void source_release_buffer_queue(ALCcontext *ctx, ALsource *src)
     }
     src->buffer_queue.head = src->buffer_queue.tail = NULL;
 
-    SDL_AtomicLock(&src->buffer_queue_lock);
     obtain_newly_queued_buffers(&src->buffer_queue_processed);
     if (src->buffer_queue_processed.tail != NULL) {
         for (i = src->buffer_queue_processed.head; i; i = i->next) {
@@ -573,7 +571,6 @@ static void source_release_buffer_queue(ALCcontext *ctx, ALsource *src)
         } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, ptr, src->buffer_queue_processed.head));
     }
     src->buffer_queue_processed.head = src->buffer_queue_processed.tail = NULL;
-    SDL_AtomicUnlock(&src->buffer_queue_lock);
 }
 
 
@@ -3194,7 +3191,6 @@ static void _alGenSources(const ALsizei n, ALuint *names)
         src->stream = NULL;
         SDL_zero(src->buffer_queue);
         SDL_zero(src->buffer_queue_processed);
-        src->buffer_queue_lock = 0;
         src->queue_channels = 0;
         src->queue_frequency = 0;
         source_needs_recalc(src);
@@ -3874,13 +3870,7 @@ static void _alSourceUnqueueBuffers(const ALuint name, const ALsizei nb, ALuint 
         return;  /* nothing to do. */
     }
 
-    /* this could be kinda a long lock, but only if you have two threads
-       trying to unqueue from the same source right after the mixer moved
-       an obscenely large number of buffers to the processed queue. That is
-       to say: it's a pathological (and probably not ever real) scenario. */
-    SDL_AtomicLock(&src->buffer_queue_lock);
     if (((ALsizei) SDL_AtomicGet(&src->buffer_queue_processed.num_items)) < nb) {
-        SDL_AtomicUnlock(&src->buffer_queue_lock);
         set_al_error(ctx, AL_INVALID_VALUE);
         return;
     }
@@ -3899,8 +3889,6 @@ static void _alSourceUnqueueBuffers(const ALuint name, const ALsizei nb, ALuint 
     if (!item) {
         src->buffer_queue_processed.tail = NULL;
     }
-
-    SDL_AtomicUnlock(&src->buffer_queue_lock);
 
     item = queue;
     for (i = 0; i < nb; i++) {
