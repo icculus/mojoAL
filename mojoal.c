@@ -212,6 +212,42 @@ static int has_neon = 0;
 #endif
 #endif
 
+static SDL_mutex *api_lock = NULL;
+static void grab_api_lock(void)
+{
+    SDL_assert(api_lock != NULL);  /* ideally, you init first... */
+    if (api_lock) {
+        const int rc = SDL_LockMutex(api_lock);
+        SDL_assert(rc == 0);
+    }
+}
+
+static void ungrab_api_lock(void)
+{
+    SDL_assert(api_lock != NULL);  /* ideally, you init first... */
+    if (api_lock) {
+        const int rc = SDL_UnlockMutex(api_lock);
+        SDL_assert(rc == 0);
+    }
+}
+
+static int init_api_lock(void)
+{
+    if (!api_lock) {
+        api_lock = SDL_CreateMutex();
+        if (!api_lock) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+#define ENTRYPOINT(rettype,fn,params,args) \
+    rettype fn params { rettype retval; grab_api_lock(); retval = _##fn args ; ungrab_api_lock(); return retval; }
+
+#define ENTRYPOINTVOID(fn,params,args) \
+    void fn params { grab_api_lock(); _##fn args ; ungrab_api_lock(); }
+
 
 /* lifted this ring buffer code from my al_osx project; I wrote it all, so it's stealable. */
 typedef struct
@@ -507,7 +543,6 @@ static void source_mark_all_buffers_processed(ALsource *src)
     src->buffer_queue.tail = NULL;
 }
 
-/* You probably need to hold a lock before you call this (currently). */
 static void source_release_buffer_queue(ALCcontext *ctx, ALsource *src)
 {
     BufferQueueItem *i;
@@ -594,6 +629,11 @@ ALCdevice *alcOpenDevice(const ALCchar *devicename)
     has_neon = SDL_HasNEON();
     #endif
 
+    if (!init_api_lock()) {
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        return NULL;
+    }
+
     dev = (ALCdevice *) SDL_calloc(1, sizeof (ALCdevice));
     if (!dev) {
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
@@ -619,6 +659,7 @@ ALCdevice *alcOpenDevice(const ALCchar *devicename)
     return dev;
 }
 
+/* no api lock; this requires you to not destroy a device that's still in use */
 ALCboolean alcCloseDevice(ALCdevice *device)
 {
     BufferBlock *bb;
@@ -1725,7 +1766,7 @@ static void SDLCALL playback_device_callback(void *userdata, Uint8 *stream, int 
     }
 }
 
-ALCcontext *alcCreateContext(ALCdevice *device, const ALCint* attrlist)
+static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
 {
     ALCcontext *retval = NULL;
     ALCsizei attrcount = 0;
@@ -1834,42 +1875,46 @@ ALCcontext *alcCreateContext(ALCdevice *device, const ALCint* attrlist)
 
     return retval;
 }
+ENTRYPOINT(ALCcontext *,alcCreateContext,(ALCdevice *device, const ALCint* attrlist),(device,attrlist))
 
-ALCboolean alcMakeContextCurrent(ALCcontext *context)
-{
-    SDL_AtomicSetPtr(&current_context, context);
-    FIXME("any reason this might return ALC_FALSE?");
-    return ALC_TRUE;
-}
-
-void alcProcessContext(ALCcontext *context)
-{
-    if (!context) {
-        set_alc_error(NULL, ALC_INVALID_CONTEXT);
-        return;
-    }
-
-    SDL_assert(!context->device->iscapture);
-    SDL_AtomicSet(&context->processing, 1);
-}
-
-void alcSuspendContext(ALCcontext *context)
-{
-    if (!context) {
-        set_alc_error(NULL, ALC_INVALID_CONTEXT);
-        return;
-    }
-
-    SDL_assert(!context->device->iscapture);
-    SDL_AtomicSet(&context->processing, 0);
-}
 
 static inline ALCcontext *get_current_context(void)
 {
     return (ALCcontext *) SDL_AtomicGetPtr(&current_context);
 }
 
-void alcDestroyContext(ALCcontext *ctx)
+/* no api lock; it just sets an atomic pointer at the moment */
+ALCboolean alcMakeContextCurrent(ALCcontext *ctx)
+{
+    SDL_AtomicSetPtr(&current_context, ctx);
+    FIXME("any reason this might return ALC_FALSE?");
+    return ALC_TRUE;
+}
+
+static void _alcProcessContext(ALCcontext *ctx)
+{
+    if (!ctx) {
+        set_alc_error(NULL, ALC_INVALID_CONTEXT);
+        return;
+    }
+
+    SDL_assert(!ctx->device->iscapture);
+    SDL_AtomicSet(&ctx->processing, 1);
+}
+ENTRYPOINTVOID(alcProcessContext,(ALCcontext *ctx),(ctx))
+
+static void _alcSuspendContext(ALCcontext *ctx)
+{
+    if (!ctx) {
+        set_alc_error(NULL, ALC_INVALID_CONTEXT);
+    } else {
+        SDL_assert(!ctx->device->iscapture);
+        SDL_AtomicSet(&ctx->processing, 0);
+    }
+}
+ENTRYPOINTVOID(alcSuspendContext,(ALCcontext *ctx),(ctx))
+
+static void _alcDestroyContext(ALCcontext *ctx)
 {
     int i;
 
@@ -1910,25 +1955,30 @@ void alcDestroyContext(ALCcontext *ctx)
     SDL_free(ctx->attributes);
     free_simd_aligned(ctx);
 }
+ENTRYPOINTVOID(alcDestroyContext,(ALCcontext *ctx),(ctx))
 
+/* no api lock; atomic. */
 ALCcontext *alcGetCurrentContext(void)
 {
     return get_current_context();
 }
 
+/* no api lock; immutable. */
 ALCdevice *alcGetContextsDevice(ALCcontext *context)
 {
     return context ? context->device : NULL;
 }
 
-ALCenum alcGetError(ALCdevice *device)
+static ALCenum _alcGetError(ALCdevice *device)
 {
     ALCenum *perr = device ? &device->error : &null_device_error;
     const ALCenum retval = *perr;
     *perr = ALC_NO_ERROR;
     return retval;
 }
+ENTRYPOINT(ALCenum,alcGetError,(ALCdevice *device),(device))
 
+/* no api lock; immutable */
 ALCboolean alcIsExtensionPresent(ALCdevice *device, const ALCchar *extname)
 {
     #define ALC_EXTENSION_ITEM(ext) if (SDL_strcasecmp(extname, #ext) == 0) { return ALC_TRUE; }
@@ -1937,6 +1987,7 @@ ALCboolean alcIsExtensionPresent(ALCdevice *device, const ALCchar *extname)
     return ALC_FALSE;
 }
 
+/* no api lock; immutable */
 void *alcGetProcAddress(ALCdevice *device, const ALCchar *funcname)
 {
     if (!funcname) {
@@ -1971,6 +2022,7 @@ void *alcGetProcAddress(ALCdevice *device, const ALCchar *funcname)
     return NULL;
 }
 
+/* no api lock; immutable */
 ALCenum alcGetEnumValue(ALCdevice *device, const ALCchar *enumname)
 {
     if (!enumname) {
@@ -2040,6 +2092,13 @@ static const ALCchar *calculate_sdl_device_list(const int iscapture)
         return NULL;
     }
 
+    if (!init_api_lock()) {
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        return NULL;
+    }
+
+    grab_api_lock();
+
     numdevs = SDL_GetNumAudioDevices(iscapture);
 
     for (i = 0; i < numdevs; i++) {
@@ -2058,6 +2117,8 @@ static const ALCchar *calculate_sdl_device_list(const int iscapture)
     SDL_assert(avail >= 1);
     *ptr = '\0';
 
+    ungrab_api_lock();
+
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
 
     return final_list;
@@ -2065,6 +2126,7 @@ static const ALCchar *calculate_sdl_device_list(const int iscapture)
     #undef DEVICE_LIST_BUFFER_SIZE
 }
 
+/* no api lock; immutable (unless it isn't, then we manually lock). */
 const ALCchar *alcGetString(ALCdevice *device, ALCenum param)
 {
     switch (param) {
@@ -2106,7 +2168,7 @@ const ALCchar *alcGetString(ALCdevice *device, ALCenum param)
     return NULL;
 }
 
-void alcGetIntegerv(ALCdevice *device, ALCenum param, ALCsizei size, ALCint *values)
+static void _alcGetIntegerv(ALCdevice *device, const ALCenum param, const ALCsizei size, ALCint *values)
 {
     ALCcontext *ctx = NULL;
 
@@ -2178,6 +2240,7 @@ void alcGetIntegerv(ALCdevice *device, ALCenum param, ALCsizei size, ALCint *val
     set_alc_error(device, ALC_INVALID_ENUM);
     *values = 0;
 }
+ENTRYPOINTVOID(alcGetIntegerv,(ALCdevice *device, ALCenum param, ALCsizei size, ALCint *values),(device,param,size,values))
 
 
 /* audio callback for capture devices just needs to move data into our
@@ -2200,6 +2263,7 @@ static void SDLCALL capture_device_callback(void *userdata, Uint8 *stream, int l
     }
 }
 
+/* no api lock; this creates it and otherwise doesn't have any state that can race */
 ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, ALCenum format, ALCsizei buffersize)
 {
     ALCdevice *device = NULL;
@@ -2272,6 +2336,7 @@ ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, AL
     return device;
 }
 
+/* no api lock; this requires you to not destroy a device that's still in use */
 ALCboolean alcCaptureCloseDevice(ALCdevice *device)
 {
     if (!device || !device->iscapture) {
@@ -2290,7 +2355,7 @@ ALCboolean alcCaptureCloseDevice(ALCdevice *device)
     return ALC_TRUE;
 }
 
-void alcCaptureStart(ALCdevice *device)
+static void _alcCaptureStart(ALCdevice *device)
 {
     if (device && device->iscapture) {
         /* alcCaptureStart() drops any previously-buffered data. */
@@ -2301,15 +2366,17 @@ void alcCaptureStart(ALCdevice *device)
         SDL_PauseAudioDevice(device->sdldevice, 0);
     }
 }
+ENTRYPOINTVOID(alcCaptureStart,(ALCdevice *device),(device))
 
-void alcCaptureStop(ALCdevice *device)
+static void _alcCaptureStop(ALCdevice *device)
 {
     if (device && device->iscapture) {
         SDL_PauseAudioDevice(device->sdldevice, 1);
     }
 }
+ENTRYPOINTVOID(alcCaptureStop,(ALCdevice *device),(device))
 
-void alcCaptureSamples(ALCdevice *device, ALCvoid *buffer, ALCsizei samples)
+static void _alcCaptureSamples(ALCdevice *device, ALCvoid *buffer, const ALCsizei samples)
 {
     ALCsizei requested_bytes;
     if (!device || !device->iscapture) {
@@ -2328,6 +2395,7 @@ void alcCaptureSamples(ALCdevice *device, ALCvoid *buffer, ALCsizei samples)
     ring_buffer_get(&device->capture.ring, buffer, requested_bytes);
     SDL_UnlockAudioDevice(device->sdldevice);
 }
+ENTRYPOINTVOID(alcCaptureSamples,(ALCdevice *device, ALCvoid *buffer, ALCsizei samples),(device,buffer,samples))
 
 
 /* AL implementation... */
@@ -2397,7 +2465,7 @@ static ALbuffer *get_buffer(ALCcontext *ctx, const ALuint name)
     return NULL;
 }
 
-void alDopplerFactor(ALfloat value)
+static void _alDopplerFactor(const ALfloat value)
 {
     ALCcontext *ctx = get_current_context();
     if (!ctx) {
@@ -2409,8 +2477,9 @@ void alDopplerFactor(ALfloat value)
         context_needs_recalc(ctx);
     }
 }
+ENTRYPOINTVOID(alDopplerFactor,(ALfloat value),(value))
 
-void alDopplerVelocity(ALfloat value)
+static void _alDopplerVelocity(const ALfloat value)
 {
     ALCcontext *ctx = get_current_context();
     if (!ctx) {
@@ -2422,8 +2491,9 @@ void alDopplerVelocity(ALfloat value)
         context_needs_recalc(ctx);
     }
 }
+ENTRYPOINTVOID(alDopplerVelocity,(ALfloat value),(value))
 
-void alSpeedOfSound(ALfloat value)
+static void _alSpeedOfSound(const ALfloat value)
 {
     ALCcontext *ctx = get_current_context();
     if (!ctx) {
@@ -2435,8 +2505,9 @@ void alSpeedOfSound(ALfloat value)
         context_needs_recalc(ctx);
     }
 }
+ENTRYPOINTVOID(alSpeedOfSound,(ALfloat value),(value))
 
-void alDistanceModel(ALenum model)
+static void _alDistanceModel(const ALenum model)
 {
     ALCcontext *ctx = get_current_context();
     if (!ctx) {
@@ -2459,24 +2530,31 @@ void alDistanceModel(ALenum model)
     }
     set_al_error(ctx, AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alDistanceModel,(ALenum model),(model))
 
-void alEnable(ALenum capability)
+
+static void _alEnable(const ALenum capability)
 {
     set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in AL 1.1 uses this. */
 }
+ENTRYPOINTVOID(alEnable,(ALenum capability),(capability))
 
-void alDisable(ALenum capability)
+
+static void _alDisable(const ALenum capability)
 {
     set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in AL 1.1 uses this. */
 }
+ENTRYPOINTVOID(alDisable,(ALenum capability),(capability))
 
-ALboolean alIsEnabled(ALenum capability)
+
+static ALboolean _alIsEnabled(const ALenum capability)
 {
     set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in AL 1.1 uses this. */
     return AL_FALSE;
 }
+ENTRYPOINT(ALboolean,alIsEnabled,(ALenum capability),(capability))
 
-const ALchar *alGetString(ALenum param)
+static const ALchar *_alGetString(const ALenum param)
 {
     switch (param) {
         case AL_EXTENSIONS: {
@@ -2504,8 +2582,9 @@ const ALchar *alGetString(ALenum param)
 
     return NULL;
 }
+ENTRYPOINT(const ALchar *,alGetString,(const ALenum param),(param))
 
-void alGetBooleanv(ALenum param, ALboolean *values)
+static void _alGetBooleanv(const ALenum param, ALboolean *values)
 {
     ALCcontext *ctx = get_current_context();
     if (!ctx) {
@@ -2518,8 +2597,9 @@ void alGetBooleanv(ALenum param, ALboolean *values)
     /* nothing in core OpenAL 1.1 uses this */
     set_al_error(ctx, AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetBooleanv,(ALenum param, ALboolean *values),(param,values))
 
-void alGetIntegerv(ALenum param, ALint *values)
+static void _alGetIntegerv(const ALenum param, ALint *values)
 {
     ALCcontext *ctx = get_current_context();
     if (!ctx) {
@@ -2536,8 +2616,9 @@ void alGetIntegerv(ALenum param, ALint *values)
 
     set_al_error(ctx, AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetIntegerv,(ALenum param, ALint *values),(param,values))
 
-void alGetFloatv(ALenum param, ALfloat *values)
+static void _alGetFloatv(const ALenum param, ALfloat *values)
 {
     ALCcontext *ctx = get_current_context();
     if (!ctx) {
@@ -2556,8 +2637,9 @@ void alGetFloatv(ALenum param, ALfloat *values)
 
     set_al_error(ctx, AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetFloatv,(ALenum param, ALfloat *values),(param,values))
 
-void alGetDoublev(ALenum param, ALdouble *values)
+static void _alGetDoublev(const ALenum param, ALdouble *values)
 {
     ALCcontext *ctx = get_current_context();
     if (!ctx) {
@@ -2570,7 +2652,9 @@ void alGetDoublev(ALenum param, ALdouble *values)
     /* nothing in core OpenAL 1.1 uses this */
     set_al_error(ctx, AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetDoublev,(ALenum param, ALdouble *values),(param,values))
 
+/* no api lock; just passes through to the real api */
 ALboolean alGetBoolean(ALenum param)
 {
     ALboolean retval = AL_FALSE;
@@ -2578,6 +2662,7 @@ ALboolean alGetBoolean(ALenum param)
     return retval;
 }
 
+/* no api lock; just passes through to the real api */
 ALint alGetInteger(ALenum param)
 {
     ALint retval = 0;
@@ -2585,6 +2670,7 @@ ALint alGetInteger(ALenum param)
     return retval;
 }
 
+/* no api lock; just passes through to the real api */
 ALfloat alGetFloat(ALenum param)
 {
     ALfloat retval = 0.0f;
@@ -2592,6 +2678,7 @@ ALfloat alGetFloat(ALenum param)
     return retval;
 }
 
+/* no api lock; just passes through to the real api */
 ALdouble alGetDouble(ALenum param)
 {
     ALdouble retval = 0.0f;
@@ -2599,7 +2686,7 @@ ALdouble alGetDouble(ALenum param)
     return retval;
 }
 
-ALenum alGetError(void)
+static ALenum _alGetError(void)
 {
     ALCcontext *ctx = get_current_context();
     ALenum *perr = ctx ? &ctx->error : &null_context_error;
@@ -2607,7 +2694,9 @@ ALenum alGetError(void)
     *perr = AL_NO_ERROR;
     return retval;
 }
+ENTRYPOINT(ALenum,alGetError,(void),())
 
+/* no api lock; immutable (unless we start having contexts with different extensions) */
 ALboolean alIsExtensionPresent(const ALchar *extname)
 {
     #define AL_EXTENSION_ITEM(ext) if (SDL_strcasecmp(extname, #ext) == 0) { return AL_TRUE; }
@@ -2616,7 +2705,7 @@ ALboolean alIsExtensionPresent(const ALchar *extname)
     return AL_FALSE;
 }
 
-void *alGetProcAddress(const ALchar *funcname)
+static void *_alGetProcAddress(const ALchar *funcname)
 {
     ALCcontext *ctx = get_current_context();
     FIXME("fail if ctx == NULL?");
@@ -2704,8 +2793,9 @@ void *alGetProcAddress(const ALchar *funcname)
     set_al_error(ctx, ALC_INVALID_VALUE);
     return NULL;
 }
+ENTRYPOINT(void *,alGetProcAddress,(const ALchar *funcname),(funcname))
 
-ALenum alGetEnumValue(const ALchar *enumname)
+static ALenum _alGetEnumValue(const ALchar *enumname)
 {
     ALCcontext *ctx = get_current_context();
     FIXME("fail if ctx == NULL?");
@@ -2787,163 +2877,139 @@ ALenum alGetEnumValue(const ALchar *enumname)
     set_al_error(ctx, AL_INVALID_VALUE);
     return AL_NONE;
 }
+ENTRYPOINT(ALenum,alGetEnumValue,(const ALchar *enumname),(enumname))
 
-void alListenerf(ALenum param, ALfloat value)
+static void _alListenerfv(const ALenum param, const ALfloat *values)
+{
+    ALCcontext *ctx = get_current_context();
+    if (!ctx) {
+        set_al_error(ctx, AL_INVALID_OPERATION);
+    } else if (!values) {
+        set_al_error(ctx, AL_INVALID_VALUE);
+    } else {
+        ALboolean recalc = AL_TRUE;
+        switch (param) {
+            case AL_GAIN:
+                ctx->listener.gain = *values;
+                break;
+
+            case AL_POSITION:
+                SDL_memcpy(ctx->listener.position, values, sizeof (*values) * 3);
+                break;
+
+            case AL_VELOCITY:
+                SDL_memcpy(ctx->listener.velocity, values, sizeof (*values) * 3);
+                break;
+
+            case AL_ORIENTATION:
+                SDL_memcpy(&ctx->listener.orientation[0], &values[0], sizeof (*values) * 3);
+                SDL_memcpy(&ctx->listener.orientation[4], &values[3], sizeof (*values) * 3);
+                break;
+
+            default:
+                recalc = AL_FALSE;
+                set_al_error(ctx, AL_INVALID_ENUM);
+                break;
+        }
+
+        if (recalc) {
+            context_needs_recalc(ctx);
+        }
+    }
+}
+ENTRYPOINTVOID(alListenerfv,(ALenum param, const ALfloat *values),(param,values))
+
+static void _alListenerf(const ALenum param, const ALfloat value)
 {
     switch (param) {
-        case AL_GAIN:
-            alListenerfv(param, &value);
-            return;
-        default: break;
+        case AL_GAIN: _alListenerfv(param, &value); break;
+        default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
     }
-
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alListenerf,(ALenum param, ALfloat value),(param,value))
 
-void alListener3f(ALenum param, ALfloat value1, ALfloat value2, ALfloat value3)
+static void _alListener3f(const ALenum param, const ALfloat value1, const ALfloat value2, const ALfloat value3)
 {
     switch (param) {
         case AL_POSITION:
         case AL_VELOCITY: {
             const ALfloat values[3] = { value1, value2, value3 };
-            alListenerfv(param, values);
-            return;
+            _alListenerfv(param, values);
+            break;
         }
-        default: break;
+        default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
     }
-
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alListener3f,(ALenum param, ALfloat value1, ALfloat value2, ALfloat value3),(param,value1,value2,value3))
 
-void alListenerfv(ALenum param, const ALfloat *values)
+static void _alListeneriv(const ALenum param, const ALint *values)
 {
     ALCcontext *ctx = get_current_context();
     if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
-        return;
-    }
-
-    if (!values) {
+    } else if (!values) {
         set_al_error(ctx, AL_INVALID_VALUE);
-        return;
+    } else {
+        ALboolean recalc = AL_TRUE;
+        FIXME("Not atomic vs the mixer thread");  /* maybe have a latching system? */
+        switch (param) {
+            case AL_POSITION:
+                ctx->listener.position[0] = (ALfloat) values[0];
+                ctx->listener.position[1] = (ALfloat) values[1];
+                ctx->listener.position[2] = (ALfloat) values[2];
+                break;
+
+            case AL_VELOCITY:
+                ctx->listener.velocity[0] = (ALfloat) values[0];
+                ctx->listener.velocity[1] = (ALfloat) values[1];
+                ctx->listener.velocity[2] = (ALfloat) values[2];
+                break;
+
+            case AL_ORIENTATION:
+                ctx->listener.orientation[0] = (ALfloat) values[0];
+                ctx->listener.orientation[1] = (ALfloat) values[1];
+                ctx->listener.orientation[2] = (ALfloat) values[2];
+                ctx->listener.orientation[4] = (ALfloat) values[3];
+                ctx->listener.orientation[5] = (ALfloat) values[4];
+                ctx->listener.orientation[6] = (ALfloat) values[5];
+                break;
+
+            default:
+                recalc = AL_FALSE;
+                set_al_error(ctx, AL_INVALID_ENUM);
+                break;
+        }
+
+        if (recalc) {
+            context_needs_recalc(ctx);
+        }
     }
-
-    switch (param) {
-        case AL_GAIN:
-            ctx->listener.gain = *values;
-            break;
-
-        case AL_POSITION:
-            SDL_memcpy(ctx->listener.position, values, sizeof (*values) * 3);
-            break;
-
-        case AL_VELOCITY:
-            SDL_memcpy(ctx->listener.velocity, values, sizeof (*values) * 3);
-            break;
-
-        case AL_ORIENTATION:
-            SDL_memcpy(&ctx->listener.orientation[0], &values[0], sizeof (*values) * 3);
-            SDL_memcpy(&ctx->listener.orientation[4], &values[3], sizeof (*values) * 3);
-            break;
-
-        default: set_al_error(ctx, AL_INVALID_ENUM); return;
-    }
-
-    context_needs_recalc(ctx);
 }
+ENTRYPOINTVOID(alListeneriv,(ALenum param, const ALint *values),(param,values))
 
-void alListeneri(ALenum param, ALint value)
+static void _alListeneri(const ALenum param, const ALint value)
 {
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alListeneri,(ALenum param, ALint value),(param,value))
 
-void alListener3i(ALenum param, ALint value1, ALint value2, ALint value3)
+static void _alListener3i(const ALenum param, const ALint value1, const ALint value2, const ALint value3)
 {
     switch (param) {
         case AL_POSITION:
         case AL_VELOCITY: {
             const ALint values[3] = { value1, value2, value3 };
-            alListeneriv(param, values);
-            return;
+            _alListeneriv(param, values);
+            break;
         }
-        default: break;
-    }
-
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
-}
-
-void alListeneriv(ALenum param, const ALint *values)
-{
-    ALCcontext *ctx = get_current_context();
-    if (!ctx) {
-        set_al_error(ctx, AL_INVALID_OPERATION);
-        return;
-    }
-
-    if (!values) {
-        set_al_error(ctx, AL_INVALID_VALUE);
-        return;
-    }
-
-    switch (param) {
-        case AL_POSITION:
-            ctx->listener.position[0] = (ALfloat) values[0];
-            ctx->listener.position[1] = (ALfloat) values[1];
-            ctx->listener.position[2] = (ALfloat) values[2];
+        default:
+            set_al_error(get_current_context(), AL_INVALID_ENUM);
             break;
-
-        case AL_VELOCITY:
-            ctx->listener.velocity[0] = (ALfloat) values[0];
-            ctx->listener.velocity[1] = (ALfloat) values[1];
-            ctx->listener.velocity[2] = (ALfloat) values[2];
-            break;
-
-        case AL_ORIENTATION:
-            ctx->listener.orientation[0] = (ALfloat) values[0];
-            ctx->listener.orientation[1] = (ALfloat) values[1];
-            ctx->listener.orientation[2] = (ALfloat) values[2];
-            ctx->listener.orientation[4] = (ALfloat) values[3];
-            ctx->listener.orientation[5] = (ALfloat) values[4];
-            ctx->listener.orientation[6] = (ALfloat) values[5];
-            break;
-
-        default: set_al_error(ctx, AL_INVALID_ENUM); return;
     }
-
-    context_needs_recalc(ctx);
 }
+ENTRYPOINTVOID(alListener3i,(ALenum param, ALint value1, ALint value2, ALint value3),(param,value1,value2,value3))
 
-void alGetListenerf(ALenum param, ALfloat *value)
-{
-    switch (param) {
-        case AL_GAIN:
-            alGetListenerfv(param, value);
-            return;
-        default: break;
-    }
-
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
-}
-
-void alGetListener3f(ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *value3)
-{
-    ALfloat values[3];
-    switch (param) {
-        case AL_POSITION:
-        case AL_VELOCITY:
-            alGetListenerfv(param, values);
-            if (value1) *value1 = values[0];
-            if (value2) *value2 = values[1];
-            if (value3) *value3 = values[2];
-            return;
-
-        default: break;
-    }
-
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
-}
-
-void alGetListenerfv(ALenum param, ALfloat *values)
+static void _alGetListenerfv(const ALenum param, ALfloat *values)
 {
     ALCcontext *ctx = get_current_context();
     if (!ctx) {
@@ -2976,13 +3042,19 @@ void alGetListenerfv(ALenum param, ALfloat *values)
 
     set_al_error(ctx, AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetListenerfv,(ALenum param, ALfloat *values),(param,values))
 
-void alGetListeneri(ALenum param, ALint *value)
+static void _alGetListenerf(const ALenum param, ALfloat *value)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
+    switch (param) {
+        case AL_GAIN: _alGetListenerfv(param, value); break;
+        default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
+    }
 }
+ENTRYPOINTVOID(alGetListenerf,(ALenum param, ALfloat *value),(param,value))
 
-void alGetListener3i(ALenum param, ALint *value1, ALint *value2, ALint *value3)
+
+static void _alGetListener3f(const ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *value3)
 {
     ALint values[3];
     switch (param) {
@@ -2999,8 +3071,17 @@ void alGetListener3i(ALenum param, ALint *value1, ALint *value2, ALint *value3)
 
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetListener3f,(ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *value3),(param,value1,value2,value3))
 
-void alGetListeneriv(ALenum param, ALint *values)
+
+static void _alGetListeneri(const ALenum param, ALint *value)
+{
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in AL 1.1 uses this */
+}
+ENTRYPOINTVOID(alGetListeneri,(ALenum param, ALint *value),(param,value))
+
+
+static void _alGetListeneriv(const ALenum param, ALint *values)
 {
     ALCcontext *ctx = get_current_context();
     if (!ctx) {
@@ -3037,8 +3118,26 @@ void alGetListeneriv(ALenum param, ALint *values)
 
     set_al_error(ctx, AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetListeneriv,(ALenum param, ALint *values),(param,values))
 
-void alGenSources(ALsizei n, ALuint *names)
+static void _alGetListener3i(const ALenum param, ALint *value1, ALint *value2, ALint *value3)
+{
+    ALint values[3];
+    switch (param) {
+        case AL_POSITION:
+        case AL_VELOCITY:
+            _alGetListeneriv(param, values);
+            if (value1) *value1 = values[0];
+            if (value2) *value2 = values[1];
+            if (value3) *value3 = values[2];
+            break;
+
+        default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
+    }
+}
+ENTRYPOINTVOID(alGetListener3i,(ALenum param, ALint *value1, ALint *value2, ALint *value3),(param,value1,value2,value3))
+
+static void _alGenSources(const ALsizei n, ALuint *names)
 {
     ALCcontext *ctx = get_current_context();
     ALsizei found = 0;
@@ -3102,8 +3201,10 @@ void alGenSources(ALsizei n, ALuint *names)
         SDL_AtomicSet(&src->allocated, 1);   /* we officially own it. */
     }
 }
+ENTRYPOINTVOID(alGenSources,(ALsizei n, ALuint *names),(n,names))
 
-void alDeleteSources(ALsizei n, const ALuint *names)
+
+static void _alDeleteSources(const ALsizei n, const ALuint *names)
 {
     ALCcontext *ctx = get_current_context();
     ALsizei i;
@@ -3139,59 +3240,19 @@ void alDeleteSources(ALsizei n, const ALuint *names)
         }
     }
 }
+ENTRYPOINTVOID(alDeleteSources,(ALsizei n, const ALuint *names),(n,names))
 
-ALboolean alIsSource(ALuint name)
+static ALboolean _alIsSource(const ALuint name)
 {
     return is_source_valid(get_current_context(), name);
 }
+ENTRYPOINT(ALboolean,alIsSource,(ALuint name),(name))
 
-void alSourcef(ALuint name, ALenum param, ALfloat value)
-{
-    switch (param) {
-        case AL_GAIN:
-        case AL_MIN_GAIN:
-        case AL_MAX_GAIN:
-        case AL_REFERENCE_DISTANCE:
-        case AL_ROLLOFF_FACTOR:
-        case AL_MAX_DISTANCE:
-        case AL_PITCH:
-        case AL_CONE_INNER_ANGLE:
-        case AL_CONE_OUTER_ANGLE:
-        case AL_CONE_OUTER_GAIN:
-        case AL_SEC_OFFSET:
-        case AL_SAMPLE_OFFSET:
-        case AL_BYTE_OFFSET:
-            alSourcefv(name, param, &value);
-            return;
-        default: break;
-    }
-
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
-}
-
-void alSource3f(ALuint name, ALenum param, ALfloat value1, ALfloat value2, ALfloat value3)
-{
-    switch (param) {
-        case AL_POSITION:
-        case AL_VELOCITY:
-        case AL_DIRECTION: {
-            const ALfloat values[3] = { value1, value2, value3 };
-            alSourcefv(name, param, values);
-            return;
-        }
-        default: break;
-    }
-
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
-}
-
-void alSourcefv(ALuint name, ALenum param, const ALfloat *values)
+static void _alSourcefv(const ALuint name, const ALenum param, const ALfloat *values)
 {
     ALCcontext *ctx = get_current_context();
     ALsource *src = get_source(ctx, name);
     if (!src) return;
-
-    FIXME("this needs a lock");  // ...or atomic operations.
 
     switch (param) {
         case AL_GAIN: src->gain = *values; break;
@@ -3220,8 +3281,9 @@ void alSourcefv(ALuint name, ALenum param, const ALfloat *values)
 
     source_needs_recalc(src);
 }
+ENTRYPOINTVOID(alSourcefv,(ALuint name, ALenum param, const ALfloat *values),(name,param,values))
 
-void alSourcei(ALuint name, ALenum param, ALint value)
+static void _alSourcef(const ALuint name, const ALenum param, const ALfloat value)
 {
     switch (param) {
         case AL_SOURCE_RELATIVE:
@@ -3242,8 +3304,9 @@ void alSourcei(ALuint name, ALenum param, ALint value)
 
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alSourcef,(ALuint name, ALenum param, ALfloat value),(name,param,value))
 
-void alSource3i(ALuint name, ALenum param, ALint value1, ALint value2, ALint value3)
+static void _alSource3f(const ALuint name, const ALenum param, const ALfloat value1, const ALfloat value2, const ALfloat value3)
 {
     switch (param) {
         case AL_DIRECTION: {
@@ -3256,6 +3319,7 @@ void alSource3i(ALuint name, ALenum param, ALint value1, ALint value2, ALint val
 
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alSource3f,(ALuint name, ALenum param, ALfloat value1, ALfloat value2, ALfloat value3),(name,param,value1,value2,value3))
 
 static void set_source_static_buffer(ALCcontext *ctx, ALsource *src, const ALuint bufname)
 {
@@ -3311,13 +3375,11 @@ static void set_source_static_buffer(ALCcontext *ctx, ALsource *src, const ALuin
     }
 }
 
-void alSourceiv(ALuint name, ALenum param, const ALint *values)
+static void _alSourceiv(const ALuint name, const ALenum param, const ALint *values)
 {
     ALCcontext *ctx = get_current_context();
     ALsource *src = get_source(ctx, name);
     if (!src) return;
-
-    FIXME("this needs a lock");  // ...or atomic operations.
 
     switch (param) {
         case AL_BUFFER: set_source_static_buffer(ctx, src, (ALuint) *values); break;
@@ -3346,8 +3408,75 @@ void alSourceiv(ALuint name, ALenum param, const ALint *values)
 
     source_needs_recalc(src);
 }
+ENTRYPOINTVOID(alSourceiv,(ALuint name, ALenum param, const ALint *values),(name,param,values))
 
-void alGetSourcef(ALuint name, ALenum param, ALfloat *value)
+static void _alSourcei(const ALuint name, const ALenum param, const ALint value)
+{
+    switch (param) {
+        case AL_SOURCE_RELATIVE:
+        case AL_LOOPING:
+        case AL_BUFFER:
+        case AL_REFERENCE_DISTANCE:
+        case AL_ROLLOFF_FACTOR:
+        case AL_MAX_DISTANCE:
+        case AL_CONE_INNER_ANGLE:
+        case AL_CONE_OUTER_ANGLE:
+        case AL_SEC_OFFSET:
+        case AL_SAMPLE_OFFSET:
+        case AL_BYTE_OFFSET:
+            _alSourceiv(name, param, &value);
+            break;
+        default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
+    }
+}
+ENTRYPOINTVOID(alSourcei,(ALuint name, ALenum param, ALint value),(name,param,value))
+
+static void _alSource3i(const ALuint name, const ALenum param, const ALint value1, const ALint value2, const ALint value3)
+{
+    switch (param) {
+        case AL_DIRECTION: {
+            const ALint values[3] = { (ALint) value1, (ALint) value2, (ALint) value3 };
+            _alSourceiv(name, param, values);
+            break;
+        }
+        default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
+    }
+}
+ENTRYPOINTVOID(alSource3i,(ALuint name, ALenum param, ALint value1, ALint value2, ALint value3),(name,param,value1,value2,value3))
+
+static void _alGetSourcefv(const ALuint name, const ALenum param, ALfloat *values)
+{
+    ALCcontext *ctx = get_current_context();
+    ALsource *src = get_source(ctx, name);
+    if (!src) return;
+
+    switch (param) {
+        case AL_GAIN: *values = src->gain; break;
+        case AL_POSITION: SDL_memcpy(values, src->position, sizeof (ALfloat) * 3); break;
+        case AL_VELOCITY: SDL_memcpy(values, src->velocity, sizeof (ALfloat) * 3); break;
+        case AL_DIRECTION: SDL_memcpy(values, src->direction, sizeof (ALfloat) * 3); break;
+        case AL_MIN_GAIN: *values = src->min_gain; break;
+        case AL_MAX_GAIN: *values = src->max_gain; break;
+        case AL_REFERENCE_DISTANCE: *values = src->reference_distance; break;
+        case AL_ROLLOFF_FACTOR: *values = src->rolloff_factor; break;
+        case AL_MAX_DISTANCE: *values = src->max_distance; break;
+        case AL_PITCH: *values = src->pitch; break;
+        case AL_CONE_INNER_ANGLE: *values = src->cone_inner_angle; break;
+        case AL_CONE_OUTER_ANGLE: *values = src->cone_outer_angle; break;
+        case AL_CONE_OUTER_GAIN:  *values = src->cone_outer_gain; break;
+
+        case AL_SEC_OFFSET:
+        case AL_SAMPLE_OFFSET:
+        case AL_BYTE_OFFSET:
+            FIXME("offsets");
+            break;
+
+        default: set_al_error(ctx, AL_INVALID_ENUM); break;
+    }
+}
+ENTRYPOINTVOID(alGetSourcefv,(ALuint name, ALenum param, ALfloat *values),(name,param,values))
+
+static void _alGetSourcef(const ALuint name, const ALenum param, ALfloat *value)
 {
     switch (param) {
         case AL_GAIN:
@@ -3363,40 +3492,36 @@ void alGetSourcef(ALuint name, ALenum param, ALfloat *value)
         case AL_SEC_OFFSET:
         case AL_SAMPLE_OFFSET:
         case AL_BYTE_OFFSET:
-            alGetSourcefv(name, param, value);
-            return;
-        default: break;
+            _alGetSourcefv(name, param, value);
+            break;
+        default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
     }
-
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetSourcef,(ALuint name, ALenum param, ALfloat *value),(name,param,value))
 
-void alGetSource3f(ALuint name, ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *value3)
+static void _alGetSource3f(const ALuint name, const ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *value3)
 {
     switch (param) {
         case AL_POSITION:
         case AL_VELOCITY:
         case AL_DIRECTION: {
             ALfloat values[3];
-            alGetSourcefv(name, param, values);
+            _alGetSourcefv(name, param, values);
             if (value1) *value1 = values[0];
             if (value2) *value2 = values[1];
             if (value3) *value3 = values[2];
-            return;
+            break;
         }
-        default: break;
+        default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
     }
-
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetSource3f,(ALuint name, ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *value3),(name,param,value1,value2,value3))
 
-void alGetSourcefv(ALuint name, ALenum param, ALfloat *values)
+static void _alGetSourceiv(const ALuint name, const ALenum param, ALint *values)
 {
     ALCcontext *ctx = get_current_context();
     ALsource *src = get_source(ctx, name);
     if (!src) return;
-
-    FIXME("this needs a lock");  // ...or atomic operations.
 
     switch (param) {
         case AL_GAIN: *values = src->gain; return;
@@ -3424,8 +3549,9 @@ void alGetSourcefv(ALuint name, ALenum param, ALfloat *values)
 
     set_al_error(ctx, AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetSourceiv,(ALuint name, ALenum param, ALint *values),(name,param,values))
 
-void alGetSourcei(ALuint name, ALenum param, ALint *value)
+static void _alGetSourcei(const ALuint name, const ALenum param, ALint *value)
 {
     switch (param) {
         case AL_SOURCE_STATE:
@@ -3443,69 +3569,28 @@ void alGetSourcei(ALuint name, ALenum param, ALint *value)
         case AL_SEC_OFFSET:
         case AL_SAMPLE_OFFSET:
         case AL_BYTE_OFFSET:
-            alGetSourceiv(name, param, value);
-            return;
-        default: break;
+            _alGetSourceiv(name, param, value);
+            break;
+        default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
     }
-
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetSourcei,(ALuint name, ALenum param, ALint *value),(name,param,value))
 
-void alGetSource3i(ALuint name, ALenum param, ALint *value1, ALint *value2, ALint *value3)
+static void _alGetSource3i(const ALuint name, const ALenum param, ALint *value1, ALint *value2, ALint *value3)
 {
     switch (param) {
         case AL_DIRECTION: {
             ALint values[3];
-            alGetSourceiv(name, param, values);
+            _alGetSourceiv(name, param, values);
             if (value1) *value1 = values[0];
             if (value2) *value2 = values[1];
             if (value3) *value3 = values[2];
-            return;
+            break;
         }
-        default: break;
+        default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
     }
-
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
-
-void alGetSourceiv(ALuint name, ALenum param, ALint *values)
-{
-    ALCcontext *ctx = get_current_context();
-    ALsource *src = get_source(ctx, name);
-    if (!src) return;
-
-    FIXME("this needs a lock");  // ...or atomic operations.
-
-    switch (param) {
-        case AL_SOURCE_STATE: *values = (ALint) src->state; return;
-        case AL_SOURCE_TYPE: *values = (ALint) src->type; return;
-        case AL_BUFFER: *values = (ALint) (src->buffer ? src->buffer->name : 0); return;
-        case AL_BUFFERS_QUEUED: *values = (ALint) SDL_AtomicGet(&src->buffer_queue.num_items); return;
-        case AL_BUFFERS_PROCESSED: *values = (ALint) SDL_AtomicGet(&src->buffer_queue_processed.num_items); return;
-        case AL_SOURCE_RELATIVE: *values = (ALint) src->source_relative; return;
-        case AL_LOOPING: *values = (ALint) src->looping; return;
-        case AL_REFERENCE_DISTANCE: *values = (ALint) src->reference_distance; return;
-        case AL_ROLLOFF_FACTOR: *values = (ALint) src->rolloff_factor; return;
-        case AL_MAX_DISTANCE: *values = (ALint) src->max_distance; return;
-        case AL_CONE_INNER_ANGLE: *values = (ALint) src->cone_inner_angle; return;
-        case AL_CONE_OUTER_ANGLE: *values = (ALint) src->cone_outer_angle; return;
-        case AL_DIRECTION:
-            values[0] = (ALint) src->direction[0];
-            values[1] = (ALint) src->direction[1];
-            values[2] = (ALint) src->direction[2];
-            return;
-
-        case AL_SEC_OFFSET:
-        case AL_SAMPLE_OFFSET:
-        case AL_BYTE_OFFSET:
-            FIXME("offsets");
-            break; /*return;*/
-
-        default: break;
-    }
-
-    set_al_error(ctx, AL_INVALID_ENUM);
-}
+ENTRYPOINTVOID(alGetSource3i,(ALuint name, ALenum param, ALint *value1, ALint *value2, ALint *value3),(name,param,value1,value2,value3))
 
 static void source_play(ALCcontext *ctx, const ALuint name)
 {
@@ -3607,7 +3692,7 @@ SOURCE_STATE_TRANSITION_OP(Rewind, rewind)
 SOURCE_STATE_TRANSITION_OP(Pause, pause)
 
 
-void alSourceQueueBuffers(ALuint name, ALsizei nb, const ALuint *bufnames)
+static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALuint *bufnames)
 {
     BufferQueueItem *queue = NULL;
     BufferQueueItem *queueend = NULL;
@@ -3765,8 +3850,9 @@ void alSourceQueueBuffers(ALuint name, ALsizei nb, const ALuint *bufnames)
 
     SDL_AtomicAdd(&src->buffer_queue.num_items, (int) nb);
 }
+ENTRYPOINTVOID(alSourceQueueBuffers,(ALuint name, ALsizei nb, const ALuint *bufnames),(name,nb,bufnames))
 
-void alSourceUnqueueBuffers(ALuint name, ALsizei nb, ALuint *bufnames)
+static void _alSourceUnqueueBuffers(const ALuint name, const ALsizei nb, ALuint *bufnames)
 {
     BufferQueueItem *queueend = NULL;
     BufferQueueItem *queue;
@@ -3833,8 +3919,9 @@ void alSourceUnqueueBuffers(ALuint name, ALsizei nb, ALuint *bufnames)
         SDL_AtomicSetPtr(&queueend->next, ptr);
     } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, ptr, queue));
 }
+ENTRYPOINTVOID(alSourceUnqueueBuffers,(ALuint name, ALsizei nb, ALuint *bufnames),(name,nb,bufnames))
 
-void alGenBuffers(ALsizei n, ALuint *names)
+static void _alGenBuffers(const ALsizei n, ALuint *names)
 {
     ALCcontext *ctx = get_current_context();
     BufferBlock *endblock;
@@ -3915,8 +4002,9 @@ void alGenBuffers(ALsizei n, ALuint *names)
 
     SDL_free(objects);
 }
+ENTRYPOINTVOID(alGenBuffers,(ALsizei n, ALuint *names),(n,names))
 
-void alDeleteBuffers(ALsizei n, const ALuint *names)
+static void _alDeleteBuffers(const ALsizei n, const ALuint *names)
 {
     ALCcontext *ctx = get_current_context();
     ALsizei i;
@@ -3959,14 +4047,16 @@ void alDeleteBuffers(ALsizei n, const ALuint *names)
         }
     }
 }
+ENTRYPOINTVOID(alDeleteBuffers,(ALsizei n, const ALuint *names),(n,names))
 
-ALboolean alIsBuffer(ALuint name)
+static ALboolean _alIsBuffer(ALuint name)
 {
     ALCcontext *ctx = get_current_context();
     return (ctx && (get_buffer(ctx, name) != NULL)) ? AL_TRUE : AL_FALSE;
 }
+ENTRYPOINT(ALboolean,alIsBuffer,(ALuint name),(name))
 
-void alBufferData(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, ALsizei freq)
+static void _alBufferData(const ALuint name, const ALenum alfmt, const ALvoid *data, const ALsizei size, const ALsizei freq)
 {
     ALCcontext *ctx = get_current_context();
     ALbuffer *buffer = get_buffer(ctx, name);
@@ -4039,62 +4129,71 @@ void alBufferData(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, A
     buffer->len = (ALsizei) sdlcvt.len_cvt;
     (void) SDL_AtomicDecRef(&buffer->refcount);  /* ready to go! */
 }
+ENTRYPOINTVOID(alBufferData,(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, ALsizei freq),(name,alfmt,data,size,freq))
 
-void alBufferf(ALuint name, ALenum param, ALfloat value)
+static void _alBufferfv(const ALuint name, const ALenum param, const ALfloat *values)
 {
     /* nothing in core OpenAL 1.1 uses this */
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alBufferfv,(ALuint name, ALenum param, const ALfloat *values),(name,param,values))
 
-void alBuffer3f(ALuint name, ALenum param, ALfloat value1, ALfloat value2, ALfloat value3)
+static void _alBufferf(const ALuint name, const ALenum param, const ALfloat value)
 {
     /* nothing in core OpenAL 1.1 uses this */
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alBufferf,(ALuint name, ALenum param, ALfloat value),(name,param,value))
 
-void alBufferfv(ALuint name, ALenum param, const ALfloat *values)
+static void _alBuffer3f(const ALuint name, const ALenum param, const ALfloat value1, const ALfloat value2, const ALfloat value3)
 {
     /* nothing in core OpenAL 1.1 uses this */
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alBuffer3f,(ALuint name, ALenum param, ALfloat value1, ALfloat value2, ALfloat value3),(name,param,value1,value2,value3))
 
-void alBufferi(ALuint name, ALenum param, ALint value)
+static void _alBufferiv(const ALuint name, const ALenum param, const ALint *values)
+{
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
+}
+ENTRYPOINTVOID(alBufferiv,(ALuint name, ALenum param, const ALint *values),(name,param,values))
+
+static void _alBufferi(const ALuint name, const ALenum param, const ALint value)
 {
     /* nothing in core OpenAL 1.1 uses this */
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alBufferi,(ALuint name, ALenum param, ALint value),(name,param,value))
 
-void alBuffer3i(ALuint name, ALenum param, ALint value1, ALint value2, ALint value3)
+static void _alBuffer3i(const ALuint name, const ALenum param, const ALint value1, const ALint value2, const ALint value3)
 {
     /* nothing in core OpenAL 1.1 uses this */
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alBuffer3i,(ALuint name, ALenum param, ALint value1, ALint value2, ALint value3),(name,param,value1,value2,value3))
 
-void alBufferiv(ALuint name, ALenum param, const ALint *values)
+static void _alGetBufferfv(const ALuint name, const ALenum param, const ALfloat *values)
 {
     /* nothing in core OpenAL 1.1 uses this */
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetBufferfv,(ALuint name, ALenum param, ALfloat *values),(name,param,values))
 
-void alGetBufferf(ALuint name, ALenum param, ALfloat *value)
+static void _alGetBufferf(const ALuint name, const ALenum param, ALfloat *value)
 {
     /* nothing in core OpenAL 1.1 uses this */
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetBufferf,(ALuint name, ALenum param, ALfloat *value),(name,param,value))
 
-void alGetBuffer3f(ALuint name, ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *value3)
+static void _alGetBuffer3f(const ALuint name, const ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *value3)
 {
     /* nothing in core OpenAL 1.1 uses this */
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetBuffer3f,(ALuint name, ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *value3),(name,param,value1,value2,value3))
 
-void alGetBufferfv(ALuint name, ALenum param, ALfloat *values)
-{
-    /* nothing in core OpenAL 1.1 uses this */
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
-}
-
-void alGetBufferi(ALuint name, ALenum param, ALint *value)
+static void _alGetBufferi(const ALuint name, const ALenum param, ALint *value)
 {
     switch (param) {
         case AL_FREQUENCY:
@@ -4108,20 +4207,21 @@ void alGetBufferi(ALuint name, ALenum param, ALint *value)
 
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetBufferi,(ALuint name, ALenum param, ALint *value),(name,param,value))
 
-void alGetBuffer3i(ALuint name, ALenum param, ALint *value1, ALint *value2, ALint *value3)
+static void _alGetBuffer3i(const ALuint name, const ALenum param, ALint *value1, ALint *value2, ALint *value3)
 {
     /* nothing in core OpenAL 1.1 uses this */
     set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetBuffer3i,(ALuint name, ALenum param, ALint *value1, ALint *value2, ALint *value3),(name,param,value1,value2,value3))
 
-void alGetBufferiv(ALuint name, ALenum param, ALint *values)
+static void _alGetBufferiv(const ALuint name, const ALenum param, ALint *values)
 {
     ALCcontext *ctx = get_current_context();
     ALbuffer *buffer = get_buffer(ctx, name);
     if (!buffer) return;
 
-    FIXME("this needs a lock");  // ...or atomic operations.
     switch (param) {
         case AL_FREQUENCY: *values = (ALint) buffer->frequency; return;
         case AL_SIZE: *values = (ALint) buffer->len; return;
@@ -4132,6 +4232,7 @@ void alGetBufferiv(ALuint name, ALenum param, ALint *values)
 
     set_al_error(ctx, AL_INVALID_ENUM);
 }
+ENTRYPOINTVOID(alGetBufferiv,(ALuint name, ALenum param, ALint *values),(name,param,values))
 
 /* end of mojoal.c ... */
 
