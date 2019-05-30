@@ -434,8 +434,8 @@ struct ALCdevice_struct
 {
     char *name;
     ALCenum error;
+    SDL_atomic_t connected;
     ALCboolean iscapture;
-    ALCboolean connected;
     SDL_AudioDeviceID sdldevice;
 
     ALint channels;
@@ -602,7 +602,7 @@ static void set_alc_error(ALCdevice *device, const ALCenum error)
 #define context_needs_recalc(ctx) SDL_MemoryBarrierRelease(); ctx->recalc = AL_TRUE;
 #define source_needs_recalc(src) SDL_MemoryBarrierRelease(); src->recalc = AL_TRUE;
 
-ALCdevice *alcOpenDevice(const ALCchar *devicename)
+static ALCdevice *prep_alc_device(const char *devicename, const ALCboolean iscapture)
 {
     ALCdevice *dev = NULL;
 
@@ -637,10 +637,6 @@ ALCdevice *alcOpenDevice(const ALCchar *devicename)
         return NULL;
     }
 
-    if (!devicename) {
-        devicename = DEFAULT_PLAYBACK_DEVICE;  /* so ALC_DEVICE_SPECIFIER is meaningful */
-    }
-
     dev->name = SDL_strdup(devicename);
     if (!dev->name) {
         SDL_free(dev);
@@ -648,12 +644,23 @@ ALCdevice *alcOpenDevice(const ALCchar *devicename)
         return NULL;
     }
 
+    SDL_AtomicSet(&dev->connected, ALC_TRUE);
+    dev->iscapture = iscapture;
+
+    return dev;
+}
+
+/* no api lock; this creates it and otherwise doesn't have any state that can race */
+ALCdevice *alcOpenDevice(const ALCchar *devicename)
+{
+    if (!devicename) {
+        devicename = DEFAULT_PLAYBACK_DEVICE;  /* so ALC_DEVICE_SPECIFIER is meaningful */
+    }
+
+    return prep_alc_device(devicename, ALC_FALSE);
+
     /* we don't open an SDL audio device until the first context is
        created, so we can attempt to match audio formats. */
-
-    dev->connected = ALC_TRUE;
-    dev->iscapture = ALC_FALSE;
-    return dev;
 }
 
 /* no api lock; this requires you to not destroy a device that's still in use */
@@ -1744,18 +1751,21 @@ static void SDLCALL playback_device_callback(void *userdata, Uint8 *stream, int 
 {
     ALCdevice *device = (ALCdevice *) userdata;
     ALCcontext *ctx;
+    ALCboolean connected = ALC_FALSE;
 
     SDL_memset(stream, '\0', len);
 
-    if (device->connected) {
+    if (SDL_AtomicGet(&device->connected)) {
         if (SDL_GetAudioDeviceStatus(device->sdldevice) == SDL_AUDIO_STOPPED) {
-            device->connected = ALC_FALSE;
+            SDL_AtomicSet(&device->connected, ALC_FALSE);
+        } else {
+            connected = ALC_TRUE;
         }
     }
 
     for (ctx = device->playback.contexts; ctx != NULL; ctx = ctx->next) {
         if (SDL_AtomicGet(&ctx->processing)) {
-            if (device->connected) {
+            if (connected) {
                 mix_context(ctx, (float *) stream, len);
             } else {
                 mix_disconnected_context(ctx);
@@ -1778,7 +1788,7 @@ static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
         return NULL;
     }
 
-    if (!device->connected) {
+    if (!SDL_AtomicGet(&device->connected)) {
         set_alc_error(device, ALC_INVALID_DEVICE);
         return NULL;
     }
@@ -2188,7 +2198,7 @@ static void _alcGetIntegerv(ALCdevice *device, const ALCenum param, const ALCsiz
 
         case ALC_CONNECTED:
             if (device) {
-                *values = (ALCint) device->connected ? ALC_TRUE : ALC_FALSE;
+                *values = SDL_AtomicGet(&device->connected) ? ALC_TRUE : ALC_FALSE;
             } else {
                 *values = 0;
                 set_alc_error(device, ALC_INVALID_DEVICE);
@@ -2248,15 +2258,18 @@ ENTRYPOINTVOID(alcGetIntegerv,(ALCdevice *device, ALCenum param, ALCsizei size, 
 static void SDLCALL capture_device_callback(void *userdata, Uint8 *stream, int len)
 {
     ALCdevice *device = (ALCdevice *) userdata;
+    ALCboolean connected = ALC_FALSE;
     SDL_assert(device->iscapture);
 
-    if (device->connected) {
+    if (SDL_AtomicGet(&device->connected)) {
         if (SDL_GetAudioDeviceStatus(device->sdldevice) == SDL_AUDIO_STOPPED) {
-            device->connected = ALC_FALSE;
+            SDL_AtomicSet(&device->connected, ALC_FALSE);
+        } else {
+            connected = ALC_TRUE;
         }
     }
 
-    if (device->connected) {
+    if (connected) {
         ring_buffer_put(&device->capture.ring, stream, (ALCsizei) len);
     }
 }
@@ -2264,23 +2277,19 @@ static void SDLCALL capture_device_callback(void *userdata, Uint8 *stream, int l
 /* no api lock; this creates it and otherwise doesn't have any state that can race */
 ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, ALCenum format, ALCsizei buffersize)
 {
-    ALCdevice *device = NULL;
     SDL_AudioSpec desired;
     ALCsizei framesize = 0;
+    const char *sdldevname = NULL;
+    ALCdevice *device = NULL;
+    ALCubyte *ringbuf = NULL;
 
     SDL_zero(desired);
     if (!alcfmt_to_sdlfmt(format, &desired.format, &desired.channels, &framesize)) {
         return NULL;
     }
 
-    if (SDL_InitSubSystem(SDL_INIT_AUDIO) == -1) {
-        return NULL;
-    }
-
-    device = (ALCdevice *) SDL_calloc(1, sizeof (ALCdevice));
-    if (!device) {
-        SDL_QuitSubSystem(SDL_INIT_AUDIO);
-        return NULL;
+    if (!devicename) {
+        devicename = DEFAULT_CAPTURE_DEVICE;  /* so ALC_CAPTURE_DEVICE_SPECIFIER is meaningful */
     }
 
     desired.freq = frequency;
@@ -2288,43 +2297,35 @@ ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, AL
     desired.callback = capture_device_callback;
     desired.userdata = device;
 
-    device->connected = ALC_TRUE;
-    device->iscapture = ALC_TRUE;
-
-    if (!devicename) {
-        devicename = DEFAULT_CAPTURE_DEVICE;  /* so ALC_CAPTURE_DEVICE_SPECIFIER is meaningful */
+    if (SDL_strcmp(devicename, DEFAULT_CAPTURE_DEVICE) != 0) {
+        sdldevname = devicename;  /* we want NULL for the best SDL default unless app is explicit. */
     }
 
-    device->name = SDL_strdup(devicename);
-    if (!device->name) {
-        SDL_free(device);
-        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    device = prep_alc_device(devicename, ALC_TRUE);
+    if (!device) {
         return NULL;
-    }
-
-    if (SDL_strcmp(devicename, DEFAULT_CAPTURE_DEVICE) == 0) {
-        devicename = NULL;  /* tell SDL we want the best default */
     }
 
     device->frequency = frequency;
     device->framesize = framesize;
     device->capture.ring.size = framesize * buffersize;
 
-    if (device->capture.ring.size < buffersize) {
-        device->capture.ring.buffer = NULL;  /* uhoh, integer overflow! */
-    } else {
-        device->capture.ring.buffer = (ALCubyte *) SDL_malloc(device->capture.ring.size);
+    if (device->capture.ring.size >= buffersize) {
+        ringbuf = (ALCubyte *) SDL_malloc(device->capture.ring.size);
     }
 
-    if (!device->capture.ring.buffer) {
+    if (!ringbuf) {
         SDL_free(device->name);
         SDL_free(device);
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        return NULL;
     }
 
-    device->sdldevice = SDL_OpenAudioDevice(devicename, 1, &desired, NULL, 0);
+    device->capture.ring.buffer = ringbuf;
+
+    device->sdldevice = SDL_OpenAudioDevice(sdldevname, 1, &desired, NULL, 0);
     if (!device->sdldevice) {
-        SDL_free(device->capture.ring.buffer);
+        SDL_free(ringbuf);
         SDL_free(device->name);
         SDL_free(device);
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
@@ -3604,7 +3605,7 @@ static void source_play(ALCcontext *ctx, const ALuint name)
         } else if (src->state != AL_PAUSED) {
             src->offset = 0;
         }
-        if (ctx->device->connected) {
+        if (SDL_AtomicGet(&ctx->device->connected)) {
             src->state = AL_PLAYING;
         } else {
             source_mark_all_buffers_processed(src);
