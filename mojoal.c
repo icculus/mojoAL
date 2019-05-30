@@ -3052,11 +3052,11 @@ ENTRYPOINTVOID(alGetListenerf,(ALenum param, ALfloat *value),(param,value))
 
 static void _alGetListener3f(const ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *value3)
 {
-    ALint values[3];
+    ALfloat values[3];
     switch (param) {
         case AL_POSITION:
         case AL_VELOCITY:
-            alGetListeneriv(param, values);
+            _alGetListenerfv(param, values);
             if (value1) *value1 = values[0];
             if (value2) *value2 = values[1];
             if (value3) *value3 = values[2];
@@ -3276,14 +3276,16 @@ ENTRYPOINTVOID(alSourcefv,(ALuint name, ALenum param, const ALfloat *values),(na
 static void _alSourcef(const ALuint name, const ALenum param, const ALfloat value)
 {
     switch (param) {
-        case AL_SOURCE_RELATIVE:
-        case AL_LOOPING:
-        case AL_BUFFER:
+        case AL_GAIN:
+        case AL_MIN_GAIN:
+        case AL_MAX_GAIN:
         case AL_REFERENCE_DISTANCE:
         case AL_ROLLOFF_FACTOR:
         case AL_MAX_DISTANCE:
+        case AL_PITCH:
         case AL_CONE_INNER_ANGLE:
         case AL_CONE_OUTER_ANGLE:
+        case AL_CONE_OUTER_GAIN:
         case AL_SEC_OFFSET:
         case AL_SAMPLE_OFFSET:
         case AL_BYTE_OFFSET:
@@ -3298,10 +3300,12 @@ ENTRYPOINTVOID(alSourcef,(ALuint name, ALenum param, ALfloat value),(name,param,
 static void _alSource3f(const ALuint name, const ALenum param, const ALfloat value1, const ALfloat value2, const ALfloat value3)
 {
     switch (param) {
+        case AL_POSITION:
+        case AL_VELOCITY:
         case AL_DIRECTION: {
-            const ALint values[3] = { (ALint) value1, (ALint) value2, (ALint) value3 };
-            alSourceiv(name, param, values);
-            return;
+            const ALfloat values[3] = { value1, value2, value3 };
+            _alSourcefv(name, param, values);
+            break;
         }
         default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
     }
@@ -3511,19 +3515,23 @@ static void _alGetSourceiv(const ALuint name, const ALenum param, ALint *values)
     if (!src) return;
 
     switch (param) {
-        case AL_GAIN: *values = src->gain; return;
-        case AL_POSITION: SDL_memcpy(values, src->position, sizeof (ALfloat) * 3); return;
-        case AL_VELOCITY: SDL_memcpy(values, src->velocity, sizeof (ALfloat) * 3); return;
-        case AL_DIRECTION: SDL_memcpy(values, src->direction, sizeof (ALfloat) * 3); return;
-        case AL_MIN_GAIN: *values = src->min_gain; return;
-        case AL_MAX_GAIN: *values = src->max_gain; return;
-        case AL_REFERENCE_DISTANCE: *values = src->reference_distance; return;
-        case AL_ROLLOFF_FACTOR: *values = src->rolloff_factor; return;
-        case AL_MAX_DISTANCE: *values = src->max_distance; return;
-        case AL_PITCH: *values = src->pitch; return;
-        case AL_CONE_INNER_ANGLE: *values = src->cone_inner_angle; return;
-        case AL_CONE_OUTER_ANGLE: *values = src->cone_outer_angle; return;
-        case AL_CONE_OUTER_GAIN:  *values = src->cone_outer_gain; return;
+        case AL_SOURCE_STATE: *values = (ALint) src->state; break;
+        case AL_SOURCE_TYPE: *values = (ALint) src->type; break;
+        case AL_BUFFER: *values = (ALint) (src->buffer ? src->buffer->name : 0); break;
+        case AL_BUFFERS_QUEUED: *values = (ALint) SDL_AtomicGet(&src->buffer_queue.num_items); break;
+        case AL_BUFFERS_PROCESSED: *values = (ALint) SDL_AtomicGet(&src->buffer_queue_processed.num_items); break;
+        case AL_SOURCE_RELATIVE: *values = (ALint) src->source_relative; break;
+        case AL_LOOPING: *values = (ALint) src->looping; break;
+        case AL_REFERENCE_DISTANCE: *values = (ALint) src->reference_distance; break;
+        case AL_ROLLOFF_FACTOR: *values = (ALint) src->rolloff_factor; break;
+        case AL_MAX_DISTANCE: *values = (ALint) src->max_distance; break;
+        case AL_CONE_INNER_ANGLE: *values = (ALint) src->cone_inner_angle; break;
+        case AL_CONE_OUTER_ANGLE: *values = (ALint) src->cone_outer_angle; break;
+        case AL_DIRECTION:
+            values[0] = (ALint) src->direction[0];
+            values[1] = (ALint) src->direction[1];
+            values[2] = (ALint) src->direction[2];
+            break;
 
         case AL_SEC_OFFSET:
         case AL_SAMPLE_OFFSET:
