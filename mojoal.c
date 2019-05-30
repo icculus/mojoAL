@@ -2360,9 +2360,11 @@ static void _alcCaptureStart(ALCdevice *device)
     if (device && device->iscapture) {
         /* alcCaptureStart() drops any previously-buffered data. */
         FIXME("does this clear the ring buffer if the device is already started?");
+        SDL_LockAudioDevice(device->sdldevice);
         device->capture.ring.read = 0;
         device->capture.ring.write = 0;
         device->capture.ring.used = 0;
+        SDL_UnlockAudioDevice(device->sdldevice);
         SDL_PauseAudioDevice(device->sdldevice, 0);
     }
 }
