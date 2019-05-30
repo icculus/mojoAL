@@ -376,7 +376,7 @@ typedef struct ALbuffer
 typedef struct BufferBlock
 {
     ALbuffer buffers[OPENAL_BUFFER_BLOCK_SIZE];   /* allocate these in blocks so we can step through faster. */
-    void *next;  /* void* because we'll atomicgetptr it. */
+    struct BufferBlock *next;
 } BufferBlock;
 
 typedef struct BufferQueueItem
@@ -670,6 +670,7 @@ ALCboolean alcCloseDevice(ALCdevice *device)
         return ALC_FALSE;
     }
 
+    FIXME("track total allocated buffers in each block so we don't have to walk the whole thing");
     for (bb = &device->playback.buffer_blocks; bb; bb = bb->next) {
         ALbuffer *buf = bb->buffers;
         int i;
@@ -2454,7 +2455,7 @@ static ALbuffer *get_buffer(ALCcontext *ctx, const ALuint name)
             break;
         }
 
-        block = (BufferBlock *) SDL_AtomicGetPtr(&block->next);
+        block = block->next;
         block_offset += SDL_arraysize(block->buffers);
     }
 
@@ -3946,12 +3947,7 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
                 return;
             }
 
-            if (!SDL_AtomicCASPtr(&endblock->next, NULL, block)) {
-                /* another thread beat us to adding a new block; free our new block, try again with theirs. */
-                SDL_free(block);
-                endblock = SDL_AtomicGetPtr(&endblock->next);
-                block = endblock;
-            }
+            endblock->next = block;
         }
 
         for (i = 0; i < SDL_arraysize(block->buffers); i++) {
@@ -3969,7 +3965,7 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
         }
 
         endblock = block;
-        block = (BufferBlock *) SDL_AtomicGetPtr(&block->next);
+        block = block->next;
         block_offset += SDL_arraysize(block->buffers);
     }
 
