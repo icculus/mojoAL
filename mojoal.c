@@ -673,6 +673,7 @@ ALCboolean alcCloseDevice(ALCdevice *device)
         return ALC_FALSE;
     }
 
+    /* spec: "Failure will occur if all the device's contexts and buffers have not been destroyed." */
     if (device->playback.contexts) {
         return ALC_FALSE;
     }
@@ -1193,7 +1194,7 @@ static ALCboolean mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, Buffer
         SDL_assert((src->type == AL_STATIC) || (src->type == AL_STREAMING));
         if (src->type == AL_STREAMING) {  /* mark buffer processed. */
             SDL_assert(item == src->buffer_queue.head);
-            FIXME("bubble out all these NULL checks");  // these are only here because we check for looping/stopping in this loop, but we really shouldn't enter this loop at all if queue==NULL.
+            FIXME("bubble out all these NULL checks");  /* these are only here because we check for looping/stopping in this loop, but we really shouldn't enter this loop at all if queue==NULL. */
             if (item != NULL) {
                 src->buffer_queue.head = next;
                 if (!next) {
@@ -2191,6 +2192,7 @@ static void _alcGetIntegerv(ALCdevice *device, const ALCenum param, const ALCsiz
                 return;
             }
 
+            FIXME("make ring buffer atomic?");
             SDL_LockAudioDevice(device->sdldevice);
             *values = (ALCint) (device->capture.ring.used / device->framesize);
             SDL_UnlockAudioDevice(device->sdldevice);
@@ -2200,7 +2202,7 @@ static void _alcGetIntegerv(ALCdevice *device, const ALCenum param, const ALCsiz
             if (device) {
                 *values = SDL_AtomicGet(&device->connected) ? ALC_TRUE : ALC_FALSE;
             } else {
-                *values = 0;
+                *values = ALC_FALSE;
                 set_alc_error(device, ALC_INVALID_DEVICE);
             }
             return;
@@ -2534,21 +2536,21 @@ ENTRYPOINTVOID(alDistanceModel,(ALenum model),(model))
 
 static void _alEnable(const ALenum capability)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in AL 1.1 uses this. */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
 }
 ENTRYPOINTVOID(alEnable,(ALenum capability),(capability))
 
 
 static void _alDisable(const ALenum capability)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in AL 1.1 uses this. */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
 }
 ENTRYPOINTVOID(alDisable,(ALenum capability),(capability))
 
 
 static ALboolean _alIsEnabled(const ALenum capability)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in AL 1.1 uses this. */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
     return AL_FALSE;
 }
 ENTRYPOINT(ALboolean,alIsEnabled,(ALenum capability),(capability))
@@ -2988,7 +2990,7 @@ ENTRYPOINTVOID(alListeneriv,(ALenum param, const ALint *values),(param,values))
 
 static void _alListeneri(const ALenum param, const ALint value)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in AL 1.1 uses this */
 }
 ENTRYPOINTVOID(alListeneri,(ALenum param, ALint value),(param,value))
 
@@ -3932,7 +3934,7 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
         return;
     }
 
-    FIXME("add an indexing array instead of walking the buffer blocks for lookup?");  // thread safety, blah blah blah
+    FIXME("keep track of total available buffers per block, so we can skip over full ones");
 
     block = endblock = &ctx->device->playback.buffer_blocks;  /* the first one is a static piece of the context */
     while (found < n) {
@@ -4118,22 +4120,19 @@ ENTRYPOINTVOID(alBufferData,(ALuint name, ALenum alfmt, const ALvoid *data, ALsi
 
 static void _alBufferfv(const ALuint name, const ALenum param, const ALfloat *values)
 {
-    /* nothing in core OpenAL 1.1 uses this */
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
 }
 ENTRYPOINTVOID(alBufferfv,(ALuint name, ALenum param, const ALfloat *values),(name,param,values))
 
 static void _alBufferf(const ALuint name, const ALenum param, const ALfloat value)
 {
-    /* nothing in core OpenAL 1.1 uses this */
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
 }
 ENTRYPOINTVOID(alBufferf,(ALuint name, ALenum param, ALfloat value),(name,param,value))
 
 static void _alBuffer3f(const ALuint name, const ALenum param, const ALfloat value1, const ALfloat value2, const ALfloat value3)
 {
-    /* nothing in core OpenAL 1.1 uses this */
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
 }
 ENTRYPOINTVOID(alBuffer3f,(ALuint name, ALenum param, ALfloat value1, ALfloat value2, ALfloat value3),(name,param,value1,value2,value3))
 
@@ -4145,36 +4144,31 @@ ENTRYPOINTVOID(alBufferiv,(ALuint name, ALenum param, const ALint *values),(name
 
 static void _alBufferi(const ALuint name, const ALenum param, const ALint value)
 {
-    /* nothing in core OpenAL 1.1 uses this */
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
 }
 ENTRYPOINTVOID(alBufferi,(ALuint name, ALenum param, ALint value),(name,param,value))
 
 static void _alBuffer3i(const ALuint name, const ALenum param, const ALint value1, const ALint value2, const ALint value3)
 {
-    /* nothing in core OpenAL 1.1 uses this */
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
 }
 ENTRYPOINTVOID(alBuffer3i,(ALuint name, ALenum param, ALint value1, ALint value2, ALint value3),(name,param,value1,value2,value3))
 
 static void _alGetBufferfv(const ALuint name, const ALenum param, const ALfloat *values)
 {
-    /* nothing in core OpenAL 1.1 uses this */
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
 }
 ENTRYPOINTVOID(alGetBufferfv,(ALuint name, ALenum param, ALfloat *values),(name,param,values))
 
 static void _alGetBufferf(const ALuint name, const ALenum param, ALfloat *value)
 {
-    /* nothing in core OpenAL 1.1 uses this */
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
 }
 ENTRYPOINTVOID(alGetBufferf,(ALuint name, ALenum param, ALfloat *value),(name,param,value))
 
 static void _alGetBuffer3f(const ALuint name, const ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *value3)
 {
-    /* nothing in core OpenAL 1.1 uses this */
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
 }
 ENTRYPOINTVOID(alGetBuffer3f,(ALuint name, ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *value3),(name,param,value1,value2,value3))
 
@@ -4196,8 +4190,7 @@ ENTRYPOINTVOID(alGetBufferi,(ALuint name, ALenum param, ALint *value),(name,para
 
 static void _alGetBuffer3i(const ALuint name, const ALenum param, ALint *value1, ALint *value2, ALint *value3)
 {
-    /* nothing in core OpenAL 1.1 uses this */
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
+    set_al_error(get_current_context(), AL_INVALID_ENUM); /* nothing in core OpenAL 1.1 uses this */
 }
 ENTRYPOINTVOID(alGetBuffer3i,(ALuint name, ALenum param, ALint *value1, ALint *value2, ALint *value3),(name,param,value1,value2,value3))
 
