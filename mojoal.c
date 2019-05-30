@@ -2612,11 +2612,9 @@ static void _alGetIntegerv(const ALenum param, ALint *values)
     if (!values) return;  /* legal no-op */
 
     switch (param) {
-        case AL_DISTANCE_MODEL: *values = (ALint) ctx->distance_model; return;
-        default: break;
+        case AL_DISTANCE_MODEL: *values = (ALint) ctx->distance_model; break;
+        default: set_al_error(ctx, AL_INVALID_ENUM); break;
     }
-
-    set_al_error(ctx, AL_INVALID_ENUM);
 }
 ENTRYPOINTVOID(alGetIntegerv,(ALenum param, ALint *values),(param,values))
 
@@ -2631,13 +2629,11 @@ static void _alGetFloatv(const ALenum param, ALfloat *values)
     if (!values) return;  /* legal no-op */
 
     switch (param) {
-        case AL_DOPPLER_FACTOR: *values = ctx->doppler_factor; return;
-        case AL_DOPPLER_VELOCITY: *values = ctx->doppler_velocity; return;
-        case AL_SPEED_OF_SOUND: *values = ctx->speed_of_sound; return;
-        default: break;
+        case AL_DOPPLER_FACTOR: *values = ctx->doppler_factor; break;
+        case AL_DOPPLER_VELOCITY: *values = ctx->doppler_velocity; break;
+        case AL_SPEED_OF_SOUND: *values = ctx->speed_of_sound; break;
+        default: set_al_error(ctx, AL_INVALID_ENUM); break;
     }
-
-    set_al_error(ctx, AL_INVALID_ENUM);
 }
 ENTRYPOINTVOID(alGetFloatv,(ALenum param, ALfloat *values),(param,values))
 
@@ -3024,25 +3020,23 @@ static void _alGetListenerfv(const ALenum param, ALfloat *values)
     switch (param) {
         case AL_GAIN:
             *values = ctx->listener.gain;
-            return;
+            break;
 
         case AL_POSITION:
             SDL_memcpy(values, ctx->listener.position, sizeof (ALfloat) * 3);
-            return;
+            break;
 
         case AL_VELOCITY:
             SDL_memcpy(values, ctx->listener.velocity, sizeof (ALfloat) * 3);
-            return;
+            break;
 
         case AL_ORIENTATION:
             SDL_memcpy(&values[0], &ctx->listener.orientation[0], sizeof (ALfloat) * 3);
             SDL_memcpy(&values[3], &ctx->listener.orientation[4], sizeof (ALfloat) * 3);
-            return;
+            break;
 
-        default: break;
+        default: set_al_error(ctx, AL_INVALID_ENUM); break;
     }
-
-    set_al_error(ctx, AL_INVALID_ENUM);
 }
 ENTRYPOINTVOID(alGetListenerfv,(ALenum param, ALfloat *values),(param,values))
 
@@ -3066,12 +3060,9 @@ static void _alGetListener3f(const ALenum param, ALfloat *value1, ALfloat *value
             if (value1) *value1 = values[0];
             if (value2) *value2 = values[1];
             if (value3) *value3 = values[2];
-            return;
-
-        default: break;
+            break;
+        default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
     }
-
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 ENTRYPOINTVOID(alGetListener3f,(ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *value3),(param,value1,value2,value3))
 
@@ -3098,13 +3089,13 @@ static void _alGetListeneriv(const ALenum param, ALint *values)
             values[0] = (ALint) ctx->listener.position[0];
             values[1] = (ALint) ctx->listener.position[1];
             values[2] = (ALint) ctx->listener.position[2];
-            return;
+            break;
 
         case AL_VELOCITY:
             values[0] = (ALint) ctx->listener.velocity[0];
             values[1] = (ALint) ctx->listener.velocity[1];
             values[2] = (ALint) ctx->listener.velocity[2];
-            return;
+            break;
 
         case AL_ORIENTATION:
             values[0] = (ALint) ctx->listener.orientation[0];
@@ -3113,12 +3104,10 @@ static void _alGetListeneriv(const ALenum param, ALint *values)
             values[3] = (ALint) ctx->listener.orientation[4];
             values[4] = (ALint) ctx->listener.orientation[5];
             values[5] = (ALint) ctx->listener.orientation[6];
-            return;
+            break;
 
-        default: break;
+        default: set_al_error(ctx, AL_INVALID_ENUM); break;
     }
-
-    set_al_error(ctx, AL_INVALID_ENUM);
 }
 ENTRYPOINTVOID(alGetListeneriv,(ALenum param, ALint *values),(param,values))
 
@@ -3298,12 +3287,11 @@ static void _alSourcef(const ALuint name, const ALenum param, const ALfloat valu
         case AL_SEC_OFFSET:
         case AL_SAMPLE_OFFSET:
         case AL_BYTE_OFFSET:
-            alSourceiv(name, param, &value);
-            return;
-        default: break;
-    }
+            _alSourcefv(name, param, &value);
+            break;
 
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
+        default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
+    }
 }
 ENTRYPOINTVOID(alSourcef,(ALuint name, ALenum param, ALfloat value),(name,param,value))
 
@@ -3315,10 +3303,8 @@ static void _alSource3f(const ALuint name, const ALenum param, const ALfloat val
             alSourceiv(name, param, values);
             return;
         }
-        default: break;
+        default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
     }
-
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 ENTRYPOINTVOID(alSource3f,(ALuint name, ALenum param, ALfloat value1, ALfloat value2, ALfloat value3),(name,param,value1,value2,value3))
 
@@ -3545,10 +3531,8 @@ static void _alGetSourceiv(const ALuint name, const ALenum param, ALint *values)
             FIXME("offsets");
             break;
 
-        default: break;
+        default: set_al_error(ctx, AL_INVALID_ENUM); break;
     }
-
-    set_al_error(ctx, AL_INVALID_ENUM);
 }
 ENTRYPOINTVOID(alGetSourceiv,(ALuint name, ALenum param, ALint *values),(name,param,values))
 
@@ -4181,11 +4165,9 @@ static void _alGetBufferi(const ALuint name, const ALenum param, ALint *value)
         case AL_BITS:
         case AL_CHANNELS:
             alGetBufferiv(name, param, value);
-            return;
-        default: break;
+            break;
+        default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
     }
-
-    set_al_error(get_current_context(), AL_INVALID_ENUM);
 }
 ENTRYPOINTVOID(alGetBufferi,(ALuint name, ALenum param, ALint *value),(name,param,value))
 
@@ -4202,14 +4184,12 @@ static void _alGetBufferiv(const ALuint name, const ALenum param, ALint *values)
     if (!buffer) return;
 
     switch (param) {
-        case AL_FREQUENCY: *values = (ALint) buffer->frequency; return;
-        case AL_SIZE: *values = (ALint) buffer->len; return;
-        case AL_BITS: *values = (ALint) buffer->bits; return;
-        case AL_CHANNELS: *values = (ALint) buffer->channels; return;
-        default: break;
+        case AL_FREQUENCY: *values = (ALint) buffer->frequency; break;
+        case AL_SIZE: *values = (ALint) buffer->len; break;
+        case AL_BITS: *values = (ALint) buffer->bits; break;
+        case AL_CHANNELS: *values = (ALint) buffer->channels; break;
+        default: set_al_error(ctx, AL_INVALID_ENUM); break;
     }
-
-    set_al_error(ctx, AL_INVALID_ENUM);
 }
 ENTRYPOINTVOID(alGetBufferiv,(ALuint name, ALenum param, ALint *values),(name,param,values))
 
