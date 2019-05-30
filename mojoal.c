@@ -2097,7 +2097,6 @@ static const ALCchar *calculate_sdl_device_list(const int iscapture)
     avail -= cpy + 1;
 
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) == -1) {
-        return final_list;
         return NULL;
     }
 
