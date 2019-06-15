@@ -815,9 +815,7 @@ static void mix_float32_c1_sse(const ALfloat * restrict panning, const float * r
         stream[1] += data[0] * right;
         stream[2] += data[1] * left;
         stream[3] += data[1] * right;
-        stream += 4;
-        data += 2;
-        mix_float32_c1_sse(panning, data + 2, stream + 2, mixframes - 2);
+        mix_float32_c1_sse(panning, data + 2, stream + 4, mixframes - 2);
     } else if ( (((size_t)stream) % 16) || (((size_t)data) % 16) ) {
         /* unaligned, do scalar version. */
         mix_float32_c1_scalar(panning, data, stream, mixframes);
@@ -877,8 +875,6 @@ static void mix_float32_c2_sse(const ALfloat * restrict panning, const float * r
     if ( ((((size_t)stream) % 16) == 8) && ((((size_t)data) % 16) == 8) && mixframes ) {
         stream[0] += data[0] * left;
         stream[1] += data[1] * right;
-        stream += 2;
-        data += 2;
         mix_float32_c2_sse(panning, data + 2, stream + 2, mixframes - 1);
     } else if ( (((size_t)stream) % 16) || (((size_t)data) % 16) ) {
         /* unaligned, do scalar version. */
@@ -929,9 +925,7 @@ static void mix_float32_c1_neon(const ALfloat * restrict panning, const float * 
         stream[1] += data[0] * right;
         stream[2] += data[1] * left;
         stream[3] += data[1] * right;
-        stream += 4;
-        data += 2;
-        mix_float32_c1_neon(panning, data + 2, stream + 2, mixframes - 2);
+        mix_float32_c1_neon(panning, data + 2, stream + 4, mixframes - 2);
     } else if ( (((size_t)stream) % 16) || (((size_t)data) % 16) ) {
         /* unaligned, do scalar version. */
         mix_float32_c1_scalar(panning, data, stream, mixframes);
@@ -991,8 +985,6 @@ static void mix_float32_c2_neon(const ALfloat * restrict panning, const float * 
     if ( ((((size_t)stream) % 16) == 8) && ((((size_t)data) % 16) == 8) && mixframes ) {
         stream[0] += data[0] * left;
         stream[1] += data[1] * right;
-        stream += 2;
-        data += 2;
         mix_float32_c2_neon(panning, data + 2, stream + 2, mixframes - 1);
     } else if ( (((size_t)stream) % 16) || (((size_t)data) % 16) ) {
         /* unaligned, do scalar version. */
