@@ -13,9 +13,6 @@
 #ifdef _MSC_VER
   #define AL_API __declspec(dllexport)
   #define ALC_API __declspec(dllexport)
-  #if !defined(inline) && !defined(__cplusplus)
-    #define inline __inline
-  #endif
 #endif
 
 #include "AL/al.h"
@@ -1887,7 +1884,7 @@ static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
 ENTRYPOINT(ALCcontext *,alcCreateContext,(ALCdevice *device, const ALCint* attrlist),(device,attrlist))
 
 
-static inline ALCcontext *get_current_context(void)
+static SDL_INLINE ALCcontext *get_current_context(void)
 {
     return (ALCcontext *) SDL_AtomicGetPtr(&current_context);
 }
