@@ -435,7 +435,6 @@ typedef struct SourceBlock
     ALsource sources[OPENAL_SOURCE_BLOCK_SIZE];  /* allocate these in blocks so we can step through faster. */
     ALuint used;
     ALuint tmp;  /* only touch under api_lock, assume it'll be gone later. */
-    struct SourceBlock *next;
 } SourceBlock;
 
 
@@ -474,7 +473,8 @@ struct ALCdevice_struct
 struct ALCcontext_struct
 {
     /* keep these first to help guarantee that its elements are aligned for SIMD */
-    SourceBlock source_blocks;
+    SourceBlock **source_blocks;
+    ALsizei num_source_blocks;
 
     SIMDALIGNEDSTRUCT {
         ALfloat position[4];
@@ -706,7 +706,7 @@ ALCboolean alcCloseDevice(ALCdevice *device)
         SDL_CloseAudioDevice(device->sdldevice);
     }
 
-    for (i = 0; i <device->playback.num_buffer_blocks; i++) {
+    for (i = 0; i < device->playback.num_buffer_blocks; i++) {
         SDL_free(device->playback.buffer_blocks[i]);
     }
     SDL_free(device->playback.buffer_blocks);
@@ -1843,10 +1843,6 @@ static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
     }
 
     /* Make sure everything that wants to use SIMD is aligned for it. */
-    SDL_assert( (((size_t) &retval->source_blocks.sources[0].position[0]) % 16) == 0 );
-    SDL_assert( (((size_t) &retval->source_blocks.sources[0].velocity[0]) % 16) == 0 );
-    SDL_assert( (((size_t) &retval->source_blocks.sources[0].direction[0]) % 16) == 0 );
-    SDL_assert( (((size_t) &retval->source_blocks.sources[1].position[0]) % 16) == 0 );
     SDL_assert( (((size_t) &retval->listener.position[0]) % 16) == 0 );
     SDL_assert( (((size_t) &retval->listener.orientation[0]) % 16) == 0 );
     SDL_assert( (((size_t) &retval->listener.velocity[0]) % 16) == 0 );
@@ -1953,8 +1949,7 @@ ENTRYPOINTVOID(alcSuspendContext,(ALCcontext *ctx),(ctx))
 
 static void _alcDestroyContext(ALCcontext *ctx)
 {
-    SourceBlock *sb;
-    int i;
+    ALsizei blocki;
 
     FIXME("Should NULL context be an error?");
     if (!ctx) return;
@@ -1980,25 +1975,27 @@ static void _alcDestroyContext(ALCcontext *ctx)
     }
     SDL_UnlockAudioDevice(ctx->device->sdldevice);
 
-    for (sb = ctx->source_blocks.next; sb != NULL; sb = sb->next) {
-        for (i = 0; i < SDL_arraysize(sb->sources); i++) {
-            ALsource *src = &sb->sources[i];
-            if (SDL_AtomicGet(&src->allocated) < 1) {
-                continue;
+    for (blocki = 0; blocki < ctx->num_source_blocks; blocki++) {
+        SourceBlock *sb = ctx->source_blocks[blocki];
+        if (sb->used > 0) {
+            ALsizei i;
+            for (i = 0; i < SDL_arraysize(sb->sources); i++) {
+                ALsource *src = &sb->sources[i];
+                if (!SDL_AtomicGet(&src->allocated)) {
+                    continue;
+                }
+
+                SDL_FreeAudioStream(src->stream);
+                source_release_buffer_queue(ctx, src);
+                if (--sb->used == 0) {
+                    break;
+                }
             }
-
-            SDL_FreeAudioStream(src->stream);
-            source_release_buffer_queue(ctx, src);
         }
-    }
-
-    sb = ctx->source_blocks.next;
-    while (sb) {
-        SourceBlock *next = sb->next;
         free_simd_aligned(sb);
-        sb = next;
     }
 
+    SDL_free(ctx->source_blocks);
     SDL_free(ctx->attributes);
     free_simd_aligned(ctx);
 }
@@ -2465,36 +2462,29 @@ static void wait_if_source_is_mixing(ALCcontext *ctx, ALsource *source)
     }
 }
 
-
 /* !!! FIXME: buffers and sources use almost identical code for blocks */
 static ALsource *get_source(ALCcontext *ctx, const ALuint name, SourceBlock **_block)
 {
+    const ALsizei blockidx = (((ALsizei) name) - 1) / OPENAL_SOURCE_BLOCK_SIZE;
+    const ALsizei block_offset = (((ALsizei) name) - 1) % OPENAL_SOURCE_BLOCK_SIZE;
+    ALsource *source;
     SourceBlock *block;
-    ALsource *source = NULL;
-    ALuint block_offset = 0;
 
     if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
+        if (_block) *_block = NULL;
         return NULL;
-    } else if (name == 0) {
+    } else if ((name == 0) || (blockidx >= ctx->num_source_blocks)) {
         set_al_error(ctx, AL_INVALID_NAME);
+        if (_block) *_block = NULL;
         return NULL;
     }
 
-    block = &ctx->source_blocks;
-    while (block != NULL) {
-        const ALuint next_offset = block_offset + SDL_arraysize(block->sources);
-        if ((block_offset < name) && (next_offset >= name)) {
-            source = &block->sources[(name - block_offset) - 1];
-            if (SDL_AtomicGet(&source->allocated) == 1) {
-                if (_block) *_block = block;
-                return source;
-            }
-            break;
-        }
-
-        block = block->next;
-        block_offset += SDL_arraysize(block->sources);
+    block = ctx->source_blocks[blockidx];
+    source = &block->sources[block_offset];
+    if (SDL_AtomicGet(&source->allocated) == 1) {
+        if (_block) *_block = block;
+        return source;
     }
 
     if (_block) *_block = NULL;
@@ -2507,7 +2497,7 @@ static ALbuffer *get_buffer(ALCcontext *ctx, const ALuint name, BufferBlock **_b
 {
     const ALsizei blockidx = (((ALsizei) name) - 1) / OPENAL_BUFFER_BLOCK_SIZE;
     const ALsizei block_offset = (((ALsizei) name) - 1) % OPENAL_BUFFER_BLOCK_SIZE;
-    ALbuffer *buffer = NULL;
+    ALbuffer *buffer;
     BufferBlock *block;
 
     if (!ctx) {
@@ -3197,13 +3187,14 @@ ENTRYPOINTVOID(alGetListener3i,(ALenum param, ALint *value1, ALint *value2, ALin
 static void _alGenSources(const ALsizei n, ALuint *names)
 {
     ALCcontext *ctx = get_current_context();
-    SourceBlock *endblock;
-    SourceBlock *block;
+    ALboolean out_of_memory = AL_FALSE;
+    ALsizei totalblocks;
     ALsource *stackobjs[16];
     ALsource **objects = stackobjs;
     ALsizei found = 0;
-    ALuint block_offset = 0;
-    ALuint i;
+    ALsizei block_offset = 0;
+    ALsizei blocki;
+    ALsizei i;
 
     if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
@@ -3220,35 +3211,17 @@ static void _alGenSources(const ALsizei n, ALuint *names)
         }
     }
 
-    block = endblock = &ctx->source_blocks;  /* the first one is a static piece of the context */
-    while (found < n) {
-        if (!block) {  /* out of blocks? Add a new one. */
-            block = (SourceBlock *) calloc_simd_aligned(sizeof (SourceBlock));
-            if (!block) {
-                FIXME("we don't have to mark these as allocated up front now.");
-                for (i = 0; i < (ALuint) found; i++) {
-                    SDL_AtomicSet(&objects[i]->allocated, 0);  /* return any temp-acquired buffers. */
-                }
-                if (objects != stackobjs) SDL_free(objects);
-                SDL_memset(names, '\0', sizeof (*names) * n);
-                set_al_error(ctx, AL_OUT_OF_MEMORY);
-                return;
-            }
-
-            endblock->next = block;
-        }
-
+    totalblocks = ctx->num_source_blocks;
+    for (blocki = 0; blocki < totalblocks; blocki++) {
+        SourceBlock *block = ctx->source_blocks[blocki];
         block->tmp = 0;
         if (block->used < SDL_arraysize(block->sources)) {  /* skip if full */
             for (i = 0; i < SDL_arraysize(block->sources); i++) {
-                FIXME("we don't have to mark these as allocated up front now.");
-                if (SDL_AtomicCAS(&block->sources[i].allocated, 0, 2)) {  /* 0==unused, 1==in use, 2==trying to acquire. */
-                    block->tmp++;
-                    objects[found] = &block->sources[i];
-                    names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
-                    if (found == n) {
-                        break;
-                    }
+                block->tmp++;
+                objects[found] = &block->sources[i];
+                names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
+                if (found == n) {
+                    break;
                 }
             }
 
@@ -3257,16 +3230,54 @@ static void _alGenSources(const ALsizei n, ALuint *names)
             }
         }
 
-        endblock = block;
-        block = block->next;
         block_offset += SDL_arraysize(block->sources);
+    }
+
+    while (found < n) {  /* out of blocks? Add new ones. */
+        /* ctx->source_blocks is only accessed on the API thread under a mutex, so it's safe to realloc. */
+        void *ptr = SDL_realloc(ctx->source_blocks, sizeof (SourceBlock *) * (totalblocks + 1));
+        SourceBlock *block;
+
+        if (!ptr) {
+            out_of_memory = AL_TRUE;
+            break;
+        }
+        ctx->source_blocks = (SourceBlock **) ptr;
+
+        block = (SourceBlock *) calloc_simd_aligned(sizeof (SourceBlock));
+        if (!block) {
+            out_of_memory = AL_TRUE;
+            break;
+        }
+        ctx->source_blocks[totalblocks] = block;
+        totalblocks++;
+        ctx->num_source_blocks++;
+
+        for (i = 0; i < SDL_arraysize(block->sources); i++) {
+            block->tmp++;
+            objects[found] = &block->sources[i];
+            names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
+            if (found == n) {
+                break;
+            }
+        }
+        block_offset += SDL_arraysize(block->sources);
+    }
+
+    if (out_of_memory) {
+        if (objects != stackobjs) SDL_free(objects);
+        SDL_memset(names, '\0', sizeof (*names) * n);
+        set_al_error(ctx, AL_OUT_OF_MEMORY);
+        return;
     }
 
     SDL_assert(found == n);  /* we should have either gotten space or bailed on alloc failure */
 
     /* update the "used" field in blocks with items we are taking now. */
     found = 0;
-    for (block = &ctx->source_blocks; found < n; block = block->next) {
+    for (blocki = 0; found < n; blocki++) {
+        SourceBlock *block = ctx->source_blocks[blocki];
+        SDL_assert(blocki < totalblocks);
         const int foundhere = block->tmp;
         if (foundhere) {
             block->used += foundhere;
@@ -3277,33 +3288,26 @@ static void _alGenSources(const ALsizei n, ALuint *names)
 
     SDL_assert(found == n);
 
-    for (i = 0; i < (ALuint) n; i++) {
+    for (i = 0; i < n; i++) {
         ALsource *src = objects[i];
-        /* don't SDL_zerop() this source, because we need src->allocated to stay at 2 until initialized. */  FIXME("this isn't true anymore");
+
+        /* Make sure everything that wants to use SIMD is aligned for it. */
+        SDL_assert( (((size_t) &src->position[0]) % 16) == 0 );
+        SDL_assert( (((size_t) &src->velocity[0]) % 16) == 0 );
+        SDL_assert( (((size_t) &src->direction[0]) % 16) == 0 );
+
+        SDL_zerop(src);
         SDL_AtomicSet(&src->state, AL_INITIAL);
         src->type = AL_UNDETERMINED;
         src->recalc = AL_TRUE;
-        src->source_relative = AL_FALSE;
-        src->looping = AL_FALSE;
         src->gain = 1.0f;
-        src->min_gain = 0.0f;
         src->max_gain = 1.0f;
-        SDL_zero(src->position);
-        SDL_zero(src->velocity);
-        SDL_zero(src->direction);
         src->reference_distance = 1.0f;
         src->max_distance = FLT_MAX;
         src->rolloff_factor = 1.0f;
         src->pitch = 1.0f;
         src->cone_inner_angle = 360.0f;
         src->cone_outer_angle = 360.0f;
-        src->cone_outer_gain = 0.0f;
-        src->buffer = NULL;
-        src->stream = NULL;
-        SDL_zero(src->buffer_queue);
-        SDL_zero(src->buffer_queue_processed);
-        src->queue_channels = 0;
-        src->queue_frequency = 0;
         source_needs_recalc(src);
         SDL_AtomicSet(&src->allocated, 1);   /* we officially own it. */
     }
