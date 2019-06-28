@@ -4138,14 +4138,11 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
         block->tmp = 0;
         if (block->used < SDL_arraysize(block->buffers)) {  /* skip if full */
             for (i = 0; i < SDL_arraysize(block->buffers); i++) {
-                FIXME("doesn't have to be 2 now, since API access is serialized");
-                if (SDL_AtomicCAS(&block->buffers[i].allocated, 0, 2)) {  /* 0==unused, 1==in use, 2==trying to acquire. */
-                    block->tmp++;
-                    objects[found] = &block->buffers[i];
-                    names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
-                    if (found == n) {
-                        break;
-                    }
+                block->tmp++;
+                objects[found] = &block->buffers[i];
+                names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
+                if (found == n) {
+                    break;
                 }
             }
 
@@ -4178,24 +4175,17 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
         ctx->device->playback.num_buffer_blocks++;
 
         for (i = 0; i < SDL_arraysize(block->buffers); i++) {
-            FIXME("doesn't have to be 2 now, since API access is serialized");
-            if (SDL_AtomicCAS(&block->buffers[i].allocated, 0, 2)) {  /* 0==unused, 1==in use, 2==trying to acquire. */
-                block->tmp++;
-                objects[found] = &block->buffers[i];
-                names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
-                if (found == n) {
-                    break;
-                }
+            block->tmp++;
+            objects[found] = &block->buffers[i];
+            names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
+            if (found == n) {
+                break;
             }
         }
         block_offset += SDL_arraysize(block->buffers);
     }
 
     if (out_of_memory) {
-        FIXME("just officially acquire at the end now that we're serialized");
-        for (i = 0; i < found; i++) {
-            SDL_AtomicSet(&objects[i]->allocated, 0);  /* return any temp-acquired buffers. */
-        }
         if (objects != stackobjs) SDL_free(objects);
         SDL_memset(names, '\0', sizeof (*names) * n);
         set_al_error(ctx, AL_OUT_OF_MEMORY);
@@ -4221,14 +4211,10 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
 
     for (i = 0; i < n; i++) {
         ALbuffer *buffer = objects[i];
-        /* don't SDL_zerop() this buffer, because we need buffer->allocated to stay at 2 until initialized. */
+        SDL_zerop(buffer);
         buffer->name = names[i];
         buffer->channels = 1;
         buffer->bits = 16;
-        buffer->frequency = 0;
-        buffer->len = 0;
-        buffer->data = NULL;
-        SDL_AtomicSet(&buffer->refcount, 0);
         SDL_AtomicSet(&buffer->allocated, 1);  /* we officially own it. */
     }
 
