@@ -84,10 +84,6 @@
 #endif
 
 
-// !!! FIXME: sources aren't unref'ing static buffers on deletion (and maybe
-// !!! FIXME:  on AL_BUFFER changing?)
-
-
 /*
   The locking strategy for this OpenAL implementation is complicated.
   Not only do we generally want you to be able to call into OpenAL from any
@@ -3360,6 +3356,11 @@ static void _alDeleteSources(const ALsizei n, const ALuint *names)
             SDL_AtomicSet(&source->allocated, 0);  /* will make mixer reject it if currently playing. */
             wait_if_source_is_mixing(ctx, source);
             source_release_buffer_queue(ctx, source);
+            if (source->buffer) {
+                SDL_assert(source->type == AL_STATIC);
+                (void) SDL_AtomicDecRef(&source->buffer->refcount);
+                source->buffer = NULL;
+            }
             if (source->stream) {
                 SDL_FreeAudioStream(source->stream);
                 source->stream = NULL;
