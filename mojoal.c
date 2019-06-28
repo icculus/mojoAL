@@ -376,7 +376,6 @@ typedef struct BufferBlock
     ALbuffer buffers[OPENAL_BUFFER_BLOCK_SIZE];  /* allocate these in blocks so we can step through faster. */
     ALuint used;
     ALuint tmp;  /* only touch under api_lock, assume it'll be gone later. */
-    struct BufferBlock *next;
 } BufferBlock;
 
 typedef struct BufferQueueItem
@@ -461,7 +460,8 @@ struct ALCdevice_struct
     union {
         struct {
             ALCcontext *contexts;
-            BufferBlock buffer_blocks;  /* buffers are shared between contexts on the same device. */
+            BufferBlock **buffer_blocks;  /* buffers are shared between contexts on the same device. */
+            ALCsizei num_buffer_blocks;
             void *buffer_queue_pool;  /* void* because we'll atomicgetptr it. */
             void *source_todo_pool;  /* void* because we'll atomicgetptr it. */
         } playback;
@@ -683,9 +683,9 @@ ALCdevice *alcOpenDevice(const ALCchar *devicename)
 /* no api lock; this requires you to not destroy a device that's still in use */
 ALCboolean alcCloseDevice(ALCdevice *device)
 {
-    BufferBlock *bb;
     BufferQueueItem *item;
     SourcePlayTodo *todo;
+    ALCsizei i;
 
     if (!device || device->iscapture) {
         return ALC_FALSE;
@@ -696,9 +696,9 @@ ALCboolean alcCloseDevice(ALCdevice *device)
         return ALC_FALSE;
     }
 
-    for (bb = &device->playback.buffer_blocks; bb; bb = bb->next) {
-        if (bb->used > 0) {
-            return ALC_FALSE;
+    for (i = 0; i <device->playback.num_buffer_blocks; i++) {
+        if (device->playback.buffer_blocks[i]->used > 0) {
+            return ALC_FALSE;  /* still buffers allocated. */
         }
     }
 
@@ -706,12 +706,10 @@ ALCboolean alcCloseDevice(ALCdevice *device)
         SDL_CloseAudioDevice(device->sdldevice);
     }
 
-    bb = device->playback.buffer_blocks.next;
-    while (bb) {
-        BufferBlock *next = bb->next;
-        SDL_free(bb);
-        bb = next;
+    for (i = 0; i <device->playback.num_buffer_blocks; i++) {
+        SDL_free(device->playback.buffer_blocks[i]);
     }
+    SDL_free(device->playback.buffer_blocks);
 
     item = (BufferQueueItem *) device->playback.buffer_queue_pool;
     while (item) {
@@ -2507,32 +2505,26 @@ static ALsource *get_source(ALCcontext *ctx, const ALuint name, SourceBlock **_b
 /* !!! FIXME: buffers and sources use almost identical code for blocks */
 static ALbuffer *get_buffer(ALCcontext *ctx, const ALuint name, BufferBlock **_block)
 {
-    BufferBlock *block;
+    const ALsizei blockidx = (((ALsizei) name) - 1) / OPENAL_BUFFER_BLOCK_SIZE;
+    const ALsizei block_offset = (((ALsizei) name) - 1) % OPENAL_BUFFER_BLOCK_SIZE;
     ALbuffer *buffer = NULL;
-    ALuint block_offset = 0;
+    BufferBlock *block;
 
     if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
+        if (_block) *_block = NULL;
         return NULL;
-    } else if (name == 0) {
+    } else if ((name == 0) || (blockidx >= ctx->device->playback.num_buffer_blocks)) {
         set_al_error(ctx, AL_INVALID_NAME);
+        if (_block) *_block = NULL;
         return NULL;
     }
 
-    block = &ctx->device->playback.buffer_blocks;
-    while (block != NULL) {
-        const ALuint next_offset = block_offset + SDL_arraysize(block->buffers);
-        if ((block_offset < name) && (next_offset >= name)) {
-            buffer = &block->buffers[(name - block_offset) - 1];
-            if (SDL_AtomicGet(&buffer->allocated) == 1) {
-                if (_block) *_block = block;
-                return buffer;
-            }
-            break;
-        }
-
-        block = block->next;
-        block_offset += SDL_arraysize(block->buffers);
+    block = ctx->device->playback.buffer_blocks[blockidx];
+    buffer = &block->buffers[block_offset];
+    if (SDL_AtomicGet(&buffer->allocated) == 1) {
+        if (_block) *_block = block;
+        return buffer;
     }
 
     if (_block) *_block = NULL;
@@ -4116,13 +4108,14 @@ ENTRYPOINTVOID(alSourceUnqueueBuffers,(ALuint name, ALsizei nb, ALuint *bufnames
 static void _alGenBuffers(const ALsizei n, ALuint *names)
 {
     ALCcontext *ctx = get_current_context();
-    BufferBlock *endblock;
-    BufferBlock *block;
+    ALboolean out_of_memory = AL_FALSE;
+    ALsizei totalblocks;
     ALbuffer *stackobjs[16];
     ALbuffer **objects = stackobjs;
     ALsizei found = 0;
-    ALuint block_offset = 0;
-    ALuint i;
+    ALsizei block_offset = 0;
+    ALsizei blocki;
+    ALsizei i;
 
     if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
@@ -4139,26 +4132,13 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
         }
     }
 
-    block = endblock = &ctx->device->playback.buffer_blocks;  /* the first one is a static piece of the context */
-    while (found < n) {
-        if (!block) {  /* out of blocks? Add a new one. */
-            block = (BufferBlock *) SDL_calloc(1, sizeof (BufferBlock));
-            if (!block) {
-                for (i = 0; i < (ALuint) found; i++) {
-                    SDL_AtomicSet(&objects[i]->allocated, 0);  /* return any temp-acquired buffers. */
-                }
-                if (objects != stackobjs) SDL_free(objects);
-                SDL_memset(names, '\0', sizeof (*names) * n);
-                set_al_error(ctx, AL_OUT_OF_MEMORY);
-                return;
-            }
-
-            endblock->next = block;
-        }
-
+    totalblocks = ctx->device->playback.num_buffer_blocks;
+    for (blocki = 0; blocki < totalblocks; blocki++) {
+        BufferBlock *block = ctx->device->playback.buffer_blocks[blocki];
         block->tmp = 0;
         if (block->used < SDL_arraysize(block->buffers)) {  /* skip if full */
             for (i = 0; i < SDL_arraysize(block->buffers); i++) {
+                FIXME("doesn't have to be 2 now, since API access is serialized");
                 if (SDL_AtomicCAS(&block->buffers[i].allocated, 0, 2)) {  /* 0==unused, 1==in use, 2==trying to acquire. */
                     block->tmp++;
                     objects[found] = &block->buffers[i];
@@ -4174,16 +4154,61 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
             }
         }
 
-        endblock = block;
-        block = block->next;
         block_offset += SDL_arraysize(block->buffers);
+    }
+
+    while (found < n) {  /* out of blocks? Add new ones. */
+        /* ctx->buffer_blocks is only accessed on the API thread under a mutex, so it's safe to realloc. */
+        void *ptr = SDL_realloc(ctx->device->playback.buffer_blocks, sizeof (BufferBlock *) * (totalblocks + 1));
+        BufferBlock *block;
+
+        if (!ptr) {
+            out_of_memory = AL_TRUE;
+            break;
+        }
+        ctx->device->playback.buffer_blocks = (BufferBlock **) ptr;
+
+        block = (BufferBlock *) SDL_calloc(1, sizeof (BufferBlock));
+        if (!block) {
+            out_of_memory = AL_TRUE;
+            break;
+        }
+        ctx->device->playback.buffer_blocks[totalblocks] = block;
+        totalblocks++;
+        ctx->device->playback.num_buffer_blocks++;
+
+        for (i = 0; i < SDL_arraysize(block->buffers); i++) {
+            FIXME("doesn't have to be 2 now, since API access is serialized");
+            if (SDL_AtomicCAS(&block->buffers[i].allocated, 0, 2)) {  /* 0==unused, 1==in use, 2==trying to acquire. */
+                block->tmp++;
+                objects[found] = &block->buffers[i];
+                names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
+                if (found == n) {
+                    break;
+                }
+            }
+        }
+        block_offset += SDL_arraysize(block->buffers);
+    }
+
+    if (out_of_memory) {
+        FIXME("just officially acquire at the end now that we're serialized");
+        for (i = 0; i < found; i++) {
+            SDL_AtomicSet(&objects[i]->allocated, 0);  /* return any temp-acquired buffers. */
+        }
+        if (objects != stackobjs) SDL_free(objects);
+        SDL_memset(names, '\0', sizeof (*names) * n);
+        set_al_error(ctx, AL_OUT_OF_MEMORY);
+        return;
     }
 
     SDL_assert(found == n);  /* we should have either gotten space or bailed on alloc failure */
 
     /* update the "used" field in blocks with items we are taking now. */
     found = 0;
-    for (block = &ctx->device->playback.buffer_blocks; found < n; block = block->next) {
+    for (blocki = 0; found < n; blocki++) {
+        BufferBlock *block = ctx->device->playback.buffer_blocks[blocki];
+        SDL_assert(blocki < totalblocks);
         const int foundhere = block->tmp;
         if (foundhere) {
             block->used += foundhere;
@@ -4194,7 +4219,7 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
 
     SDL_assert(found == n);
 
-    for (i = 0; i < (ALuint) n; i++) {
+    for (i = 0; i < n; i++) {
         ALbuffer *buffer = objects[i];
         /* don't SDL_zerop() this buffer, because we need buffer->allocated to stay at 2 until initialized. */
         buffer->name = names[i];
@@ -4293,12 +4318,8 @@ static void _alBufferData(const ALuint name, const ALenum alfmt, const ALvoid *d
         return;
     }
 
-    if (SDL_AtomicGet(&buffer->allocated) != 1) {
-        /* uhoh, something deleted us before we could IncRef! */
-        /* don't decref; until reallocated, it's meaningless. When reallocated, it's forced to zero. */
-        set_al_error(ctx, AL_INVALID_NAME);
-        return;
-    }
+    /* This check was from the wild west of lock-free programming, now we shouldn't pass get_buffer() if not allocated. */
+    SDL_assert(SDL_AtomicGet(&buffer->allocated) == 1);
 
     /* right now we take a moment to convert the data to float32, since that's
        the format we want to work in, but we don't resample or change the channels */
