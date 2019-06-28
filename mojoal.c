@@ -87,6 +87,10 @@
 #endif
 
 
+// !!! FIXME: sources aren't unref'ing static buffers on deletion (and maybe
+// !!! FIXME:  on AL_BUFFER changing?)
+
+
 /*
   The locking strategy for this OpenAL implementation is complicated.
   Not only do we generally want you to be able to call into OpenAL from any
@@ -170,7 +174,6 @@
 
 - Probably other things. These notes might get updates later.
 */
-
 
 #if 0
 #define FIXME(x)
@@ -372,7 +375,9 @@ typedef struct ALbuffer
 
 typedef struct BufferBlock
 {
-    ALbuffer buffers[OPENAL_BUFFER_BLOCK_SIZE];   /* allocate these in blocks so we can step through faster. */
+    ALbuffer buffers[OPENAL_BUFFER_BLOCK_SIZE];  /* allocate these in blocks so we can step through faster. */
+    ALuint used;
+    ALuint tmp;  /* only touch under api_lock, assume it'll be gone later. */
     struct BufferBlock *next;
 } BufferBlock;
 
@@ -675,14 +680,9 @@ ALCboolean alcCloseDevice(ALCdevice *device)
         return ALC_FALSE;
     }
 
-    FIXME("track total allocated buffers in each block so we don't have to walk the whole thing");
     for (bb = &device->playback.buffer_blocks; bb; bb = bb->next) {
-        ALbuffer *buf = bb->buffers;
-        int i;
-        for (i = 0; i < SDL_arraysize(bb->buffers); i++, buf++) {
-            if (SDL_AtomicGet(&buf->allocated) == 1) {
-                return ALC_FALSE;
-            }
+        if (bb->used > 0) {
+            return ALC_FALSE;
         }
     }
 
@@ -2431,7 +2431,8 @@ static ALsource *get_source(ALCcontext *ctx, const ALuint name)
     return &ctx->sources[name - 1];
 }
 
-static ALbuffer *get_buffer(ALCcontext *ctx, const ALuint name)
+/* !!! FIXME: buffers and sources use almost identical code for blocks */
+static ALbuffer *get_buffer(ALCcontext *ctx, const ALuint name, BufferBlock **_block)
 {
     BufferBlock *block;
     ALbuffer *buffer = NULL;
@@ -2451,6 +2452,7 @@ static ALbuffer *get_buffer(ALCcontext *ctx, const ALuint name)
         if ((block_offset < name) && (next_offset >= name)) {
             buffer = &block->buffers[(name - block_offset) - 1];
             if (SDL_AtomicGet(&buffer->allocated) == 1) {
+                if (_block) *_block = block;
                 return buffer;
             }
             break;
@@ -2460,6 +2462,7 @@ static ALbuffer *get_buffer(ALCcontext *ctx, const ALuint name)
         block_offset += SDL_arraysize(block->buffers);
     }
 
+    if (_block) *_block = NULL;
     set_al_error(ctx, AL_INVALID_NAME);
     return NULL;
 }
@@ -3315,7 +3318,7 @@ static void set_source_static_buffer(ALCcontext *ctx, ALsource *src, const ALuin
         set_al_error(ctx, AL_INVALID_OPERATION);  /* can't change buffer on playing/paused sources */
     } else {
         ALbuffer *buffer = NULL;
-        if (bufname && ((buffer = get_buffer(ctx, bufname)) == NULL)) {
+        if (bufname && ((buffer = get_buffer(ctx, bufname, NULL)) == NULL)) {
             set_al_error(ctx, AL_INVALID_VALUE);
         } else {
             SDL_AudioStream *stream = NULL;
@@ -3711,7 +3714,7 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
     for (i = nb; i > 0; i--) {  /* build list in reverse */
         BufferQueueItem *item = NULL;
         const ALuint bufname = bufnames[i-1];
-        ALbuffer *buffer = bufname ? get_buffer(ctx, bufname) : NULL;
+        ALbuffer *buffer = bufname ? get_buffer(ctx, bufname, NULL) : NULL;
         if (!buffer && bufname) {  /* uhoh, bad buffer name! */
             set_al_error(ctx, AL_INVALID_VALUE);
             failed = AL_TRUE;
@@ -3908,7 +3911,8 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
     ALCcontext *ctx = get_current_context();
     BufferBlock *endblock;
     BufferBlock *block;
-    ALbuffer **objects = NULL;
+    ALbuffer *stackobjs[16];
+    ALbuffer **objects = stackobjs;
     ALsizei found = 0;
     ALuint block_offset = 0;
     ALuint i;
@@ -3918,13 +3922,15 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
         return;
     }
 
-    objects = SDL_calloc(n, sizeof (ALbuffer *));
-    if (!objects) {
-        set_al_error(ctx, AL_OUT_OF_MEMORY);
-        return;
+    if (n <= SDL_arraysize(stackobjs)) {
+        SDL_memset(stackobjs, '\0', sizeof (ALbuffer *) * n);
+    } else {
+        objects = (ALbuffer **) SDL_calloc(n, sizeof (ALbuffer *));
+        if (!objects) {
+            set_al_error(ctx, AL_OUT_OF_MEMORY);
+            return;
+        }
     }
-
-    FIXME("keep track of total available buffers per block, so we can skip over full ones");
 
     block = endblock = &ctx->device->playback.buffer_blocks;  /* the first one is a static piece of the context */
     while (found < n) {
@@ -3934,7 +3940,7 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
                 for (i = 0; i < (ALuint) found; i++) {
                     SDL_AtomicSet(&objects[i]->allocated, 0);  /* return any temp-acquired buffers. */
                 }
-                SDL_free(objects);
+                if (objects != stackobjs) SDL_free(objects);
                 SDL_memset(names, '\0', sizeof (*names) * n);
                 set_al_error(ctx, AL_OUT_OF_MEMORY);
                 return;
@@ -3943,18 +3949,22 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
             endblock->next = block;
         }
 
-        for (i = 0; i < SDL_arraysize(block->buffers); i++) {
-            if (SDL_AtomicCAS(&block->buffers[i].allocated, 0, 2)) {  /* 0==unused, 1==in use, 2==trying to acquire. */
-                objects[found] = &block->buffers[i];
-                names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
-                if (found == n) {
-                    break;
+        block->tmp = 0;
+        if (block->used < SDL_arraysize(block->buffers)) {  /* skip if full */
+            for (i = 0; i < SDL_arraysize(block->buffers); i++) {
+                if (SDL_AtomicCAS(&block->buffers[i].allocated, 0, 2)) {  /* 0==unused, 1==in use, 2==trying to acquire. */
+                    block->tmp++;
+                    objects[found] = &block->buffers[i];
+                    names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
+                    if (found == n) {
+                        break;
+                    }
                 }
             }
-        }
 
-        if (found == n) {
-            break;
+            if (found == n) {
+                break;
+            }
         }
 
         endblock = block;
@@ -3963,6 +3973,19 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
     }
 
     SDL_assert(found == n);  /* we should have either gotten space or bailed on alloc failure */
+
+    /* update the "used" field in blocks with items we are taking now. */
+    found = 0;
+    for (block = &ctx->device->playback.buffer_blocks; found < n; block = block->next) {
+        const int foundhere = block->tmp;
+        if (foundhere) {
+            block->used += foundhere;
+            found += foundhere;
+            block->tmp = 0;
+        }
+    }
+
+    SDL_assert(found == n);
 
     for (i = 0; i < (ALuint) n; i++) {
         ALbuffer *buffer = objects[i];
@@ -3977,7 +4000,7 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
         SDL_AtomicSet(&buffer->allocated, 1);  /* we officially own it. */
     }
 
-    SDL_free(objects);
+    if (objects != stackobjs) SDL_free(objects);
 }
 ENTRYPOINTVOID(alGenBuffers,(ALsizei n, ALuint *names),(n,names))
 
@@ -3996,7 +4019,7 @@ static void _alDeleteBuffers(const ALsizei n, const ALuint *names)
         if (name == 0) {
             /* ignore it. */
         } else {
-            ALbuffer *buffer = get_buffer(ctx, name);
+            ALbuffer *buffer = get_buffer(ctx, name, NULL);
             if (!buffer) {
                 /* "If one or more of the specified names is not valid, an AL_INVALID_NAME error will be recorded, and no objects will be deleted." */
                 set_al_error(ctx, AL_INVALID_NAME);
@@ -4011,7 +4034,8 @@ static void _alDeleteBuffers(const ALsizei n, const ALuint *names)
     for (i = 0; i < n; i++) {
         const ALuint name = names[i];
         if (name != 0) {
-            ALbuffer *buffer = get_buffer(ctx, name);
+            BufferBlock *block;
+            ALbuffer *buffer = get_buffer(ctx, name, &block);
             void *data;
             SDL_assert(buffer != NULL);
             data = (void *) buffer->data;
@@ -4021,6 +4045,7 @@ static void _alDeleteBuffers(const ALsizei n, const ALuint *names)
                 buffer->data = NULL;
                 free_simd_aligned(data);
             }
+            block->used--;
         }
     }
 }
@@ -4029,14 +4054,14 @@ ENTRYPOINTVOID(alDeleteBuffers,(ALsizei n, const ALuint *names),(n,names))
 static ALboolean _alIsBuffer(ALuint name)
 {
     ALCcontext *ctx = get_current_context();
-    return (ctx && (get_buffer(ctx, name) != NULL)) ? AL_TRUE : AL_FALSE;
+    return (ctx && (get_buffer(ctx, name, NULL) != NULL)) ? AL_TRUE : AL_FALSE;
 }
 ENTRYPOINT(ALboolean,alIsBuffer,(ALuint name),(name))
 
 static void _alBufferData(const ALuint name, const ALenum alfmt, const ALvoid *data, const ALsizei size, const ALsizei freq)
 {
     ALCcontext *ctx = get_current_context();
-    ALbuffer *buffer = get_buffer(ctx, name);
+    ALbuffer *buffer = get_buffer(ctx, name, NULL);
     SDL_AudioCVT sdlcvt;
     Uint8 channels;
     SDL_AudioFormat sdlfmt;
@@ -4185,7 +4210,7 @@ ENTRYPOINTVOID(alGetBuffer3i,(ALuint name, ALenum param, ALint *value1, ALint *v
 static void _alGetBufferiv(const ALuint name, const ALenum param, ALint *values)
 {
     ALCcontext *ctx = get_current_context();
-    ALbuffer *buffer = get_buffer(ctx, name);
+    ALbuffer *buffer = get_buffer(ctx, name, NULL);
     if (!buffer) return;
 
     switch (param) {
