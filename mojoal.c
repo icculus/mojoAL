@@ -59,17 +59,14 @@
 #define DEFAULT_PLAYBACK_DEVICE "Default OpenAL playback device"
 #define DEFAULT_CAPTURE_DEVICE "Default OpenAL capture device"
 
-/* Some OpenAL apps (incorrectly) generate sources in a loop at startup until
-   it fails. We set an upper limit to protect against this behavior, which
-   also lets us not need to worry about locking in case another thread would
-   need to realloc a growing source array. */
-#ifndef OPENAL_MAX_SOURCES
-#define OPENAL_MAX_SOURCES 128
-#endif
-
 /* Number of buffers to allocate at once when we need a new block during alGenBuffers(). */
 #ifndef OPENAL_BUFFER_BLOCK_SIZE
 #define OPENAL_BUFFER_BLOCK_SIZE 256
+#endif
+
+/* Number of sources to allocate at once when we need a new block during alGenSources(). */
+#ifndef OPENAL_SOURCE_BLOCK_SIZE
+#define OPENAL_SOURCE_BLOCK_SIZE 64
 #endif
 
 /* AL_EXT_FLOAT32 support... */
@@ -213,23 +210,6 @@ static int has_neon = 0;
 #endif
 
 static SDL_mutex *api_lock = NULL;
-static void grab_api_lock(void)
-{
-    SDL_assert(api_lock != NULL);  /* ideally, you init first... */
-    if (api_lock) {
-        const int rc = SDL_LockMutex(api_lock);
-        SDL_assert(rc == 0);
-    }
-}
-
-static void ungrab_api_lock(void)
-{
-    SDL_assert(api_lock != NULL);  /* ideally, you init first... */
-    if (api_lock) {
-        const int rc = SDL_UnlockMutex(api_lock);
-        SDL_assert(rc == 0);
-    }
-}
 
 static int init_api_lock(void)
 {
@@ -240,6 +220,28 @@ static int init_api_lock(void)
         }
     }
     return 1;
+}
+
+static void grab_api_lock(void)
+{
+    if (!api_lock) {
+        if (!init_api_lock()) {
+            return;
+        }
+    }
+    const int rc = SDL_LockMutex(api_lock);
+    SDL_assert(rc == 0);
+}
+
+static void ungrab_api_lock(void)
+{
+    if (!api_lock) {
+        init_api_lock();
+        return;
+    }
+
+    const int rc = SDL_UnlockMutex(api_lock);
+    SDL_assert(rc == 0);
 }
 
 #define ENTRYPOINT(rettype,fn,params,args) \
@@ -335,7 +337,6 @@ static ALCsizei ring_buffer_get(RingBuffer *ring, void *_data, ALCsizei size)
     return size;  /* may have been clamped if there wasn't enough data... */
 }
 
-
 static void *calloc_simd_aligned(const size_t len)
 {
     Uint8 *retval = NULL;
@@ -373,6 +374,7 @@ typedef struct ALbuffer
     SDL_atomic_t refcount;  /* if zero, can be deleted or alBufferData'd */
 } ALbuffer;
 
+/* !!! FIXME: buffers and sources use almost identical code for blocks */
 typedef struct BufferBlock
 {
     ALbuffer buffers[OPENAL_BUFFER_BLOCK_SIZE];  /* allocate these in blocks so we can step through faster. */
@@ -405,8 +407,8 @@ SIMDALIGNEDSTRUCT ALsource
     ALfloat direction[4];
     ALfloat panning[2];  /* we only do stereo for now */
     SDL_atomic_t allocated;
-    SDL_SpinLock lock;
-    ALenum state;  /* initial, playing, paused, stopped */
+    SDL_atomic_t mixer_accessible;
+    SDL_atomic_t state;  /* initial, playing, paused, stopped */
     ALenum type;  /* undetermined, static, streaming */
     ALboolean recalc;
     ALboolean source_relative;
@@ -429,8 +431,24 @@ SIMDALIGNEDSTRUCT ALsource
     ALboolean offset_latched;  /* AL_SEC_OFFSET, etc, say set values apply to next alSourcePlay if not currently playing! */
     ALint queue_channels;
     ALsizei queue_frequency;
+    ALsource *playlist_next;  /* linked list that contains currently-playing sources! Only touched by mixer thread! */
 };
 
+/* !!! FIXME: buffers and sources use almost identical code for blocks */
+typedef struct SourceBlock
+{
+    ALsource sources[OPENAL_SOURCE_BLOCK_SIZE];  /* allocate these in blocks so we can step through faster. */
+    ALuint used;
+    ALuint tmp;  /* only touch under api_lock, assume it'll be gone later. */
+    struct SourceBlock *next;
+} SourceBlock;
+
+
+typedef struct SourcePlayTodo
+{
+    ALsource *source;
+    struct SourcePlayTodo *next;
+} SourcePlayTodo;
 
 struct ALCdevice_struct
 {
@@ -449,6 +467,7 @@ struct ALCdevice_struct
             ALCcontext *contexts;
             BufferBlock buffer_blocks;  /* buffers are shared between contexts on the same device. */
             void *buffer_queue_pool;  /* void* because we'll atomicgetptr it. */
+            void *source_todo_pool;  /* void* because we'll atomicgetptr it. */
         } playback;
         struct {
             RingBuffer ring;  /* only used if iscapture */
@@ -459,7 +478,7 @@ struct ALCdevice_struct
 struct ALCcontext_struct
 {
     /* keep these first to help guarantee that its elements are aligned for SIMD */
-    ALsource sources[OPENAL_MAX_SOURCES];   /* this array is indexed by ALuint source name. */
+    SourceBlock source_blocks;
 
     SIMDALIGNEDSTRUCT {
         ALfloat position[4];
@@ -480,8 +499,8 @@ struct ALCcontext_struct
     ALfloat doppler_velocity;
     ALfloat speed_of_sound;
 
-    SDL_atomic_t to_be_played[OPENAL_MAX_SOURCES / (sizeof (SDL_atomic_t) * 8)];
-    int playlist[OPENAL_MAX_SOURCES / (sizeof (SDL_atomic_t) * 8)];
+    void *playlist_todo;  /* void* so we can AtomicCASPtr it. Transmits new play commands from api thread to mixer thread */
+    ALsource *playlist;  /* linked list of currently-playing sources. Mixer thread only! */
 
     ALCcontext *prev;  /* contexts are in a double-linked list */
     ALCcontext *next;
@@ -670,6 +689,7 @@ ALCboolean alcCloseDevice(ALCdevice *device)
 {
     BufferBlock *bb;
     BufferQueueItem *item;
+    SourcePlayTodo *todo;
 
     if (!device || device->iscapture) {
         return ALC_FALSE;
@@ -702,6 +722,13 @@ ALCboolean alcCloseDevice(ALCdevice *device)
         BufferQueueItem *next = item->next;
         SDL_free(item);
         item = next;
+    }
+
+    todo = (SourcePlayTodo *) device->playback.source_todo_pool;
+    while (todo) {
+        SourcePlayTodo *next = todo->next;
+        SDL_free(todo);
+        todo = next;
     }
 
     SDL_free(device->name);
@@ -1216,7 +1243,7 @@ static ALCboolean mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, Buffer
                     FIXME("what does looping do with the AL_STREAMING state?");
                 }
             } else {
-                src->state = AL_STOPPED;
+                SDL_AtomicSet(&src->state, AL_STOPPED);
                 keep = ALC_FALSE;
             }
             break;  /* nothing else to mix here, so stop. */
@@ -1643,9 +1670,7 @@ static ALCboolean mix_source(ALCcontext *ctx, ALsource *src, float *stream, int 
 {
     ALCboolean keep;
 
-    SDL_AtomicLock(&src->lock);
-
-    keep = ((SDL_AtomicGet(&src->allocated) == 1) && (src->state == AL_PLAYING));
+    keep = ((SDL_AtomicGet(&src->allocated) == 1) && (SDL_AtomicGet(&src->state) == AL_PLAYING));
     if (keep) {
         if (src->recalc || force_recalc) {
             SDL_MemoryBarrierAcquire();
@@ -1663,31 +1688,48 @@ static ALCboolean mix_source(ALCcontext *ctx, ALsource *src, float *stream, int 
         }
     }
 
-    SDL_AtomicUnlock(&src->lock);
-
     return keep;
 }
 
 /* move new play requests over to the mixer thread. */
 static void migrate_playlist_requests(ALCcontext *ctx)
 {
-    int idx, bits;
-    for (idx = 0; idx < SDL_arraysize(ctx->to_be_played); idx++) {
-        SDL_atomic_t *atom = &ctx->to_be_played[idx];
-        do {
-            bits = SDL_AtomicGet(atom);
-        } while (!SDL_AtomicCAS(atom, bits, 0));
-        ctx->playlist[idx] |= bits;
+    SourcePlayTodo *todo;
+    SourcePlayTodo *todoend;
+    SourcePlayTodo *i;
+
+    do {  /* take the todo list atomically, now we own it. */
+        todo = (SourcePlayTodo *) ctx->playlist_todo;
+    } while (!SDL_AtomicCASPtr(&ctx->playlist_todo, todo, NULL));
+
+    if (!todo) {
+        return;  /* nothing new. */
     }
+
+    todoend = todo;
+
+    /* ctx->playlist and ALsource->playlist_next are only every touched
+       by the mixer thread, and source pointers live until context destruction. */
+    for (i = todo; i != NULL; i = i->next) {
+        todoend = i;
+        if (i->source->playlist_next == NULL) {
+            i->source->playlist_next = ctx->playlist;
+            ctx->playlist = i->source;
+        }
+    }
+
+    /* put these objects back in the pool for reuse */
+    do {
+        todoend->next = i = (SourcePlayTodo *) ctx->device->playback.source_todo_pool;
+    } while (!SDL_AtomicCASPtr(&ctx->device->playback.source_todo_pool, i, todo));
 }
 
 static void mix_context(ALCcontext *ctx, float *stream, int len)
 {
     const ALboolean force_recalc = ctx->recalc;
-    int idx = 0;
-    int base = 0;
-    int bits;
-    int i;
+    ALsource *next = NULL;
+    ALsource *prev = NULL;
+    ALsource *i;
 
     if (force_recalc) {
         SDL_MemoryBarrierAcquire();
@@ -1696,51 +1738,46 @@ static void mix_context(ALCcontext *ctx, float *stream, int len)
 
     migrate_playlist_requests(ctx);
 
-    /* rather than iterate all sources looking for what's playing, we just look at a handful of ints. */
-    for (idx = 0; idx < SDL_arraysize(ctx->playlist); idx++, base += (sizeof (bits) * 8)) {
-        int bits = ctx->playlist[idx];
-        if (!bits) { continue; }  /* don't iterate at all if they're all zero. */
-        for (i = 0; i < (sizeof (bits) * 8); i++) {
-            if ((bits & (1 << i)) == 0) { continue; }  /* not in the playlist */
-            if (!mix_source(ctx, &ctx->sources[base+i], stream, len, force_recalc)) {
-                /* take it out of the playlist. It it wasn't actually playing or it just finished. */
-                bits &= ~(1 << i);
-                ctx->playlist[idx] = bits;
+    for (i = ctx->playlist; i != NULL; i = next) {
+        next = i->playlist_next;  /* save this to a local in case we leave the list. */
+        SDL_AtomicSet(&i->mixer_accessible, 1);
+        if (!mix_source(ctx, i, stream, len, force_recalc)) {
+            /* take it out of the playlist. It wasn't actually playing or it just finished. */
+            i->playlist_next = NULL;
+            if (i == ctx->playlist) {
+                SDL_assert(prev == NULL);
+                ctx->playlist = next;
+            } else {
+                prev->playlist_next = next;
             }
         }
+        SDL_AtomicSet(&i->mixer_accessible, 0);
+        prev = i;
     }
 }
 
 /* Disconnected devices move all PLAYING sources to STOPPED, making their buffer queues processed. */
 static void mix_disconnected_context(ALCcontext *ctx)
 {
-    ALsource *src;
-    int idx = 0;
-    int base = 0;
-    int bits;
-    int i;
+    ALsource *next = NULL;
+    ALsource *i;
 
     migrate_playlist_requests(ctx);
 
-    /* rather than iterate all sources looking for what's playing, we just look at a handful of ints. */
-    for (idx = 0; idx < SDL_arraysize(ctx->playlist); idx++, base += (sizeof (bits) * 8)) {
-        int bits = ctx->playlist[idx];
-        if (!bits) { continue; }  /* don't iterate at all if they're all zero. */
-        for (i = 0; i < (sizeof (bits) * 8); i++) {
-            if ((bits & (1 << i)) == 0) { continue; }
-            src = &ctx->sources[base+i];
-            SDL_AtomicLock(&src->lock);
-            if ((SDL_AtomicGet(&src->allocated) == 1) && (src->state == AL_PLAYING)) {
-                src->state = AL_STOPPED;
-                source_mark_all_buffers_processed(src);
-            }
-            SDL_AtomicUnlock(&src->lock);
+    for (i = ctx->playlist; i != NULL; i = next) {
+        next = i->playlist_next;
 
-            /* remove from playlist; all playing things got stopped, paused/initial/stopped shouldn't be listed. */
-            bits &= ~(1 << i);
-            ctx->playlist[idx] = bits;
+        /* remove from playlist; all playing things got stopped, paused/initial/stopped shouldn't be listed. */
+        SDL_AtomicSet(&i->mixer_accessible, 1);
+        if ((SDL_AtomicGet(&i->allocated) == 1) && (SDL_AtomicGet(&i->state) == AL_PLAYING)) {
+            SDL_AtomicSet(&i->state, AL_STOPPED);
+            source_mark_all_buffers_processed(i);
         }
+
+        i->playlist_next = NULL;
+        SDL_AtomicSet(&i->mixer_accessible, 0);
     }
+    ctx->playlist = NULL;
 }
 
 /* We process all unsuspended ALC contexts during this call, mixing their
@@ -1812,10 +1849,10 @@ static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
     }
 
     /* Make sure everything that wants to use SIMD is aligned for it. */
-    SDL_assert( (((size_t) &retval->sources[0].position[0]) % 16) == 0 );
-    SDL_assert( (((size_t) &retval->sources[0].velocity[0]) % 16) == 0 );
-    SDL_assert( (((size_t) &retval->sources[0].direction[0]) % 16) == 0 );
-    SDL_assert( (((size_t) &retval->sources[1].position[0]) % 16) == 0 );
+    SDL_assert( (((size_t) &retval->source_blocks.sources[0].position[0]) % 16) == 0 );
+    SDL_assert( (((size_t) &retval->source_blocks.sources[0].velocity[0]) % 16) == 0 );
+    SDL_assert( (((size_t) &retval->source_blocks.sources[0].direction[0]) % 16) == 0 );
+    SDL_assert( (((size_t) &retval->source_blocks.sources[1].position[0]) % 16) == 0 );
     SDL_assert( (((size_t) &retval->listener.position[0]) % 16) == 0 );
     SDL_assert( (((size_t) &retval->listener.orientation[0]) % 16) == 0 );
     SDL_assert( (((size_t) &retval->listener.velocity[0]) % 16) == 0 );
@@ -1922,6 +1959,7 @@ ENTRYPOINTVOID(alcSuspendContext,(ALCcontext *ctx),(ctx))
 
 static void _alcDestroyContext(ALCcontext *ctx)
 {
+    SourceBlock *sb;
     int i;
 
     FIXME("Should NULL context be an error?");
@@ -1948,14 +1986,23 @@ static void _alcDestroyContext(ALCcontext *ctx)
     }
     SDL_UnlockAudioDevice(ctx->device->sdldevice);
 
-    for (i = 0; i < SDL_arraysize(ctx->sources); i++) {
-        ALsource *src = &ctx->sources[i];
-        if (SDL_AtomicGet(&src->allocated) != 1) {
-            continue;
-        }
+    for (sb = ctx->source_blocks.next; sb != NULL; sb = sb->next) {
+        for (i = 0; i < SDL_arraysize(sb->sources); i++) {
+            ALsource *src = &sb->sources[i];
+            if (SDL_AtomicGet(&src->allocated) < 1) {
+                continue;
+            }
 
-        SDL_FreeAudioStream(src->stream);
-        source_release_buffer_queue(ctx, src);
+            SDL_FreeAudioStream(src->stream);
+            source_release_buffer_queue(ctx, src);
+        }
+    }
+
+    sb = ctx->source_blocks.next;
+    while (sb) {
+        SourceBlock *next = sb->next;
+        free_simd_aligned(sb);
+        sb = next;
     }
 
     SDL_free(ctx->attributes);
@@ -2410,25 +2457,55 @@ static void set_al_error(ALCcontext *ctx, const ALenum error)
     }
 }
 
-static inline ALboolean is_source_valid(ALCcontext *ctx, const ALuint name)
+/* Before calling this, you must make sure the source is marked in some way that the mixer will reject it.
+   For example, you can mark it as AL_STOPPED. This makes sure the mixer will remove it from its playlist
+   on its next iteration so it doesn't retain any reference to it. */
+static void wait_if_source_is_mixing(ALCcontext *ctx, ALsource *source)
 {
-    return (ctx && name && (name < OPENAL_MAX_SOURCES) && (SDL_AtomicGet(&ctx->sources[name-1].allocated) == 1)) ? AL_TRUE : AL_FALSE;
+    /* in case the mixer thread was literally in the middle of mixing this exact source */
+    if (SDL_AtomicGet(&source->mixer_accessible)) {
+        /* literally being mixed right now. Block until the mixer finishes this iteration, in which case it won't touch this source again. */
+        SDL_LockAudioDevice(ctx->device->sdldevice);
+        SDL_UnlockAudioDevice(ctx->device->sdldevice);  /* mixer thread no longer touches this source. */
+        SDL_assert(!SDL_AtomicGet(&source->mixer_accessible));
+    }
 }
 
-static ALsource *get_source(ALCcontext *ctx, const ALuint name)
+
+/* !!! FIXME: buffers and sources use almost identical code for blocks */
+static ALsource *get_source(ALCcontext *ctx, const ALuint name, SourceBlock **_block)
 {
+    SourceBlock *block;
+    ALsource *source = NULL;
+    ALuint block_offset = 0;
+
     if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
         return NULL;
-    }
-
-    if (!is_source_valid(ctx, name)) {
+    } else if (name == 0) {
         set_al_error(ctx, AL_INVALID_NAME);
         return NULL;
     }
 
-    /* if this object is deleted, the pointer remains valid, so we'll let it slide through on a race condition. */
-    return &ctx->sources[name - 1];
+    block = &ctx->source_blocks;
+    while (block != NULL) {
+        const ALuint next_offset = block_offset + SDL_arraysize(block->sources);
+        if ((block_offset < name) && (next_offset >= name)) {
+            source = &block->sources[(name - block_offset) - 1];
+            if (SDL_AtomicGet(&source->allocated) == 1) {
+                if (_block) *_block = block;
+                return source;
+            }
+            break;
+        }
+
+        block = block->next;
+        block_offset += SDL_arraysize(block->sources);
+    }
+
+    if (_block) *_block = NULL;
+    set_al_error(ctx, AL_INVALID_NAME);
+    return NULL;
 }
 
 /* !!! FIXME: buffers and sources use almost identical code for blocks */
@@ -3128,10 +3205,16 @@ static void _alGetListener3i(const ALenum param, ALint *value1, ALint *value2, A
 }
 ENTRYPOINTVOID(alGetListener3i,(ALenum param, ALint *value1, ALint *value2, ALint *value3),(param,value1,value2,value3))
 
+/* !!! FIXME: buffers and sources use almost identical code for blocks */
 static void _alGenSources(const ALsizei n, ALuint *names)
 {
     ALCcontext *ctx = get_current_context();
+    SourceBlock *endblock;
+    SourceBlock *block;
+    ALsource *stackobjs[16];
+    ALsource **objects = stackobjs;
     ALsizei found = 0;
+    ALuint block_offset = 0;
     ALuint i;
 
     if (!ctx) {
@@ -3139,31 +3222,77 @@ static void _alGenSources(const ALsizei n, ALuint *names)
         return;
     }
 
-    for (i = 0; i < OPENAL_MAX_SOURCES; i++) {
-        if (SDL_AtomicCAS(&ctx->sources[i].allocated, 0, 2)) {  /* 0==unused, 1==in use, 2==trying to acquire. */
-            names[found++] = i + 1; /* plus 1 because 0 is the null value */
+    if (n <= SDL_arraysize(stackobjs)) {
+        SDL_memset(stackobjs, '\0', sizeof (ALsource *) * n);
+    } else {
+        objects = (ALsource **) SDL_calloc(n, sizeof (ALsource *));
+        if (!objects) {
+            set_al_error(ctx, AL_OUT_OF_MEMORY);
+            return;
+        }
+    }
+
+    block = endblock = &ctx->source_blocks;  /* the first one is a static piece of the context */
+    while (found < n) {
+        if (!block) {  /* out of blocks? Add a new one. */
+            block = (SourceBlock *) calloc_simd_aligned(sizeof (SourceBlock));
+            if (!block) {
+                FIXME("we don't have to mark these as allocated up front now.");
+                for (i = 0; i < (ALuint) found; i++) {
+                    SDL_AtomicSet(&objects[i]->allocated, 0);  /* return any temp-acquired buffers. */
+                }
+                if (objects != stackobjs) SDL_free(objects);
+                SDL_memset(names, '\0', sizeof (*names) * n);
+                set_al_error(ctx, AL_OUT_OF_MEMORY);
+                return;
+            }
+
+            endblock->next = block;
+        }
+
+        block->tmp = 0;
+        if (block->used < SDL_arraysize(block->sources)) {  /* skip if full */
+            for (i = 0; i < SDL_arraysize(block->sources); i++) {
+                FIXME("we don't have to mark these as allocated up front now.");
+                if (SDL_AtomicCAS(&block->sources[i].allocated, 0, 2)) {  /* 0==unused, 1==in use, 2==trying to acquire. */
+                    block->tmp++;
+                    objects[found] = &block->sources[i];
+                    names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
+                    if (found == n) {
+                        break;
+                    }
+                }
+            }
+
             if (found == n) {
                 break;
             }
         }
+
+        endblock = block;
+        block = block->next;
+        block_offset += SDL_arraysize(block->sources);
     }
 
-    SDL_assert(found <= n);
+    SDL_assert(found == n);  /* we should have either gotten space or bailed on alloc failure */
 
-    if (found < n) { /* not enough sources! */
-        for (i = 0; i < (ALuint) found; i++) {
-            SDL_AtomicSet(&ctx->sources[names[i]-1].allocated, 0);  /* give this one back. */
+    /* update the "used" field in blocks with items we are taking now. */
+    found = 0;
+    for (block = &ctx->source_blocks; found < n; block = block->next) {
+        const int foundhere = block->tmp;
+        if (foundhere) {
+            block->used += foundhere;
+            found += foundhere;
+            block->tmp = 0;
         }
-        SDL_memset(names, '\0', sizeof (*names) * n);
-        set_al_error(ctx, AL_OUT_OF_MEMORY);
-        return;
     }
+
+    SDL_assert(found == n);
 
     for (i = 0; i < (ALuint) n; i++) {
-        ALsource *src = &ctx->sources[names[i]-1];
-        /* don't SDL_zerop() this source, because we need src->allocated to stay at 2 until initialized. */
-        src->lock = 0;
-        src->state = AL_INITIAL;
+        ALsource *src = objects[i];
+        /* don't SDL_zerop() this source, because we need src->allocated to stay at 2 until initialized. */  FIXME("this isn't true anymore");
+        SDL_AtomicSet(&src->state, AL_INITIAL);
         src->type = AL_UNDETERMINED;
         src->recalc = AL_TRUE;
         src->source_relative = AL_FALSE;
@@ -3190,6 +3319,8 @@ static void _alGenSources(const ALsizei n, ALuint *names)
         source_needs_recalc(src);
         SDL_AtomicSet(&src->allocated, 1);   /* we officially own it. */
     }
+
+    if (objects != stackobjs) SDL_free(objects);
 }
 ENTRYPOINTVOID(alGenSources,(ALsizei n, ALuint *names),(n,names))
 
@@ -3208,25 +3339,32 @@ static void _alDeleteSources(const ALsizei n, const ALuint *names)
         const ALuint name = names[i];
         if (name == 0) {
             /* ignore it. */ FIXME("Spec says alDeleteBuffers() can have a zero name as a legal no-op, but this text isn't included in alDeleteSources...");
-        } else if (!is_source_valid(ctx, name)) {
-            /* "If one or more of the specified names is not valid, an AL_INVALID_NAME error will be recorded, and no objects will be deleted." */
-            set_al_error(ctx, AL_INVALID_NAME);
-            return;
+        } else {
+            ALsource *source = get_source(ctx, name, NULL);
+            if (!source) {
+                /* "If one or more of the specified names is not valid, an AL_INVALID_NAME error will be recorded, and no objects will be deleted." */
+                set_al_error(ctx, AL_INVALID_NAME);
+                return;
+            }
         }
     }
 
     for (i = 0; i < n; i++) {
         const ALuint name = names[i];
         if (name != 0) {
-            ALsource *src = &ctx->sources[name - 1];
-            SDL_AtomicLock(&src->lock);
-            source_release_buffer_queue(ctx, src);
-            if (src->stream) {
-                SDL_FreeAudioStream(src->stream);
-                src->stream = NULL;
+            SourceBlock *block;
+            ALsource *source = get_source(ctx, name, &block);
+            SDL_assert(source != NULL);
+
+            /* "A playing source can be deleted--the source will be stopped automatically and then deleted." */
+            SDL_AtomicSet(&source->allocated, 0);  /* will make mixer reject it if currently playing. */
+            wait_if_source_is_mixing(ctx, source);
+            source_release_buffer_queue(ctx, source);
+            if (source->stream) {
+                SDL_FreeAudioStream(source->stream);
+                source->stream = NULL;
             }
-            SDL_AtomicSet(&src->allocated, 0);
-            SDL_AtomicUnlock(&src->lock);
+            block->used--;
         }
     }
 }
@@ -3234,14 +3372,15 @@ ENTRYPOINTVOID(alDeleteSources,(ALsizei n, const ALuint *names),(n,names))
 
 static ALboolean _alIsSource(const ALuint name)
 {
-    return is_source_valid(get_current_context(), name);
+    ALCcontext *ctx = get_current_context();
+    return (ctx && (get_source(ctx, name, NULL) != NULL)) ? AL_TRUE : AL_FALSE;
 }
 ENTRYPOINT(ALboolean,alIsSource,(ALuint name),(name))
 
 static void _alSourcefv(const ALuint name, const ALenum param, const ALfloat *values)
 {
     ALCcontext *ctx = get_current_context();
-    ALsource *src = get_source(ctx, name);
+    ALsource *src = get_source(ctx, name, NULL);
     if (!src) return;
 
     switch (param) {
@@ -3314,7 +3453,8 @@ ENTRYPOINTVOID(alSource3f,(ALuint name, ALenum param, ALfloat value1, ALfloat va
 
 static void set_source_static_buffer(ALCcontext *ctx, ALsource *src, const ALuint bufname)
 {
-    if ((src->state == AL_PLAYING) || (src->state == AL_PAUSED)) {
+    const ALenum state = (const ALenum) SDL_AtomicGet(&src->state);
+    if ((state == AL_PLAYING) || (state == AL_PAUSED)) {
         set_al_error(ctx, AL_INVALID_OPERATION);  /* can't change buffer on playing/paused sources */
     } else {
         ALbuffer *buffer = NULL;
@@ -3334,7 +3474,10 @@ static void set_source_static_buffer(ALCcontext *ctx, ALsource *src, const ALuin
                 FIXME("need a way to prealloc space in the stream, so the mixer doesn't have to malloc");
             }
 
-            SDL_AtomicLock(&src->lock);
+            /* this can happen if you alSourceStop() and change the buffer while the exact source is in the middle of mixing */
+            /*wait_if_source_is_mixing(ctx, src);*/
+            /* NOTE: the above wait is commented out because alSourceStop() currently waits too, so you can't end up in a race condition here. The assert is here to verify that. */
+            SDL_assert(SDL_AtomicGet(&src->mixer_accessible) == 0);
 
             if (src->buffer != buffer) {
                 if (src->buffer) {
@@ -3357,8 +3500,6 @@ static void set_source_static_buffer(ALCcontext *ctx, ALsource *src, const ALuin
                 src->stream = stream;
             }
 
-            SDL_AtomicUnlock(&src->lock);
-
             if (freestream) {
                 SDL_FreeAudioStream(freestream);
             }
@@ -3369,7 +3510,7 @@ static void set_source_static_buffer(ALCcontext *ctx, ALsource *src, const ALuin
 static void _alSourceiv(const ALuint name, const ALenum param, const ALint *values)
 {
     ALCcontext *ctx = get_current_context();
-    ALsource *src = get_source(ctx, name);
+    ALsource *src = get_source(ctx, name, NULL);
     if (!src) return;
 
     switch (param) {
@@ -3438,7 +3579,7 @@ ENTRYPOINTVOID(alSource3i,(ALuint name, ALenum param, ALint value1, ALint value2
 static void _alGetSourcefv(const ALuint name, const ALenum param, ALfloat *values)
 {
     ALCcontext *ctx = get_current_context();
-    ALsource *src = get_source(ctx, name);
+    ALsource *src = get_source(ctx, name, NULL);
     if (!src) return;
 
     switch (param) {
@@ -3511,11 +3652,11 @@ ENTRYPOINTVOID(alGetSource3f,(ALuint name, ALenum param, ALfloat *value1, ALfloa
 static void _alGetSourceiv(const ALuint name, const ALenum param, ALint *values)
 {
     ALCcontext *ctx = get_current_context();
-    ALsource *src = get_source(ctx, name);
+    ALsource *src = get_source(ctx, name, NULL);
     if (!src) return;
 
     switch (param) {
-        case AL_SOURCE_STATE: *values = (ALint) src->state; break;
+        case AL_SOURCE_STATE: *values = (ALint) SDL_AtomicGet(&src->state); break;
         case AL_SOURCE_TYPE: *values = (ALint) src->type; break;
         case AL_BUFFER: *values = (ALint) (src->buffer ? src->buffer->name : 0); break;
         case AL_BUFFERS_QUEUED: *values = (ALint) SDL_AtomicGet(&src->buffer_queue.num_items); break;
@@ -3585,75 +3726,140 @@ static void _alGetSource3i(const ALuint name, const ALenum param, ALint *value1,
 }
 ENTRYPOINTVOID(alGetSource3i,(ALuint name, ALenum param, ALint *value1, ALint *value2, ALint *value3),(name,param,value1,value2,value3))
 
-static void source_play(ALCcontext *ctx, const ALuint name)
+static void source_play(ALCcontext *ctx, const ALsizei n, const ALuint *names)
 {
-    ALsource *src = get_source(ctx, name);
-    if (src) {
-        SDL_atomic_t *playlist_atomic;
-        int oldval;
-        int bit;
+    ALboolean failed = AL_FALSE;
+    SourcePlayTodo todo;
+    SourcePlayTodo *todoend = &todo;
+    SourcePlayTodo *todoptr;
+    void *ptr;
+    ALsizei i;
 
-        FIXME("this could be lock free if we maintain a queue of playing sources");  /* we do this now, but need to check other side effects */
-        SDL_AtomicLock(&src->lock);
-        if (src->offset_latched) {
-            src->offset_latched = AL_FALSE;
-        } else if (src->state != AL_PAUSED) {
-            src->offset = 0;
-        }
-        if (SDL_AtomicGet(&ctx->device->connected)) {
-            src->state = AL_PLAYING;
-        } else {
-            source_mark_all_buffers_processed(src);
-            src->state = AL_STOPPED;  /* disconnected devices promote directly to STOPPED */
-        }
-        SDL_AtomicUnlock(&src->lock);
-
-        /* put this in to_be_played so the mixer thread will notice. */
-        SDL_assert(sizeof (ctx->to_be_played[0]) == sizeof (ctx->to_be_played[0].value));
-        SDL_assert(sizeof (ctx->to_be_played[0].value) == sizeof (int));
-        playlist_atomic = &ctx->to_be_played[(name-1) / (sizeof (SDL_atomic_t) * 8)];
-        bit = (name-1) % (sizeof (SDL_atomic_t) * 8);
-
-        SDL_assert(bit <= 31);
-        do {
-            oldval = SDL_AtomicGet(playlist_atomic);
-        } while (!SDL_AtomicCAS(playlist_atomic, oldval, oldval | (1 << bit)));
+    if (n == 0) {
+        return;
+    } else if (!ctx) {
+        set_al_error(ctx, AL_INVALID_OPERATION);
+        return;
     }
+
+    SDL_zero(todo);
+
+    /* Obtain our SourcePlayTodo items upfront; if this runs out of
+       memory, we won't have changed any state. The mixer thread will
+       put items back in the pool when done with them, so this handoff needs
+       to be atomic. */
+    for (i = 0; i < n; i++) {
+        SourcePlayTodo *item;
+        do {
+            ptr = SDL_AtomicGetPtr(&ctx->device->playback.source_todo_pool);
+            item = (SourcePlayTodo *) ptr;
+            if (!item) break;
+            ptr = item->next;
+        } while (!SDL_AtomicCASPtr(&ctx->device->playback.source_todo_pool, item, ptr));
+
+        if (!item) {  /* allocate a new item */
+            item = (SourcePlayTodo *) SDL_calloc(1, sizeof (SourcePlayTodo));
+            if (!item) {
+                set_al_error(ctx, AL_OUT_OF_MEMORY);
+                failed = AL_TRUE;
+                break;
+            }
+        }
+
+        item->next = NULL;
+        todoend->next = item;
+        todoend = item;
+    }
+
+    if (failed) {
+        /* put the whole new queue back in the pool for reuse later. */
+        if (todo.next) {
+            do {
+                ptr = SDL_AtomicGetPtr(&ctx->device->playback.source_todo_pool);
+                todoend->next = (SourcePlayTodo *) ptr;
+            } while (!SDL_AtomicCASPtr(&ctx->device->playback.source_todo_pool, ptr, todo.next));
+        }
+        return;
+    }
+
+    FIXME("What do we do if there's an invalid source in the middle of the names vector?");
+    for (i = 0, todoptr = todo.next; i < n; i++) {
+        const ALuint name = names[i];
+        ALsource *src = get_source(ctx, name, NULL);
+        if (src) {
+            if (src->offset_latched) {
+                src->offset_latched = AL_FALSE;
+            } else if (SDL_AtomicGet(&src->state) != AL_PAUSED) {
+                src->offset = 0;
+            }
+
+            /* this used to move right to AL_STOPPED if the device is
+               disconnected, but now we let the mixer thread handle that to
+               avoid race conditions with marking the buffer queue
+               processed, etc. Strictly speaking, ALC_EXT_disconnect
+               says playing a source on a disconnected device should
+               "immediately" progress to STOPPED, but I'm willing to
+               say that the mixer will "immediately" move it as opposed to
+               it stopping when the source would be done mixing (or worse:
+               hang there forever). */
+            SDL_AtomicSet(&src->state, AL_PLAYING);
+
+            todoptr->source = src;
+            todoptr = todoptr->next;
+        }
+    }
+
+    /* Send the list to the mixer atomically, so all sources start playing in sync!
+       We're going to put these on a linked list called playlist_todo
+       The mixer does an atomiccasptr to grab the current list, swapping
+       in a NULL. Once it has the list, it's safe to do what it likes
+       with it, as nothing else owns the pointers in that list. */
+    do {
+        ptr = SDL_AtomicGetPtr(&ctx->playlist_todo);
+        todoend->next = ptr;
+    } while (!SDL_AtomicCASPtr(&ctx->playlist_todo, ptr, todo.next));
 }
+
+static void _alSourcePlay(const ALuint name)
+{
+    source_play(get_current_context(), 1, &name);
+}
+ENTRYPOINTVOID(alSourcePlay,(ALuint name),(name))
+
+static void _alSourcePlayv(ALsizei n, const ALuint *names)
+{
+    source_play(get_current_context(), n, names);
+}
+ENTRYPOINTVOID(alSourcePlayv,(ALsizei n, const ALuint *names),(n, names))
+
 
 static void source_stop(ALCcontext *ctx, const ALuint name)
 {
-    ALsource *src = get_source(ctx, name);
+    ALsource *src = get_source(ctx, name, NULL);
     if (src) {
-        SDL_AtomicLock(&src->lock);
-        if (src->state != AL_INITIAL) {
+        if (SDL_AtomicGet(&src->state) != AL_INITIAL) {
+            SDL_AtomicSet(&src->state, AL_STOPPED);
+            wait_if_source_is_mixing(ctx, src);
             source_mark_all_buffers_processed(src);
-            src->state = AL_STOPPED;
         }
-        SDL_AtomicUnlock(&src->lock);
     }
 }
 
 static void source_rewind(ALCcontext *ctx, const ALuint name)
 {
-    ALsource *src = get_source(ctx, name);
+    ALsource *src = get_source(ctx, name, NULL);
     if (src) {
-        SDL_AtomicLock(&src->lock);
-        src->state = AL_INITIAL;
+        SDL_AtomicSet(&src->state, AL_INITIAL);
+        wait_if_source_is_mixing(ctx, src);
         src->offset = 0;
-        SDL_AtomicUnlock(&src->lock);
     }
 }
 
 static void source_pause(ALCcontext *ctx, const ALuint name)
 {
-    ALsource *src = get_source(ctx, name);
+    ALsource *src = get_source(ctx, name, NULL);
     if (src) {
-        SDL_AtomicLock(&src->lock);
-        if (src->state == AL_PLAYING) {
-            src->state = AL_PAUSED;
-        }
-        SDL_AtomicUnlock(&src->lock);
+        SDL_AtomicCAS(&src->state, AL_PLAYING, AL_PAUSED);
     }
 }
 
@@ -3679,7 +3885,6 @@ static void source_pause(ALCcontext *ctx, const ALuint name)
         } \
     }
 
-SOURCE_STATE_TRANSITION_OP(Play, play)
 SOURCE_STATE_TRANSITION_OP(Stop, stop)
 SOURCE_STATE_TRANSITION_OP(Rewind, rewind)
 SOURCE_STATE_TRANSITION_OP(Pause, pause)
@@ -3692,7 +3897,7 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
     void *ptr;
     ALsizei i;
     ALCcontext *ctx = get_current_context();
-    ALsource *src = get_source(ctx, name);
+    ALsource *src = get_source(ctx, name, NULL);
     ALint queue_channels = 0;
     ALsizei queue_frequency = 0;
     ALboolean failed = AL_FALSE;
@@ -3812,7 +4017,8 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
     }
 
     FIXME("this needs to be set way sooner");
-    SDL_AtomicLock(&src->lock);
+
+    FIXME("this used to have a source lock, think this one through");
     src->type = AL_STREAMING;
 
     if (!src->queue_channels) {
@@ -3820,7 +4026,6 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
         src->queue_frequency = queue_frequency;
         src->stream = stream;
     }
-    SDL_AtomicUnlock(&src->lock);
 
     /* so we're going to put these on a linked list called just_queued,
         where things build up in reverse order, to keep this on a single
@@ -3853,7 +4058,7 @@ static void _alSourceUnqueueBuffers(const ALuint name, const ALsizei nb, ALuint 
     void *ptr;
     ALsizei i;
     ALCcontext *ctx = get_current_context();
-    ALsource *src = get_source(ctx, name);
+    ALsource *src = get_source(ctx, name, NULL);
     if (!src) {
         return;
     }
@@ -3906,6 +4111,7 @@ static void _alSourceUnqueueBuffers(const ALuint name, const ALsizei nb, ALuint 
 }
 ENTRYPOINTVOID(alSourceUnqueueBuffers,(ALuint name, ALsizei nb, ALuint *bufnames),(name,nb,bufnames))
 
+/* !!! FIXME: buffers and sources use almost identical code for blocks */
 static void _alGenBuffers(const ALsizei n, ALuint *names)
 {
     ALCcontext *ctx = get_current_context();
