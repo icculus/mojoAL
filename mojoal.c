@@ -461,7 +461,7 @@ struct ALCdevice_struct
             ALCcontext *contexts;
             BufferBlock **buffer_blocks;  /* buffers are shared between contexts on the same device. */
             ALCsizei num_buffer_blocks;
-            void *buffer_queue_pool;  /* void* because we'll atomicgetptr it. */
+            BufferQueueItem *buffer_queue_pool;  /* mixer thread doesn't touch this. */
             void *source_todo_pool;  /* void* because we'll atomicgetptr it. */
         } playback;
         struct {
@@ -529,10 +529,7 @@ static void obtain_newly_queued_buffers(BufferQueue *queue)
 
     /* Now that we own this pointer, we can just do whatever we want with it.
        Nothing touches the head/tail fields other than the mixer thread, so we
-       move it there. Not even atomically!  :)
-       When setting up these fields in alSourceUnqueueBuffers, there's a lock
-       used that is never held by the mixer thread (which only touches
-       just_queued atomically when a buffer is completely processed). */
+       move it there. Not even atomically!  :) */
     SDL_assert((queue->tail != NULL) == (queue->head != NULL));
 
     queue_new_buffer_items_recursive(queue, items);
@@ -561,31 +558,26 @@ static void source_mark_all_buffers_processed(ALsource *src)
 
 static void source_release_buffer_queue(ALCcontext *ctx, ALsource *src)
 {
-    BufferQueueItem *i;
-    void *ptr;
-
     /* move any buffer queue items to the device's available pool for reuse. */
     obtain_newly_queued_buffers(&src->buffer_queue);
     if (src->buffer_queue.tail != NULL) {
+        BufferQueueItem *i;
         for (i = src->buffer_queue.head; i; i = i->next) {
             (void) SDL_AtomicDecRef(&i->buffer->refcount);
         }
-        do {
-            ptr = SDL_AtomicGetPtr(&ctx->device->playback.buffer_queue_pool);
-            SDL_AtomicSetPtr(&src->buffer_queue.tail->next, ptr);
-        } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, ptr, src->buffer_queue.head));
+        src->buffer_queue.tail->next = ctx->device->playback.buffer_queue_pool;
+        ctx->device->playback.buffer_queue_pool = src->buffer_queue.head;
     }
     src->buffer_queue.head = src->buffer_queue.tail = NULL;
 
     obtain_newly_queued_buffers(&src->buffer_queue_processed);
     if (src->buffer_queue_processed.tail != NULL) {
+        BufferQueueItem *i;
         for (i = src->buffer_queue_processed.head; i; i = i->next) {
             (void) SDL_AtomicDecRef(&i->buffer->refcount);
         }
-        do {
-            ptr = SDL_AtomicGetPtr(&ctx->device->playback.buffer_queue_pool);
-            SDL_AtomicSetPtr(&src->buffer_queue_processed.tail->next, ptr);
-        } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, ptr, src->buffer_queue_processed.head));
+        src->buffer_queue_processed.tail->next = ctx->device->playback.buffer_queue_pool;
+        ctx->device->playback.buffer_queue_pool = src->buffer_queue_processed.head;
     }
     src->buffer_queue_processed.head = src->buffer_queue_processed.tail = NULL;
 }
@@ -711,7 +703,7 @@ ALCboolean alcCloseDevice(ALCdevice *device)
     }
     SDL_free(device->playback.buffer_blocks);
 
-    item = (BufferQueueItem *) device->playback.buffer_queue_pool;
+    item = device->playback.buffer_queue_pool;
     while (item) {
         BufferQueueItem *next = item->next;
         SDL_free(item);
@@ -3936,14 +3928,10 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
             }
         }
 
-        do {
-            ptr = SDL_AtomicGetPtr(&ctx->device->playback.buffer_queue_pool);
-            item = (BufferQueueItem *) ptr;
-            if (!item) break;
-            ptr = item->next;
-        } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, item, ptr));
-
-        if (!item) {  /* allocate a new item */
+        item = ctx->device->playback.buffer_queue_pool;
+        if (item) {
+            ctx->device->playback.buffer_queue_pool = item->next;
+        } else {  /* allocate a new item */
             item = (BufferQueueItem *) SDL_calloc(1, sizeof (BufferQueueItem));
             if (!item) {
                 set_al_error(ctx, AL_OUT_OF_MEMORY);
@@ -4002,10 +3990,8 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
             }
 
             /* put the whole new queue back in the pool for reuse later. */
-            do {
-                ptr = SDL_AtomicGetPtr(&ctx->device->playback.buffer_queue_pool);
-                SDL_AtomicSetPtr(&queueend->next, ptr);
-            } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, ptr, queue));
+            queueend->next = ctx->device->playback.buffer_queue_pool;
+            ctx->device->playback.buffer_queue_pool = queue;
         }
         if (stream) {
             SDL_FreeAudioStream(stream);
@@ -4030,9 +4016,9 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
         pointer as the "next" for our list, and then atomiccasptr our new
         list against the original pointer. If the CAS succeeds, we have
         a complete list, atomically set. If it fails, try again with
-        the new pointer we found, updating our next pointer again. It'll
-        either be NULL (the mixer got it) or some other pointer (another
-        thread queued something while we were working).
+        the new pointer we found, updating our next pointer again. If it
+        failed, it's because the pointer became NULL when the mixer thread
+        grabbed the existing list.
 
         The mixer does an atomiccasptr to grab the current list, swapping
         in a NULL. Once it has the list, it's safe to do what it likes
@@ -4052,7 +4038,6 @@ static void _alSourceUnqueueBuffers(const ALuint name, const ALsizei nb, ALuint 
     BufferQueueItem *queueend = NULL;
     BufferQueueItem *queue;
     BufferQueueItem *item;
-    void *ptr;
     ALsizei i;
     ALCcontext *ctx = get_current_context();
     ALsource *src = get_source(ctx, name, NULL);
@@ -4101,10 +4086,8 @@ static void _alSourceUnqueueBuffers(const ALuint name, const ALsizei nb, ALuint 
 
     /* put the whole new queue back in the pool for reuse later. */
     SDL_assert(queueend != NULL);
-    do {
-        ptr = SDL_AtomicGetPtr(&ctx->device->playback.buffer_queue_pool);
-        SDL_AtomicSetPtr(&queueend->next, ptr);
-    } while (!SDL_AtomicCASPtr(&ctx->device->playback.buffer_queue_pool, ptr, queue));
+    queueend->next = ctx->device->playback.buffer_queue_pool;
+    ctx->device->playback.buffer_queue_pool = queue;
 }
 ENTRYPOINTVOID(alSourceUnqueueBuffers,(ALuint name, ALsizei nb, ALuint *bufnames),(name,nb,bufnames))
 
