@@ -378,7 +378,7 @@ static void free_simd_aligned(void *ptr)
 
 typedef struct ALbuffer
 {
-    SDL_atomic_t allocated;
+    ALboolean allocated;
     ALuint name;
     ALint channels;
     ALint bits;  /* always float32 internally, but this is what alBufferData saw */
@@ -419,9 +419,9 @@ SIMDALIGNEDSTRUCT ALsource
     ALfloat velocity[4];
     ALfloat direction[4];
     ALfloat panning[2];  /* we only do stereo for now */
-    SDL_atomic_t allocated;
     SDL_atomic_t mixer_accessible;
     SDL_atomic_t state;  /* initial, playing, paused, stopped */
+    ALboolean allocated;
     ALenum type;  /* undetermined, static, streaming */
     ALboolean recalc;
     ALboolean source_relative;
@@ -1674,8 +1674,9 @@ static ALCboolean mix_source(ALCcontext *ctx, ALsource *src, float *stream, int 
 {
     ALCboolean keep;
 
-    keep = ((SDL_AtomicGet(&src->allocated) == 1) && (SDL_AtomicGet(&src->state) == AL_PLAYING));
+    keep = (SDL_AtomicGet(&src->state) == AL_PLAYING);
     if (keep) {
+        SDL_assert(src->allocated);
         if (src->recalc || force_recalc) {
             SDL_MemoryBarrierAcquire();
             src->recalc = AL_FALSE;
@@ -1773,7 +1774,8 @@ static void mix_disconnected_context(ALCcontext *ctx)
 
         /* remove from playlist; all playing things got stopped, paused/initial/stopped shouldn't be listed. */
         SDL_AtomicSet(&i->mixer_accessible, 1);
-        if ((SDL_AtomicGet(&i->allocated) == 1) && (SDL_AtomicGet(&i->state) == AL_PLAYING)) {
+        if (SDL_AtomicGet(&i->state) == AL_PLAYING) {
+            SDL_assert(i->allocated);
             SDL_AtomicSet(&i->state, AL_STOPPED);
             source_mark_all_buffers_processed(i);
         }
@@ -1991,7 +1993,7 @@ static void _alcDestroyContext(ALCcontext *ctx)
             ALsizei i;
             for (i = 0; i < SDL_arraysize(sb->sources); i++) {
                 ALsource *src = &sb->sources[i];
-                if (!SDL_AtomicGet(&src->allocated)) {
+                if (!src->allocated) {
                     continue;
                 }
 
@@ -2492,7 +2494,7 @@ static ALsource *get_source(ALCcontext *ctx, const ALuint name, SourceBlock **_b
 
     block = ctx->source_blocks[blockidx];
     source = &block->sources[block_offset];
-    if (SDL_AtomicGet(&source->allocated) == 1) {
+    if (source->allocated) {
         if (_block) *_block = block;
         return source;
     }
@@ -2522,7 +2524,7 @@ static ALbuffer *get_buffer(ALCcontext *ctx, const ALuint name, BufferBlock **_b
 
     block = ctx->device->playback.buffer_blocks[blockidx];
     buffer = &block->buffers[block_offset];
-    if (SDL_AtomicGet(&buffer->allocated) == 1) {
+    if (buffer->allocated) {
         if (_block) *_block = block;
         return buffer;
     }
@@ -3319,7 +3321,7 @@ static void _alGenSources(const ALsizei n, ALuint *names)
         src->cone_inner_angle = 360.0f;
         src->cone_outer_angle = 360.0f;
         source_needs_recalc(src);
-        SDL_AtomicSet(&src->allocated, 1);   /* we officially own it. */
+        src->allocated = AL_TRUE;   /* we officially own it. */
     }
 
     if (objects != stackobjs) SDL_free(objects);
@@ -3359,8 +3361,9 @@ static void _alDeleteSources(const ALsizei n, const ALuint *names)
             SDL_assert(source != NULL);
 
             /* "A playing source can be deleted--the source will be stopped automatically and then deleted." */
-            SDL_AtomicSet(&source->allocated, 0);  /* will make mixer reject it if currently playing. */
+            SDL_AtomicSet(&source->state, AL_STOPPED);  /* will make mixer reject it if currently playing. */
             wait_if_source_is_mixing(ctx, source);
+            source->allocated = AL_FALSE;
             source_release_buffer_queue(ctx, source);
             if (source->buffer) {
                 SDL_assert(source->type == AL_STATIC);
@@ -4220,7 +4223,7 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
         buffer->name = names[i];
         buffer->channels = 1;
         buffer->bits = 16;
-        SDL_AtomicSet(&buffer->allocated, 1);  /* we officially own it. */
+        buffer->allocated = AL_TRUE;  /* we officially own it. */
     }
 
     if (objects != stackobjs) SDL_free(objects);
@@ -4262,12 +4265,9 @@ static void _alDeleteBuffers(const ALsizei n, const ALuint *names)
             void *data;
             SDL_assert(buffer != NULL);
             data = (void *) buffer->data;
-            if (!SDL_AtomicCAS(&buffer->allocated, 1, 0)) {
-                /* uh-oh!! */
-            } else {
-                buffer->data = NULL;
-                free_simd_aligned(data);
-            }
+            buffer->allocated = AL_FALSE;
+            buffer->data = NULL;
+            free_simd_aligned(data);
             block->used--;
         }
     }
@@ -4310,7 +4310,7 @@ static void _alBufferData(const ALuint name, const ALenum alfmt, const ALvoid *d
     }
 
     /* This check was from the wild west of lock-free programming, now we shouldn't pass get_buffer() if not allocated. */
-    SDL_assert(SDL_AtomicGet(&buffer->allocated) == 1);
+    SDL_assert(buffer->allocated);
 
     /* right now we take a moment to convert the data to float32, since that's
        the format we want to work in, but we don't resample or change the channels */
