@@ -85,79 +85,97 @@
 
 
 /*
-  The locking strategy for this OpenAL implementation is complicated.
-  Not only do we generally want you to be able to call into OpenAL from any
-  thread, we'll always have to compete with the SDL audio device thread.
-  However, we don't want to just throw a big mutex around the whole thing,
-  not only because can we safely touch two unrelated objects at the same
-  time, but also because the mixer might make your simple state change call
-  on the main thread block for several milliseconds if your luck runs out,
-  killing your framerate. Here's the basic plan:
+The locking strategy for this OpenAL implementation:
 
-- Devices are expected to live for the entire life of your OpenAL experience,
-  so deleting one while another thread is using it is your own fault. Don't
-  do that.
+- The initial work on this implementation attempted to be completely
+  lock free, and it lead to fragile, overly-clever, and complicated code.
+  Attempt #2 is making more reasonable tradeoffs: namely, keeping the
+  mixer thread lock free and minimizing locks in the API entry points.
 
-- Creating or destroying a context will lock the SDL audio device, serializing
-  these calls vs the mixer thread while we add/remove the context on the
-  device's list. So don't do this in time-critical code.
+- All API entry points are protected by a global mutex, which means that
+  calls into the API are serialized, but we expect this to not be a
+  serious problem; most AL calls are likely to come from a single thread
+  and uncontended mutexes generally aren't very expensive. This mutex
+  is not shared with the mixer thread, so there is never a point where
+  an innocent "fast" call into the AL will block because of the bad luck
+  of a high mixing load and the wrong moment.
 
-- The current context is an atomic pointer, so even if there's a MakeCurrent
-  while an operation is in progress, the operation will either get the new
-  context or the previous context and set state on whichever. This should
-  protect everything but context destruction, but if you are still calling
-  into the AL while destroying the context, shame on you (even there, the
-  first thing context destruction will do is make the context no-longer
-  current, which means the race window is pretty small).
+- There are rare cases we'll lock the mixer thread; as a playing source
+  is mixed, it is atomically flagged as in-use. In a few cases, if we
+  happen to need to change a source in unsafe ways _while it's mixing_,
+  we will lock the mixer thread and immediately unlock, so we know
+  the mixer thread is no longer touching the source. The likelihood of
+  hitting this case is extremely small, even on a playing source, as
+  the mixer needs to be running and mixing a specific source at the time.
+  Things that might do this, only on currently-playing sources:
+  alDeleteSources, alSourceStop, alSourceRewind. alSourcePlay and
+  alSourcePause never need to lock.
 
-- Source and Buffer objects, once generated, aren't freed. If deleted, we
-  atomically mark them as available for reuse, but the pointers never change
-  or go away until the AL context (for sources) or device (for buffers) does.
+- Devices are expected to live for the entire life of your OpenAL
+  experience, so closing one while another thread is using it is your own
+  fault. Don't do that. Devices are allocated pointers, and the AL doesn't
+  know if you've deleted it, making the pointer invalid. Device open and
+  close are not meant to be "fast" calls.
 
-- Since we have a maximum source count, to protect against apps that allocate
-  sources in a loop until they fail, the source name array is static within
-  the ALCcontext object, and thus doesn't need a lock for access. Buffer
-  objects can be generated until we run out of memory, so that array needs to
-  be dynamic and have a lock, though. When generating sources, we walk the
-  static array and compare-and-swap the "allocated" field from 0 (available)
-  to 2 (temporarily claimed), filling in the temporarily-claimed names in
-  the array passed to alGenSources(). If we run out of sources, we walk back
-  over this array, setting all the allocated fields back to zero for other
-  threads to be able to claim, set the error state, and zero out the array.
-  If we have enough sources, we walk the array and set the allocated fields
-  to 1 (permanently claimed).
+- Creating or destroying a context will lock the mixer thread, so we can
+  add/remove the context on the device's list without racing. So don't do
+  this in time-critical code.
 
-- Buffers are allocated in blocks of OPENAL_BUFFER_BLOCK_SIZE, each block
-  linked-listed to the next, as allocated. These blocks are never deallocated
-  as long as the device lives, so they don't need a lock to access (and adding
-  a new block is an atomic pointer compare-and-swap). Allocating buffers uses
-  the same compare-and-swap marking technique that allocating sources does,
-  just in these buffer blocks instead of a static array. We don't (currently)
-  keep a ALuint name index array of buffers, but instead walk the list of
-  blocks, OPENAL_BUFFER_BLOCK_SIZE at a time, until we find our target block,
-  and then index into that.
+- Generating an object (source, buffer, etc) might need to allocate
+  memory, which can always take longer than you would expect. We allocate in
+  blocks, so not every call will allocate more memory. Generating an object
+  does not lock the mixer thread.
+
+- Deleting a buffer does not lock the mixer thread (in-use buffers can
+  not be deleted per API spec). Deleting a source will lock the mixer
+  if the source is still visible to the mixer (if it is literally mixing
+  at the very moment). We don't believe this will be a serious issue in
+  normal use cases. Deleted objects' memory is marked for reuse, but no
+  memory is free'd by deleting sources or buffers until the context or
+  device, respectively, are destroyed.
+
+- alBufferData needs to allocate memory to copy new audio data. Often,
+  you can avoid doing these things in time-critical code. You can't set
+  a buffer's data when it's attached to a source (either with AL_BUFFER
+  or buffer queueing), so there's never a chance of contention with the
+  mixer thread here.
+
+- Buffers and sources are allocated in blocks of OPENAL_BUFFER_BLOCK_SIZE
+  (or OPENAL_SOURCE_BLOCK_SIZE). These blocks are never deallocated as long
+  as the device (for buffers) or context (for sources) lives, so they don't
+  need a lock to access as the pointers are immutable once they're wired in.
+  We don't keep a ALuint name index array, but rather an array of block
+  pointers, which lets us find the right offset in the correct block without
+  iteration. The mixer thread never references the blocks directly, as they
+  get buffer and source pointers to objects within those blocks. Sources keep
+  a pointer to their specifically-bound buffer, and the mixer keeps a list of
+  pointers to playing sources. Since the API is serialized and the mixer
+  doesn't touch them, we don't need to tapdance to add new blocks.
 
 - Buffer data is owned by the AL, and it's illegal to delete a buffer or
-  alBufferData() its contents while queued on a source with either AL_BUFFER
-  or alSourceQueueBuffers(). We keep an atomic refcount for each buffer,
-  and you can't change its state or delete it when its refcount is > 0, so
-  there isn't a race with the mixer, and multiple racing calls into the API
-  will generate an error and return immediately from all except the thread
-  that managed to get the first reference count increment.
+  alBufferData() its contents while attached to a source with either
+  AL_BUFFER or alSourceQueueBuffers(). We keep an atomic refcount for each
+  buffer, and you can't change its state or delete it when its refcount is
+  > 0, so there isn't a race with the mixer. Refcounts only change when
+  changing a source's AL_BUFFER or altering its buffer queue, both of which
+  are protected by the api lock. The mixer thread doesn't touch the
+  refcount, as a buffer moving from AL_PENDING to AL_PROCESSED is still
+  attached to a source.
 
-- Buffer queues are a hot mess. alSourceQueueBuffers will build a linked
-  list of buffers, then atomically move this list into position for the
-  mixer to obtain it. The mixer will process this list without the need
-  to be atomic (as it owns it once it atomically claims it from from the
-  just_queue field where alSourceQueueBuffers staged it). As buffers are
-  processed, the mixer moves them atomically to a linked list that other
-  threads can pick up for alSourceUnqueueBuffers. The problem with unqueueing
-  is that multiple threads can compete. Unlike queueing, where we don't care
-  which thread wins the race to queue, unqueueing _must_ return buffer names
-  in the order they were mixed, according to the spec, which means we need a
-  lock. But! we only need to serialize the alSourceUnqueueBuffers callers,
-  not the mixer thread, and only long enough to obtain any newly-processed
-  buffers from the mixer thread and unqueue items from the actual list.
+- alSource(Stop|Pause|Rewind)v with > 1 source used will always lock the
+  mixer thread to guarantee that all sources change in sync (!!! FIXME?).
+  The non-v version of these functions do not lock the mixer thread.
+  alSourcePlayv never locks the mixer thread (it atomically appends to a
+  linked list of sources to be played, which the mixer will pick up all
+  at once).
+
+- alSourceQueueBuffers will build a linked list of buffers, then atomically
+  move this list into position for the mixer to obtain it. The mixer will
+  process this list without the need to be atomic (as it owns it once it
+  atomically claims it from from the just_queued field where
+  alSourceQueueBuffers staged it). As buffers are processed, the mixer moves
+  them atomically to a linked list that other threads can pick up for
+  alSourceUnqueueBuffers.
 
 - Capture just locks the SDL audio device for everything, since it's a very
   lightweight load and a much simplified API; good enough. The capture device
