@@ -2482,6 +2482,8 @@ static ALsource *get_source(ALCcontext *ctx, const ALuint name, SourceBlock **_b
     ALsource *source;
     SourceBlock *block;
 
+    /*printf("get_source(%d): blockidx=%d, block_offset=%d\n", (int) name, (int) blockidx, (int) block_offset);*/
+
     if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
         if (_block) *_block = NULL;
@@ -2511,6 +2513,8 @@ static ALbuffer *get_buffer(ALCcontext *ctx, const ALuint name, BufferBlock **_b
     const ALsizei block_offset = (((ALsizei) name) - 1) % OPENAL_BUFFER_BLOCK_SIZE;
     ALbuffer *buffer;
     BufferBlock *block;
+
+    /*printf("get_buffer(%d): blockidx=%d, block_offset=%d\n", (int) name, (int) blockidx, (int) block_offset);*/
 
     if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
@@ -3229,11 +3233,13 @@ static void _alGenSources(const ALsizei n, ALuint *names)
         block->tmp = 0;
         if (block->used < SDL_arraysize(block->sources)) {  /* skip if full */
             for (i = 0; i < SDL_arraysize(block->sources); i++) {
-                block->tmp++;
-                objects[found] = &block->sources[i];
-                names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
-                if (found == n) {
-                    break;
+                if (!block->sources[i].allocated) {
+                    block->tmp++;
+                    objects[found] = &block->sources[i];
+                    names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
+                    if (found == n) {
+                        break;
+                    }
                 }
             }
 
@@ -3302,6 +3308,10 @@ static void _alGenSources(const ALsizei n, ALuint *names)
 
     for (i = 0; i < n; i++) {
         ALsource *src = objects[i];
+
+        /*printf("Generated source %u\n", (unsigned int) names[i]);*/
+
+        SDL_assert(!src->allocated);
 
         /* Make sure everything that wants to use SIMD is aligned for it. */
         SDL_assert( (((size_t) &src->position[0]) % 16) == 0 );
@@ -4146,11 +4156,13 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
         block->tmp = 0;
         if (block->used < SDL_arraysize(block->buffers)) {  /* skip if full */
             for (i = 0; i < SDL_arraysize(block->buffers); i++) {
-                block->tmp++;
-                objects[found] = &block->buffers[i];
-                names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
-                if (found == n) {
-                    break;
+                if (!block->buffers[i].allocated) {
+                    block->tmp++;
+                    objects[found] = &block->buffers[i];
+                    names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
+                    if (found == n) {
+                        break;
+                    }
                 }
             }
 
@@ -4219,6 +4231,8 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
 
     for (i = 0; i < n; i++) {
         ALbuffer *buffer = objects[i];
+        /*printf("Generated buffer %u\n", (unsigned int) names[i]);*/
+        SDL_assert(!buffer->allocated);
         SDL_zerop(buffer);
         buffer->name = names[i];
         buffer->channels = 1;
