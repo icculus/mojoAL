@@ -1750,9 +1750,9 @@ static void mix_context(ALCcontext *ctx, float *stream, int len)
             /* take it out of the playlist. It wasn't actually playing or it just finished. */
             i->playlist_next = NULL;
             if (i == ctx->playlist) {
-                SDL_assert(prev == NULL);
                 ctx->playlist = next;
             } else {
+                SDL_assert(prev != NULL);
                 prev->playlist_next = next;
             }
         }
