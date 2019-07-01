@@ -186,7 +186,7 @@ The locking strategy for this OpenAL implementation:
 - Probably other things. These notes might get updates later.
 */
 
-#if 0
+#if 1
 #define FIXME(x)
 #else
 #define FIXME(x) { \
