@@ -421,6 +421,7 @@ SIMDALIGNEDSTRUCT ALsource
     ALfloat panning[2];  /* we only do stereo for now */
     SDL_atomic_t mixer_accessible;
     SDL_atomic_t state;  /* initial, playing, paused, stopped */
+    ALuint name;
     ALboolean allocated;
     ALenum type;  /* undetermined, static, streaming */
     ALboolean recalc;
@@ -3322,6 +3323,7 @@ static void _alGenSources(const ALsizei n, ALuint *names)
 
         SDL_zerop(src);
         SDL_AtomicSet(&src->state, AL_INITIAL);
+        src->name = names[i];
         src->type = AL_UNDETERMINED;
         src->recalc = AL_TRUE;
         src->gain = 1.0f;
