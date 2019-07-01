@@ -587,6 +587,7 @@ static void source_release_buffer_queue(ALCcontext *ctx, ALsource *src)
         ctx->device->playback.buffer_queue_pool = src->buffer_queue.head;
     }
     src->buffer_queue.head = src->buffer_queue.tail = NULL;
+    SDL_AtomicSet(&src->buffer_queue.num_items, 0);
 
     obtain_newly_queued_buffers(&src->buffer_queue_processed);
     if (src->buffer_queue_processed.tail != NULL) {
@@ -598,6 +599,7 @@ static void source_release_buffer_queue(ALCcontext *ctx, ALsource *src)
         ctx->device->playback.buffer_queue_pool = src->buffer_queue_processed.head;
     }
     src->buffer_queue_processed.head = src->buffer_queue_processed.tail = NULL;
+    SDL_AtomicSet(&src->buffer_queue_processed.num_items, 0);
 }
 
 
