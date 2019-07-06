@@ -53,6 +53,15 @@ static ContextItem *current_context;
 
 static void quit_altrace_record(void) __attribute__((destructor));
 
+// override _exit(), which terminates the process without running library
+//  destructors, so we can close our log file, etc.
+void _exit(int status)
+{
+    quit_altrace_record();
+    _Exit(status);  // just use _Exit(), which does the same thing but no one really uses.  :P
+}
+
+
 NORETURN static void IO_WRITE_FAIL(void)
 {
     fprintf(stderr, APPNAME ": failed to write to log: %s\n", strerror(errno));
