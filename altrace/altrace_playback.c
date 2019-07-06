@@ -12,6 +12,8 @@
 static int dump_log = 1;
 static int run_log = 0;
 
+static int trace_scope = 0;
+
 static void quit_altrace_playback(void);
 
 #define MAX_IOBLOBS 32
@@ -177,7 +179,10 @@ static ALboolean IO_BOOLEAN(void)
 
 #define IO_START(e) \
     { \
-        if (dump_log) { printf("%s", #e); } { \
+        if (dump_log) { \
+            int i; for (i = 0; i < trace_scope; i++) { printf("    "); } \
+            printf("%s", #e); \
+        } { \
 
 #define IO_END() \
         if (dump_log) { fflush(stdout); } } \
@@ -1596,6 +1601,66 @@ static void dump_alGetBufferiv(void)
     const ALenum param = IO_ENUM();
     if (dump_log) { printf("(%u, %s, &values)\n", (uint) name, alenumString(param)); }
     //REAL_alGetBufferiv(param, values);
+    IO_END();
+}
+
+static void dump_alTracePushScope(void)
+{
+    IO_START(alTracePushScope);
+    const ALchar *str = IO_STRING();
+    if (dump_log) { printf("(%s)\n", litString(str)); }
+    trace_scope++;
+    IO_END();
+}
+
+static void dump_alTracePopScope(void)
+{
+    trace_scope--;
+    IO_START(alTracePopScope);
+    IO_END();
+}
+
+static void dump_alTraceMessage(void)
+{
+    IO_START(alTraceMessage);
+    const ALchar *str = IO_STRING();
+    if (dump_log) { printf("(%s)\n", litString(str)); }
+    IO_END();
+}
+
+static void dump_alTraceBufferLabel(void)
+{
+    IO_START(alTraceBufferLabel);
+    const ALuint name = IO_UINT32();
+    const ALchar *str = IO_STRING();
+    if (dump_log) { printf("(%u, %s)\n", (uint) name, litString(str)); }
+    IO_END();
+}
+
+static void dump_alTraceSourceLabel(void)
+{
+    IO_START(alTraceSourceLabel);
+    const ALuint name = IO_UINT32();
+    const ALchar *str = IO_STRING();
+    if (dump_log) { printf("(%u, %s)\n", (uint) name, litString(str)); }
+    IO_END();
+}
+
+static void dump_alcTraceDeviceLabel(void)
+{
+    IO_START(alcTraceDeviceLabel);
+    ALCdevice *device = (ALCdevice *) IO_PTR();
+    const ALchar *str = IO_STRING();
+    if (dump_log) { printf("(%p, %s)\n", device, litString(str)); }
+    IO_END();
+}
+
+static void dump_alcTraceContextLabel(void)
+{
+    IO_START(alcTraceContextLabel);
+    ALCcontext *ctx = (ALCcontext *) IO_PTR();
+    const ALchar *str = IO_STRING();
+    if (dump_log) { printf("(%p, %s)\n", ctx, litString(str)); }
     IO_END();
 }
 

@@ -15,6 +15,16 @@
 
 #include "altrace_common.h"
 
+// not in the headers, natch.
+AL_API void AL_APIENTRY alTracePushScope(const ALchar *str);
+AL_API void AL_APIENTRY alTracePopScope(void);
+AL_API void AL_APIENTRY alTraceMessage(const ALchar *str);
+AL_API void AL_APIENTRY alTraceBufferLabel(ALuint name, const ALchar *str);
+AL_API void AL_APIENTRY alTraceSourceLabel(ALuint name, const ALchar *str);
+AL_API void AL_APIENTRY alcTraceDeviceLabel(ALCdevice *device, const ALchar *str);
+AL_API void AL_APIENTRY alcTraceContextLabel(ALCcontext *ctx, const ALchar *str);
+
+
 static pthread_mutex_t _apilock;
 static pthread_mutex_t *apilock;
 
@@ -340,7 +350,11 @@ ALCboolean alcIsExtensionPresent(ALCdevice *device, const ALCchar *extname)
     IO_START(alcIsExtensionPresent);
     IO_PTR(device);
     IO_STRING(extname);
-    retval = REAL_alcIsExtensionPresent(device, extname);
+    if (strcasecmp(extname, "ALC_EXT_trace_info") == 0) {
+        retval = ALC_TRUE;
+    } else {
+        retval = REAL_alcIsExtensionPresent(device, extname);
+    }
     IO_ALCBOOLEAN(retval);
     IO_END_ALC(device);
     return retval;
@@ -386,6 +400,24 @@ const ALCchar *alcGetString(ALCdevice *device, ALCenum param)
     IO_PTR(device);
     IO_ALCENUM(param);
     retval = REAL_alcGetString(device, param);
+
+    if ((param == ALC_EXTENSIONS) && retval) {
+        const char *addstr = "ALC_EXT_trace_info";
+        const size_t slen = strlen(retval) + strlen(addstr) + 2;
+        DeviceItem *devi;
+        for (devi = &devices; devi != NULL; devi = devi->next) {
+            if (devi->device == device) {
+                char *ptr = (char *) realloc(devi->extension_string, slen);
+                if (ptr) {
+                    devi->extension_string = ptr;
+                    snprintf(ptr, slen, "%s%s%s", retval, *retval ? " " : "", addstr);
+                    retval = (const ALCchar *) ptr;
+                }
+                break;
+            }
+        }
+    }
+
     IO_STRING(retval);
     IO_END_ALC(device);
     return retval;
@@ -739,6 +771,20 @@ const ALchar *alGetString(const ALenum param)
     IO_START(alGetString);
     IO_ENUM(param);
     retval = REAL_alGetString(param);
+
+    if (param == AL_EXTENSIONS) {
+        if (retval && current_context) {
+            const char *addstr = "AL_EXT_trace_info";
+            const size_t slen = strlen(retval) + strlen(addstr) + 2;
+            char *ptr = (char *) realloc(current_context->extension_string, slen);
+            if (ptr) {
+                current_context->extension_string = ptr;
+                snprintf(ptr, slen, "%s%s%s", retval, *retval ? " " : "", addstr);
+                retval = (const ALCchar *) ptr;
+            }
+        }
+    }
+
     IO_STRING(retval);
     IO_END();
     return retval;
@@ -825,7 +871,11 @@ ALboolean alIsExtensionPresent(const ALchar *extname)
     ALboolean retval;
     IO_START(alIsExtensionPresent);
     IO_STRING(extname);
-    retval = REAL_alIsExtensionPresent(extname);
+    if (strcasecmp(extname, "AL_EXT_trace_info") == 0) {
+        retval = AL_TRUE;
+    } else {
+        retval = REAL_alIsExtensionPresent(extname);
+    }
     IO_BOOLEAN(retval);
     IO_END();
     return retval;
@@ -1492,6 +1542,58 @@ void alGetBufferiv(ALuint name, ALenum param, ALint *values)
     IO_UINT32(name);
     IO_ENUM(param);
     REAL_alGetBufferiv(name, param, values);
+    IO_END();
+}
+
+void alTracePushScope(const ALchar *str)
+{
+    IO_START(alTracePushScope);
+    IO_STRING(str);
+    IO_END();
+}
+
+void alTracePopScope(void)
+{
+    IO_START(alTracePopScope);
+    IO_END();
+}
+
+void alTraceMessage(const ALchar *str)
+{
+    IO_START(alTraceMessage);
+    IO_STRING(str);
+    IO_END();
+}
+
+void alTraceBufferLabel(ALuint name, const ALchar *str)
+{
+    IO_START(alTraceBufferLabel);
+    IO_UINT32(name);
+    IO_STRING(str);
+    IO_END();
+}
+
+void alTraceSourceLabel(ALuint name, const ALchar *str)
+{
+    IO_START(alTraceSourceLabel);
+    IO_UINT32(name);
+    IO_STRING(str);
+    IO_END();
+}
+
+void alcTraceDeviceLabel(ALCdevice *device, const ALchar *str)
+{
+    IO_START(alcTraceDeviceLabel);
+    IO_PTR(device);
+    IO_STRING(str);
+    IO_END();
+}
+
+void alcTraceContextLabel(ALCcontext *ctx, const ALchar *str)
+{
+    IO_START(alcTraceContextLabel);
+    IO_PTR(ctx);
+    IO_STRING(str);
     IO_END();
 }
 

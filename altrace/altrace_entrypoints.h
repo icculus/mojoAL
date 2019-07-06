@@ -95,6 +95,14 @@ ENTRYPOINTVOID(alGetBuffer3f,(ALuint name, ALenum param, ALfloat *value1, ALfloa
 ENTRYPOINTVOID(alGetBufferi,(ALuint name, ALenum param, ALint *value),(name,param,value))
 ENTRYPOINTVOID(alGetBuffer3i,(ALuint name, ALenum param, ALint *value1, ALint *value2, ALint *value3),(name,param,value1,value2,value3))
 ENTRYPOINTVOID(alGetBufferiv,(ALuint name, ALenum param, ALint *values),(name,param,values))
+ENTRYPOINTVOID(alTracePushScope,(const ALchar *str),(str))
+ENTRYPOINTVOID(alTracePopScope,(void),())
+ENTRYPOINTVOID(alTraceMessage,(const ALchar *str),(str))
+ENTRYPOINTVOID(alTraceBufferLabel,(ALuint name, const ALchar *str),(name,str))
+ENTRYPOINTVOID(alTraceSourceLabel,(ALuint name, const ALchar *str),(name,str))
+ENTRYPOINTVOID(alcTraceDeviceLabel,(ALCdevice *device, const ALchar *str),(device,str))
+ENTRYPOINTVOID(alcTraceContextLabel,(ALCcontext *ctx, const ALchar *str),(ctx,str))
+
 #undef ENTRYPOINT
 #undef ENTRYPOINTVOID
 
