@@ -894,14 +894,25 @@ static void dump_alGetIntegerv(void)
     const ALsizei numvals = IO_ALSIZEI();
     ALint *values = numvals ? get_ioblob(numvals * sizeof (ALint)) : NULL;
     ALsizei i;
+    ALboolean isenum = AL_FALSE;
+
     for (i = 0; i < numvals; i++) {
         values[i] = IO_INT32();
+    }
+
+    switch (param) {
+        case AL_DISTANCE_MODEL: isenum = AL_TRUE; break;
+        default: break;
     }
 
     if (dump_log) {
         printf("(%s, %p) => {", alenumString(param), origvalues);
         for (i = 0; i < numvals; i++) {
-            printf("%s %d", i > 0 ? "," : "", (int) values[i]);
+            if (isenum) {
+                printf("%s %s", i > 0 ? "," : "", alenumString((ALenum) values[i]));
+            } else {
+                printf("%s %d", i > 0 ? "," : "", (int) values[i]);
+            }
         }
         printf("%s}\n", numvals > 0 ? " " : "");
     }
@@ -1503,10 +1514,16 @@ static void dump_alGetSourceiv(void)
     ALint *origvalues = (ALint *) IO_PTR();
     const uint32 numvals = IO_UINT32();
     ALint *values = (ALint *) (numvals ? get_ioblob(sizeof (ALfloat) * numvals) : NULL);
+    ALboolean isenum = AL_FALSE;
     uint32 i;
 
     for (i = 0; i < numvals; i++) {
         values[i] = IO_INT32();
+    }
+
+    switch (param) {
+        case AL_SOURCE_STATE: isenum = AL_TRUE;
+        default: break;
     }
 
     if (dump_log) {
@@ -1514,7 +1531,11 @@ static void dump_alGetSourceiv(void)
         if (origvalues) {
             printf(" => {");
             for (i = 0; i < numvals; i++) {
-                printf("%s %d", i > 0 ? "," : "", (int) values[i]);
+                if (isenum) {
+                    printf("%s %s", i > 0 ? "," : "", alenumString((ALenum) values[i]));
+                } else {
+                    printf("%s %d", i > 0 ? "," : "", (int) values[i]);
+                }
             }
             printf("%s}", numvals > 0 ? " " : "");
         }
@@ -1533,8 +1554,23 @@ static void dump_alGetSourcei(void)
     const ALenum param = IO_ENUM();
     ALint *origvalue = (ALint *) IO_PTR();
     const ALint value = IO_INT32();
-    if (dump_log) { printf("(%u, %s, %p) => { %d }\n", (uint) name, alenumString(param), origvalue, (int) value); }
+    ALboolean isenum = AL_FALSE;
+
+    switch (param) {
+        case AL_SOURCE_STATE: isenum = AL_TRUE;
+        default: break;
+    }
+
+    if (dump_log) {
+        if (isenum) {
+            printf("(%u, %s, %p) => { %s }\n", (uint) name, alenumString(param), origvalue, alenumString((ALenum) value));
+        } else {
+            printf("(%u, %s, %p) => { %d }\n", (uint) name, alenumString(param), origvalue, (int) value);
+        }
+    }
+
     if (run_log) { ALint i; REAL_alGetSourcei(get_mapped_source(name), param, &i); }
+
     IO_END();
 }
 
