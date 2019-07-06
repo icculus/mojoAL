@@ -130,6 +130,8 @@ static int init_clock(void)
 static int logfd = -1;
 static void *realdll = NULL;
 
+// !!! FIXME: we should use al[c]GetProcAddress() and do it _per device_ and
+// !!! FIXME:  _per context_.
 static void *loadEntryPoint(void *dll, const char *fnname, int *okay)
 {
     void *fn = dlsym(dll, fnname);
