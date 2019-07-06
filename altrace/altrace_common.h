@@ -132,10 +132,10 @@ static void *realdll = NULL;
 
 // !!! FIXME: we should use al[c]GetProcAddress() and do it _per device_ and
 // !!! FIXME:  _per context_.
-static void *loadEntryPoint(void *dll, const char *fnname, int *okay)
+static void *loadEntryPoint(void *dll, const char *fnname, const int extension, int *okay)
 {
     void *fn = dlsym(dll, fnname);
-    if (!fn) {
+    if (!fn && !extension) {
         fprintf(stderr, APPNAME ": Real OpenAL library doesn't have entry point '%s'!\n", fnname);
         *okay = 0;
     }
@@ -144,6 +144,7 @@ static void *loadEntryPoint(void *dll, const char *fnname, int *okay)
 
 static int load_real_openal(void)
 {
+    int extensions = 0;
     int okay = 1;
     #ifdef __APPLE__
     const char *dllname = "libopenal.1.dylib";
@@ -160,7 +161,8 @@ static int load_real_openal(void)
         return 0;
     }
 
-    #define ENTRYPOINT(ret,name,params,args) REAL_##name = (ret (*)params) loadEntryPoint(realdll, #name, &okay);
+    #define ENTRYPOINT_EXTENSIONS_BEGIN() extensions = 1;
+    #define ENTRYPOINT(ret,name,params,args) REAL_##name = (ret (*)params) loadEntryPoint(realdll, #name, extensions, &okay);
     #include "altrace_entrypoints.h"
     return okay;
 }
