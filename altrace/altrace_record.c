@@ -32,6 +32,7 @@ typedef struct DeviceItem
 {
     ALCdevice *device;
     ALCenum errorlatch;
+    int samplesize;   /* size of a capture device sample in bytes */
     char *extension_string;
     struct DeviceItem *next;
 } DeviceItem;
@@ -123,7 +124,9 @@ static void IO_STRING(const char *str)
     } else {
         const size_t len = strlen(str);
         IO_UINT64((uint64) len);
-        if (write(logfd, str, len) != len) IO_WRITE_FAIL();
+        if (len > 0) {
+            if (write(logfd, str, len) != len) IO_WRITE_FAIL();
+        }
     }
 }
 
@@ -134,7 +137,9 @@ static void IO_BLOB(const uint8 *data, const uint64 len)
     } else {
         const size_t slen = (size_t) len;
         IO_UINT64(len);
-        if (write(logfd, data, slen) != slen) IO_WRITE_FAIL();
+        if (len > 0) {
+            if (write(logfd, data, slen) != slen) IO_WRITE_FAIL();
+        }
     }
 }
 
@@ -143,7 +148,7 @@ static void IO_ENTRYENUM(const EntryEnum x)
     IO_UINT32((uint32) x);
 }
 
-static void IO_PTR(void *ptr)
+static void IO_PTR(const void *ptr)
 {
     IO_UINT64((uint64) (size_t) ptr);
 }
@@ -444,6 +449,15 @@ ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, AL
         free(devitem);
     } else {
         devitem->device = retval;
+        if (format == AL_FORMAT_MONO8) {
+            devitem->samplesize = 1;
+        } else if (format == AL_FORMAT_MONO16) {
+            devitem->samplesize = 2;
+        } else if (format == AL_FORMAT_STEREO8) {
+            devitem->samplesize = 2;
+        } else if (format == AL_FORMAT_STEREO16) {
+            devitem->samplesize = 4;
+        }
         devitem->next = devices.next;
         devices.next = devitem;
     }
@@ -672,11 +686,25 @@ ALCenum alcGetError(ALCdevice *device)
 
 void alcGetIntegerv(ALCdevice *device, ALCenum param, ALCsizei size, ALCint *values)
 {
+    ALsizei i;
     IO_START(alcGetIntegerv);
     IO_PTR(device);
     IO_ALCENUM(param);
     IO_ALCSIZEI(size);
+    IO_PTR(values);
+
+    if (values) {
+        memset(values, '\0', size * sizeof (ALCint));
+    }
+
     REAL_alcGetIntegerv(device, param, size, values);
+
+    if (values) {
+        for (i = 0; i < size; i++) {
+            IO_INT32(values[i]);
+        }
+    }
+
     IO_END_ALC(device);
 }
 
@@ -698,11 +726,21 @@ void alcCaptureStop(ALCdevice *device)
 
 void alcCaptureSamples(ALCdevice *device, ALCvoid *buffer, ALCsizei samples)
 {
+    DeviceItem *devi;
+    ALsizei samplesize = 0;
     IO_START(alcCaptureSamples);
     IO_PTR(device);
     IO_ALCSIZEI(samples);
-    // !!! FIXME: IO_BLOB the results.
+    for (devi = &devices; devi != NULL; devi = devi->next) {
+        if (devi->device == device) {
+            samplesize = devi->samplesize;
+        }
+    }
+    if (samplesize) {
+        memset(buffer, '\0', samples * samplesize);
+    }
     REAL_alcCaptureSamples(device, buffer, samples);
+    IO_BLOB(buffer, samples * samplesize);
     IO_END_ALC(device);
 }
 
@@ -792,33 +830,92 @@ const ALchar *alGetString(const ALenum param)
 
 void alGetBooleanv(ALenum param, ALboolean *values)
 {
+    ALsizei numvals = 0;
+    ALsizei i;
     IO_START(alGetBooleanv);
     IO_ENUM(param);
+    IO_PTR(values);
+
+    /* nothing in AL 1.1 uses this. */
+    if (!values) { numvals = 0; }
+    if (numvals) {
+        memset(values, '\0', numvals * sizeof (ALboolean));
+    }
     REAL_alGetBooleanv(param, values);
+    IO_ALSIZEI(numvals);
+    for (i = 0; i < numvals; i++) {
+        IO_BOOLEAN(values[i]);
+    }
     IO_END();
 }
 
 void alGetIntegerv(ALenum param, ALint *values)
 {
+    ALsizei numvals = 0;
+    ALsizei i;
     IO_START(alGetIntegerv);
     IO_ENUM(param);
+    IO_PTR(values);
+
+    switch (param) {
+        case AL_DISTANCE_MODEL: numvals = 1;
+        default: break;
+    }
+    if (!values) { numvals = 0; }
+    if (numvals) {
+        memset(values, '\0', numvals * sizeof (ALint));
+    }
     REAL_alGetIntegerv(param, values);
+    IO_ALSIZEI(numvals);
+    for (i = 0; i < numvals; i++) {
+        IO_INT32(values[i]);
+    }
     IO_END();
 }
 
 void alGetFloatv(ALenum param, ALfloat *values)
 {
+    ALsizei numvals = 0;
+    ALsizei i;
     IO_START(alGetFloatv);
     IO_ENUM(param);
+    IO_PTR(values);
+
+    switch (param) {
+        case AL_DOPPLER_FACTOR: numvals = 1;  break;
+        case AL_DOPPLER_VELOCITY: numvals = 1; break;
+        case AL_SPEED_OF_SOUND: numvals = 1; break;
+        default: break;
+    }
+    if (!values) { numvals = 0; }
+    if (numvals) {
+        memset(values, '\0', numvals * sizeof (ALfloat));
+    }
     REAL_alGetFloatv(param, values);
+    IO_ALSIZEI(numvals);
+    for (i = 0; i < numvals; i++) {
+        IO_FLOAT(values[i]);
+    }
     IO_END();
 }
 
 void alGetDoublev(ALenum param, ALdouble *values)
 {
+    ALsizei numvals = 0;
+    ALsizei i;
     IO_START(alGetDoublev);
     IO_ENUM(param);
+    IO_PTR(values);
+    // nothing in AL 1.1 uses this.
+    if (!values) { numvals = 0; }
+    if (numvals) {
+        memset(values, '\0', numvals * sizeof (ALdouble));
+    }
     REAL_alGetDoublev(param, values);
+    IO_ALSIZEI(numvals);
+    for (i = 0; i < numvals; i++) {
+        IO_DOUBLE(values[i]);
+    }
     IO_END();
 }
 
@@ -934,13 +1031,17 @@ void alListenerfv(ALenum param, const ALfloat *values)
     uint32 i;
     IO_START(alListenerfv);
     IO_ENUM(param);
-    switch(param) {
+    IO_PTR(values);
+
+    switch (param) {
         case AL_GAIN: break;
         case AL_POSITION: numvals = 3; break;
         case AL_VELOCITY: numvals = 3; break;
         case AL_ORIENTATION: numvals = 6; break;
         default: break;   /* uhoh. */
     }
+
+    if (!values) { numvals = 0; }
 
     IO_UINT32(numvals);
     for (i = 0; i < numvals; i++) {
@@ -977,13 +1078,15 @@ void alListeneriv(ALenum param, const ALint *values)
     uint32 i;
     IO_START(alListeneriv);
     IO_ENUM(param);
-    switch(param) {
+    IO_PTR(values);
+    switch (param) {
         case AL_POSITION: numvals = 3; break;
         case AL_VELOCITY: numvals = 3; break;
         case AL_ORIENTATION: numvals = 6; break;
         default: break;   /* uhoh. */
     }
 
+    if (!values) { numvals = 0; }
     IO_UINT32(numvals);
     for (i = 0; i < numvals; i++) {
         IO_INT32(values[i]);
@@ -1015,9 +1118,31 @@ void alListener3i(ALenum param, ALint value1, ALint value2, ALint value3)
 
 void alGetListenerfv(ALenum param, ALfloat *values)
 {
+    uint32 numvals = 1;
+    uint32 i;
     IO_START(alGetListenerfv);
     IO_ENUM(param);
+    IO_PTR(values);
+
+    switch (param) {
+        case AL_POSITION: numvals = 3; break;
+        case AL_VELOCITY: numvals = 3; break;
+        case AL_ORIENTATION: numvals = 6; break;
+        default: break;   /* uhoh. */
+    }
+
+    if (!values) { numvals = 0; }
+    if (numvals) {
+        memset(values, '\0', numvals * sizeof (ALfloat));
+    }
+
     REAL_alGetListenerfv(param, values);
+
+    IO_UINT32(numvals);
+    for (i = 0; i < numvals; i++) {
+        IO_FLOAT(values[i]);
+    }
+
     IO_END();
 }
 
@@ -1025,7 +1150,9 @@ void alGetListenerf(ALenum param, ALfloat *value)
 {
     IO_START(alGetListenerf);
     IO_ENUM(param);
+    IO_PTR(value);
     REAL_alGetListenerf(param, value);
+    IO_FLOAT(value ? *value : 0.0f);
     IO_END();
 }
 
@@ -1033,15 +1160,43 @@ void alGetListener3f(ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *va
 {
     IO_START(alGetListener3f);
     IO_ENUM(param);
+    IO_PTR(value1);
+    IO_PTR(value2);
+    IO_PTR(value3);
     REAL_alGetListener3f(param, value1, value2, value3);
+    IO_FLOAT(value1 ? *value1 : 0.0f);
+    IO_FLOAT(value2 ? *value2 : 0.0f);
+    IO_FLOAT(value3 ? *value3 : 0.0f);
     IO_END();
 }
 
 void alGetListeneriv(ALenum param, ALint *values)
 {
+    uint32 numvals = 1;
+    uint32 i;
     IO_START(alGetListeneriv);
     IO_ENUM(param);
+    IO_PTR(values);
+
+    switch (param) {
+        case AL_POSITION: numvals = 3; break;
+        case AL_VELOCITY: numvals = 3; break;
+        case AL_ORIENTATION: numvals = 6; break;
+        default: break;   /* uhoh. */
+    }
+
+    if (!values) { numvals = 0; }
+    if (numvals) {
+        memset(values, '\0', numvals * sizeof (ALdouble));
+    }
+
     REAL_alGetListeneriv(param, values);
+
+    IO_UINT32(numvals);
+    for (i = 0; i < numvals; i++) {
+        IO_FLOAT(values[i]);
+    }
+
     IO_END();
 }
 
@@ -1049,7 +1204,9 @@ void alGetListeneri(ALenum param, ALint *value)
 {
     IO_START(alGetListeneri);
     IO_ENUM(param);
+    IO_PTR(value);
     REAL_alGetListeneri(param, value);
+    IO_INT32(value ? *value : 0);
     IO_END();
 }
 
@@ -1057,7 +1214,13 @@ void alGetListener3i(ALenum param, ALint *value1, ALint *value2, ALint *value3)
 {
     IO_START(alGetListener3i);
     IO_ENUM(param);
+    IO_PTR(value1);
+    IO_PTR(value2);
+    IO_PTR(value3);
     REAL_alGetListener3i(param, value1, value2, value3);
+    IO_INT32(value1 ? *value1 : 0);
+    IO_INT32(value2 ? *value2 : 0);
+    IO_INT32(value3 ? *value3 : 0);
     IO_END();
 }
 
@@ -1104,7 +1267,7 @@ void alSourcefv(ALuint name, ALenum param, const ALfloat *values)
     IO_START(alSourcefv);
     IO_UINT32(name);
     IO_ENUM(param);
-    switch(param) {
+    switch (param) {
         case AL_GAIN: break;
         case AL_POSITION: numvals = 3; break;
         case AL_VELOCITY: numvals = 3; break;
@@ -1118,7 +1281,7 @@ void alSourcefv(ALuint name, ALenum param, const ALfloat *values)
         case AL_CONE_INNER_ANGLE: break;
         case AL_CONE_OUTER_ANGLE: break;
         case AL_CONE_OUTER_GAIN: break;
-        default: break;   /* uhoh. */
+        default: numvals = 0; break;   /* uhoh. */
     }
 
     IO_UINT32(numvals);
@@ -1160,7 +1323,7 @@ void alSourceiv(ALuint name, ALenum param, const ALint *values)
     IO_UINT32(name);
     IO_ENUM(param);
 
-    switch(param) {
+    switch (param) {
         case AL_BUFFER: break;
         case AL_SOURCE_RELATIVE: break;
         case AL_LOOPING: break;
@@ -1173,7 +1336,7 @@ void alSourceiv(ALuint name, ALenum param, const ALint *values)
         case AL_SEC_OFFSET: break;
         case AL_SAMPLE_OFFSET: break;
         case AL_BYTE_OFFSET: break;
-        default: break;   /* uhoh. */
+        default: numvals = 0; break;   /* uhoh. */
     }
 
     IO_UINT32(numvals);
@@ -1209,10 +1372,45 @@ void alSource3i(ALuint name, ALenum param, ALint value1, ALint value2, ALint val
 
 void alGetSourcefv(ALuint name, ALenum param, ALfloat *values)
 {
+    uint32 numvals = 1;
+    uint32 i;
     IO_START(alGetSourcefv);
     IO_UINT32(name);
     IO_ENUM(param);
+    IO_PTR(values);
+
+    switch (param) {
+        case AL_GAIN: break;
+        case AL_POSITION: numvals = 3; break;
+        case AL_VELOCITY: numvals = 3; break;
+        case AL_DIRECTION: numvals = 3; break;
+        case AL_MIN_GAIN: break;
+        case AL_MAX_GAIN: break;
+        case AL_REFERENCE_DISTANCE: break;
+        case AL_ROLLOFF_FACTOR: break;
+        case AL_MAX_DISTANCE: break;
+        case AL_PITCH: break;
+        case AL_CONE_INNER_ANGLE: break;
+        case AL_CONE_OUTER_ANGLE: break;
+        case AL_CONE_OUTER_GAIN: break;
+        case AL_SEC_OFFSET: break;
+        case AL_SAMPLE_OFFSET: break;
+        case AL_BYTE_OFFSET: break;
+        default: numvals = 0; break;   /* uhoh. */
+    }
+
+    if (!values) { numvals = 0; }
+    if (numvals) {
+        memset(values, '\0', numvals * sizeof (ALfloat));
+    }
+
     REAL_alGetSourcefv(name, param, values);
+
+    IO_UINT32(numvals);
+    for (i = 0; i < numvals; i++) {
+        IO_FLOAT(values[i]);
+    }
+
     IO_END();
 }
 
@@ -1221,7 +1419,9 @@ void alGetSourcef(ALuint name, ALenum param, ALfloat *value)
     IO_START(alGetSourcef);
     IO_UINT32(name);
     IO_ENUM(param);
+    IO_PTR(value);
     REAL_alGetSourcef(name, param, value);
+    IO_FLOAT(value ? *value : 0.0f);
     IO_END();
 }
 
@@ -1230,16 +1430,56 @@ void alGetSource3f(ALuint name, ALenum param, ALfloat *value1, ALfloat *value2, 
     IO_START(alGetSource3f);
     IO_UINT32(name);
     IO_ENUM(param);
+    IO_PTR(value1);
+    IO_PTR(value2);
+    IO_PTR(value3);
     REAL_alGetSource3f(name, param, value1, value2, value3);
+    IO_FLOAT(value1 ? *value1 : 0.0f);
+    IO_FLOAT(value2 ? *value2 : 0.0f);
+    IO_FLOAT(value3 ? *value3 : 0.0f);
     IO_END();
 }
 
 void alGetSourceiv(ALuint name, ALenum param, ALint *values)
 {
+    uint32 numvals = 1;
+    uint32 i;
     IO_START(alGetSourceiv);
     IO_UINT32(name);
     IO_ENUM(param);
+    IO_PTR(values);
+
+    switch (param) {
+        case AL_SOURCE_STATE: break;
+        case AL_SOURCE_RELATIVE: break;
+        case AL_LOOPING: break;
+        case AL_BUFFER: break;
+        case AL_BUFFERS_QUEUED: break;
+        case AL_BUFFERS_PROCESSED: break;
+        case AL_SOURCE_TYPE: break;
+        case AL_REFERENCE_DISTANCE: break;
+        case AL_ROLLOFF_FACTOR: break;
+        case AL_MAX_DISTANCE: break;
+        case AL_CONE_INNER_ANGLE: break;
+        case AL_CONE_OUTER_ANGLE: break;
+        case AL_SEC_OFFSET: break;
+        case AL_SAMPLE_OFFSET: break;
+        case AL_BYTE_OFFSET: break;
+        default: numvals = 0; break;   /* uhoh. */
+    }
+
+    if (!values) { numvals = 0; }
+    if (numvals) {
+        memset(values, '\0', numvals * sizeof (ALint));
+    }
+
     REAL_alGetSourceiv(name, param, values);
+
+    IO_UINT32(numvals);
+    for (i = 0; i < numvals; i++) {
+        IO_INT32(values[i]);
+    }
+
     IO_END();
 }
 
@@ -1248,7 +1488,9 @@ void alGetSourcei(ALuint name, ALenum param, ALint *value)
     IO_START(alGetSourcei);
     IO_UINT32(name);
     IO_ENUM(param);
+    IO_PTR(value);
     REAL_alGetSourcei(name, param, value);
+    IO_INT32(value ? *value : 0);
     IO_END();
 }
 
@@ -1257,7 +1499,13 @@ void alGetSource3i(ALuint name, ALenum param, ALint *value1, ALint *value2, ALin
     IO_START(alGetSource3i);
     IO_UINT32(name);
     IO_ENUM(param);
+    IO_PTR(value1);
+    IO_PTR(value2);
+    IO_PTR(value3);
     REAL_alGetSource3i(name, param, value1, value2, value3);
+    IO_INT32(value1 ? *value1 : 0);
+    IO_INT32(value2 ? *value2 : 0);
+    IO_INT32(value3 ? *value3 : 0);
     IO_END();
 }
 
@@ -1493,10 +1741,27 @@ void alBuffer3i(ALuint name, ALenum param, ALint value1, ALint value2, ALint val
 
 void alGetBufferfv(ALuint name, ALenum param, ALfloat *values)
 {
+    uint32 numvals = 1;
+    uint32 i;
     IO_START(alGetBufferfv);
     IO_UINT32(name);
     IO_ENUM(param);
+    IO_PTR(values);
+
+    // nothing uses this in AL 1.1
+
+    if (!values) { numvals = 0; }
+    if (numvals) {
+        memset(values, '\0', numvals * sizeof (ALfloat));
+    }
+
     REAL_alGetBufferfv(name, param, values);
+
+    IO_UINT32(numvals);
+    for (i = 0; i < numvals; i++) {
+        IO_FLOAT(values[i]);
+    }
+
     IO_END();
 }
 
@@ -1505,7 +1770,9 @@ void alGetBufferf(ALuint name, ALenum param, ALfloat *value)
     IO_START(alGetBufferf);
     IO_UINT32(name);
     IO_ENUM(param);
+    IO_PTR(value);
     REAL_alGetBufferf(name, param, value);
+    IO_FLOAT(value ? *value : 0.0f);
     IO_END();
 }
 
@@ -1514,7 +1781,13 @@ void alGetBuffer3f(ALuint name, ALenum param, ALfloat *value1, ALfloat *value2, 
     IO_START(alGetBuffer3f);
     IO_UINT32(name);
     IO_ENUM(param);
+    IO_PTR(value1);
+    IO_PTR(value2);
+    IO_PTR(value3);
     REAL_alGetBuffer3f(name, param, value1, value2, value3);
+    IO_FLOAT(value1 ? *value1 : 0.0f);
+    IO_FLOAT(value2 ? *value2 : 0.0f);
+    IO_FLOAT(value3 ? *value3 : 0.0f);
     IO_END();
 }
 
@@ -1523,7 +1796,9 @@ void alGetBufferi(ALuint name, ALenum param, ALint *value)
     IO_START(alGetBufferi);
     IO_UINT32(name);
     IO_ENUM(param);
+    IO_PTR(value);
     REAL_alGetBufferi(name, param, value);
+    IO_INT32(value ? *value : 0);
     IO_END();
 }
 
@@ -1532,16 +1807,45 @@ void alGetBuffer3i(ALuint name, ALenum param, ALint *value1, ALint *value2, ALin
     IO_START(alGetBuffer3i);
     IO_UINT32(name);
     IO_ENUM(param);
+    IO_PTR(value1);
+    IO_PTR(value2);
+    IO_PTR(value3);
     REAL_alGetBuffer3i(name, param, value1, value2, value3);
+    IO_INT32(value1 ? *value1 : 0);
+    IO_INT32(value2 ? *value2 : 0);
+    IO_INT32(value3 ? *value3 : 0);
     IO_END();
 }
 
 void alGetBufferiv(ALuint name, ALenum param, ALint *values)
 {
+    uint32 numvals = 1;
+    uint32 i;
     IO_START(alGetBufferiv);
     IO_UINT32(name);
     IO_ENUM(param);
+    IO_PTR(values);
+
+    switch (param) {
+        case AL_FREQUENCY: break;
+        case AL_SIZE: break;
+        case AL_BITS: break;
+        case AL_CHANNELS:  break;
+        default: numvals = 0; break;
+    }
+
+    if (!values) { numvals = 0; }
+    if (numvals) {
+        memset(values, '\0', numvals * sizeof (ALint));
+    }
+
     REAL_alGetBufferiv(name, param, values);
+
+    IO_UINT32(numvals);
+    for (i = 0; i < numvals; i++) {
+        IO_INT32(values[i]);
+    }
+
     IO_END();
 }
 

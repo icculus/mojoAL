@@ -622,7 +622,27 @@ static void dump_alcGetIntegerv(void)
     ALCdevice *device = (ALCdevice *) IO_PTR();
     const ALCenum param = IO_ALCENUM();
     const ALCsizei size = IO_ALCSIZEI();
-    if (dump_log) { printf("(%p, %s, %u, &values)\n", device, alcenumString(param), (uint) size); }
+    ALint *origvalues = (ALint *) IO_PTR();
+    ALint *values = origvalues ? get_ioblob(size * sizeof (ALCint)) : NULL;
+    ALCsizei i;
+
+    if (origvalues) {
+        for (i = 0; i < size; i++) {
+            values[i] = IO_INT32();
+        }
+    }
+
+    if (dump_log) {
+        printf("(%p, %s, %u, %p) => {", device, alcenumString(param), (uint) size, origvalues);
+        if (values) {
+            for (i = 0; i < size; i++) {
+                printf("%s %d", i > 0 ? "," : "", values[i]);
+            }
+            printf("%s", size > 0 ? " " : "");
+        }
+        printf("}\n");
+    }
+
     //REAL_alcGetIntegerv(device, param, size, values);
     IO_END();
 }
@@ -650,6 +670,8 @@ static void dump_alcCaptureSamples(void)
     IO_START(alcCaptureSamples);
     ALCdevice *device = (ALCdevice *) IO_PTR();
     const ALCsizei samples = IO_ALCSIZEI();
+    uint64 bloblen;
+    const uint8 *blob = IO_BLOB(&bloblen); (void) blob; (void) bloblen;
     if (dump_log) { printf("(%p, &buffer, %u)\n", device, (uint) samples); }
     //REAL_alcCaptureSamples(device, buffer, samples);
     IO_END();
@@ -733,7 +755,22 @@ static void dump_alGetBooleanv(void)
 {
     IO_START(alGetBooleanv);
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%s, &values)\n", alenumString(param)); }
+    ALboolean *origvalues = (ALboolean *) IO_PTR();
+    const ALsizei numvals = IO_ALSIZEI();
+    ALboolean *values = numvals ? get_ioblob(numvals * sizeof (ALboolean)) : NULL;
+    ALsizei i;
+    for (i = 0; i < numvals; i++) {
+        values[i] = IO_BOOLEAN();
+    }
+
+    if (dump_log) {
+        printf("(%s, %p) => {", alenumString(param), origvalues);
+        for (i = 0; i < numvals; i++) {
+            printf("%s %s", i > 0 ? "," : "", alboolString(values[i]));
+        }
+        printf("%s}\n", numvals > 0 ? " " : "");
+    }
+
     //REAL_alGetBooleanv(param, values);
     IO_END();
 }
@@ -742,7 +779,22 @@ static void dump_alGetIntegerv(void)
 {
     IO_START(alGetIntegerv);
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%s, &values)\n", alenumString(param)); }
+    ALint *origvalues = (ALint *) IO_PTR();
+    const ALsizei numvals = IO_ALSIZEI();
+    ALint *values = numvals ? get_ioblob(numvals * sizeof (ALint)) : NULL;
+    ALsizei i;
+    for (i = 0; i < numvals; i++) {
+        values[i] = IO_INT32();
+    }
+
+    if (dump_log) {
+        printf("(%s, %p) => {", alenumString(param), origvalues);
+        for (i = 0; i < numvals; i++) {
+            printf("%s %d", i > 0 ? "," : "", (int) values[i]);
+        }
+        printf("%s}\n", numvals > 0 ? " " : "");
+    }
+
     //REAL_alGetIntegerv(param, values);
     IO_END();
 }
@@ -751,7 +803,22 @@ static void dump_alGetFloatv(void)
 {
     IO_START(alGetFloatv);
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%s, &values)\n", alenumString(param)); }
+    ALfloat *origvalues = (ALfloat *) IO_PTR();
+    const ALsizei numvals = IO_ALSIZEI();
+    ALfloat *values = numvals ? get_ioblob(numvals * sizeof (ALfloat)) : NULL;
+    ALsizei i;
+    for (i = 0; i < numvals; i++) {
+        values[i] = IO_FLOAT();
+    }
+
+    if (dump_log) {
+        printf("(%s, %p) => {", alenumString(param), origvalues);
+        for (i = 0; i < numvals; i++) {
+            printf("%s %f", i > 0 ? "," : "", values[i]);
+        }
+        printf("%s}\n", numvals > 0 ? " " : "");
+    }
+
     //REAL_alGetFloatv(param, values);
     IO_END();
 }
@@ -760,7 +827,22 @@ static void dump_alGetDoublev(void)
 {
     IO_START(alGetDoublev);
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%s, &values)\n", alenumString(param)); }
+    ALdouble *origvalues = (ALdouble *) IO_PTR();
+    const ALsizei numvals = IO_ALSIZEI();
+    ALdouble *values = numvals ? get_ioblob(numvals * sizeof (ALdouble)) : NULL;
+    ALsizei i;
+    for (i = 0; i < numvals; i++) {
+        values[i] = IO_DOUBLE();
+    }
+
+    if (dump_log) {
+        printf("(%s, %p) => {", alenumString(param), origvalues);
+        for (i = 0; i < numvals; i++) {
+            printf("%s %f", i > 0 ? "," : "", values[i]);
+        }
+        printf("%s}\n", numvals > 0 ? " " : "");
+    }
+
     //REAL_alGetDoublev(param, values);
     IO_END();
 }
@@ -846,8 +928,9 @@ static void dump_alListenerfv(void)
 {
     IO_START(alListenerfv);
     const ALenum param = IO_ENUM();
+    ALfloat *origvalues = (ALfloat *) IO_PTR();
     const uint32 numvals = IO_UINT32();
-    ALfloat *values = (ALfloat *) get_ioblob(sizeof (ALfloat) * numvals);
+    ALfloat *values = (ALfloat *) (numvals ? get_ioblob(sizeof (ALfloat) * numvals) : NULL);
     uint32 i;
 
     for (i = 0; i < numvals; i++) {
@@ -855,11 +938,16 @@ static void dump_alListenerfv(void)
     }
 
     if (dump_log) {
-        printf("(%s, {", alenumString(param));
-        for (i = 0; i < numvals; i++) {
-            printf("%s %f", i > 0 ? "," : "", values[i]);
+        printf("(%s, ", alenumString(param));
+        if (!origvalues) {
+            printf("NULL)\n");
+        } else {
+            printf("{");
+            for (i = 0; i < numvals; i++) {
+                printf("%s %f", i > 0 ? "," : "", values[i]);
+            }
+            printf("%s})\n", numvals > 0 ? " " : "");
         }
-        printf("%s})\n", numvals > 0 ? " " : "");
     }
     //REAL_alListenerfv(param, values);
     IO_END();
@@ -891,8 +979,9 @@ static void dump_alListeneriv(void)
 {
     IO_START(alListeneriv);
     const ALenum param = IO_ENUM();
+    ALint *origvalues = (ALint *) IO_PTR();
     const uint32 numvals = IO_UINT32();
-    ALint *values = (ALint *) get_ioblob(sizeof (ALint) * numvals);
+    ALint *values = (ALint *) (numvals ? get_ioblob(sizeof (ALint) * numvals) : NULL);
     uint32 i;
 
     for (i = 0; i < numvals; i++) {
@@ -900,11 +989,16 @@ static void dump_alListeneriv(void)
     }
 
     if (dump_log) {
-        printf("(%s, {", alenumString(param));
-        for (i = 0; i < numvals; i++) {
-            printf("%s %d", i > 0 ? "," : "", (int) values[i]);
+        printf("(%s, ", alenumString(param));
+        if (!origvalues) {
+            printf("NULL)\n");
+        } else {
+            printf("{");
+            for (i = 0; i < numvals; i++) {
+                printf("%s %d", i > 0 ? "," : "", (int) values[i]);
+            }
+            printf("%s})\n", numvals > 0 ? " " : "");
         }
-        printf("%s})\n", numvals > 0 ? " " : "");
     }
 
     //REAL_alListeneriv(param, values);
@@ -937,7 +1031,27 @@ static void dump_alGetListenerfv(void)
 {
     IO_START(alGetListenerfv);
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%s, &values)\n", alenumString(param)); }
+    ALfloat *origvalues = (ALfloat *) IO_PTR();
+    const uint32 numvals = IO_UINT32();
+    ALfloat *values = (ALfloat *) (numvals ? get_ioblob(sizeof (ALfloat) * numvals) : NULL);
+    uint32 i;
+
+    for (i = 0; i < numvals; i++) {
+        values[i] = IO_FLOAT();
+    }
+
+    if (dump_log) {
+        printf("(%s, %p)", alenumString(param), origvalues);
+        if (origvalues) {
+            printf(" => {");
+            for (i = 0; i < numvals; i++) {
+                printf("%s %f", i > 0 ? "," : "", values[i]);
+            }
+            printf("%s}", numvals > 0 ? " " : "");
+        }
+        printf("\n");
+    }
+
     //REAL_alGetListenerfv(param, values);
     IO_END();
 }
@@ -946,7 +1060,9 @@ static void dump_alGetListenerf(void)
 {
     IO_START(alGetListenerf);
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%s, &value)\n", alenumString(param)); }
+    ALfloat *origvalue = (ALfloat *) IO_PTR();
+    const ALfloat value = IO_FLOAT();
+    if (dump_log) { printf("(%s, %p) => { %f }\n", alenumString(param), origvalue, value); }
     //REAL_alGetListenerf(param, value);
     IO_END();
 }
@@ -955,7 +1071,14 @@ static void dump_alGetListener3f(void)
 {
     IO_START(alGetListener3f);
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%s, &value1, &value2, &value3)\n", alenumString(param)); }
+    ALfloat *origvalue1 = (ALfloat *) IO_PTR();
+    ALfloat *origvalue2 = (ALfloat *) IO_PTR();
+    ALfloat *origvalue3 = (ALfloat *) IO_PTR();
+    const ALfloat value1 = IO_FLOAT();
+    const ALfloat value2 = IO_FLOAT();
+    const ALfloat value3 = IO_FLOAT();
+    if (dump_log) { printf("(%s, %p, %p, %p) => { %f, %f %f }\n", alenumString(param), origvalue1, origvalue2, origvalue3, value1, value2, value3); }
+
     //REAL_alGetListener3f(param, value1, value2, value3);
     IO_END();
 }
@@ -964,7 +1087,27 @@ static void dump_alGetListeneriv(void)
 {
     IO_START(alGetListeneriv);
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%s, &values)\n", alenumString(param)); }
+    ALint *origvalues = (ALint *) IO_PTR();
+    const uint32 numvals = IO_UINT32();
+    ALint *values = (ALint *) (numvals ? get_ioblob(sizeof (ALint) * numvals) : NULL);
+    uint32 i;
+
+    for (i = 0; i < numvals; i++) {
+        values[i] = IO_INT32();
+    }
+
+    if (dump_log) {
+        printf("(%s, %p)", alenumString(param), origvalues);
+        if (origvalues) {
+            printf(" => {");
+            for (i = 0; i < numvals; i++) {
+                printf("%s %d", i > 0 ? "," : "", (int) values[i]);
+            }
+            printf("%s}", numvals > 0 ? " " : "");
+        }
+        printf("\n");
+    }
+
     //REAL_alGetListeneriv(param, values);
     IO_END();
 }
@@ -973,7 +1116,10 @@ static void dump_alGetListeneri(void)
 {
     IO_START(alGetListeneri);
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%s, &value)\n", alenumString(param)); }
+    ALint *origvalue = (ALint *) IO_PTR();
+    const ALint value = IO_INT32();
+    if (dump_log) { printf("(%s, %p) => { %d }\n", alenumString(param), origvalue, (int) value); }
+
     //REAL_alGetListeneri(param, value);
     IO_END();
 }
@@ -982,7 +1128,14 @@ static void dump_alGetListener3i(void)
 {
     IO_START(alGetListener3i);
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%s, &value1, &value2, &value3)\n", alenumString(param)); }
+    ALint *origvalue1 = (ALint *) IO_PTR();
+    ALint *origvalue2 = (ALint *) IO_PTR();
+    ALint *origvalue3 = (ALint *) IO_PTR();
+    const ALint value1 = IO_INT32();
+    const ALint value2 = IO_INT32();
+    const ALint value3 = IO_INT32();
+    if (dump_log) { printf("(%s, %p, %p, %p) => { %d, %d %d }\n", alenumString(param), origvalue1, origvalue2, origvalue3, (int) value1, (int) value2, (int) value3); }
+
     //REAL_alGetListener3i(param, value1, value2, value3);
     IO_END();
 }
@@ -1146,7 +1299,27 @@ static void dump_alGetSourcefv(void)
     IO_START(alGetSourcefv);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%u, %s, &values)\n", (uint) name, alenumString(param)); }
+    ALfloat *origvalues = (ALfloat *) IO_PTR();
+    const uint32 numvals = IO_UINT32();
+    ALfloat *values = (ALfloat *) (numvals ? get_ioblob(sizeof (ALfloat) * numvals) : NULL);
+    uint32 i;
+
+    for (i = 0; i < numvals; i++) {
+        values[i] = IO_FLOAT();
+    }
+
+    if (dump_log) {
+        printf("(%u, %s, %p)", (uint) name, alenumString(param), origvalues);
+        if (origvalues) {
+            printf(" => {");
+            for (i = 0; i < numvals; i++) {
+                printf("%s %f", i > 0 ? "," : "", values[i]);
+            }
+            printf("%s}", numvals > 0 ? " " : "");
+        }
+        printf("\n");
+    }
+
     //REAL_alGetSourcefv(param, values);
     IO_END();
 }
@@ -1156,7 +1329,9 @@ static void dump_alGetSourcef(void)
     IO_START(alGetSourcef);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%u, %s, &value)\n", (uint) name, alenumString(param)); }
+    ALfloat *origvalue = (ALfloat *) IO_PTR();
+    const ALfloat value = IO_FLOAT();
+    if (dump_log) { printf("(%u, %s, %p) => { %f }\n", (uint) name, alenumString(param), origvalue, value); }
     //REAL_alGetSourcef(name, param, value);
     IO_END();
 }
@@ -1166,7 +1341,13 @@ static void dump_alGetSource3f(void)
     IO_START(alGetSource3f);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%u, %s, &value1, &value2, &value3)\n", (uint) name, alenumString(param)); }
+    ALfloat *origvalue1 = (ALfloat *) IO_PTR();
+    ALfloat *origvalue2 = (ALfloat *) IO_PTR();
+    ALfloat *origvalue3 = (ALfloat *) IO_PTR();
+    const ALfloat value1 = IO_FLOAT();
+    const ALfloat value2 = IO_FLOAT();
+    const ALfloat value3 = IO_FLOAT();
+    if (dump_log) { printf("(%u, %s, %p, %p, %p) => { %f, %f, %f }\n", (uint) name, alenumString(param), origvalue1, origvalue2, origvalue3, value1, value2, value3); }
     //REAL_alGetSource3f(name, param, value1, value2, value3);
     IO_END();
 }
@@ -1176,7 +1357,27 @@ static void dump_alGetSourceiv(void)
     IO_START(alGetSourceiv);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%u, %s, &values)\n", (uint) name, alenumString(param)); }
+    ALint *origvalues = (ALint *) IO_PTR();
+    const uint32 numvals = IO_UINT32();
+    ALint *values = (ALint *) (numvals ? get_ioblob(sizeof (ALfloat) * numvals) : NULL);
+    uint32 i;
+
+    for (i = 0; i < numvals; i++) {
+        values[i] = IO_INT32();
+    }
+
+    if (dump_log) {
+        printf("(%u, %s, %p)", (uint) name, alenumString(param), origvalues);
+        if (origvalues) {
+            printf(" => {");
+            for (i = 0; i < numvals; i++) {
+                printf("%s %d", i > 0 ? "," : "", (int) values[i]);
+            }
+            printf("%s}", numvals > 0 ? " " : "");
+        }
+        printf("\n");
+    }
+
     //REAL_alGetSourceiv(name, param, values);
     IO_END();
 }
@@ -1186,7 +1387,9 @@ static void dump_alGetSourcei(void)
     IO_START(alGetSourcei);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%u, %s, &value)\n", (uint) name, alenumString(param)); }
+    ALint *origvalue = (ALint *) IO_PTR();
+    const ALint value = IO_INT32();
+    if (dump_log) { printf("(%u, %s, %p) => { %d }\n", (uint) name, alenumString(param), origvalue, (int) value); }
     //REAL_alGetSourcei(name, param, value);
     IO_END();
 }
@@ -1196,7 +1399,13 @@ static void dump_alGetSource3i(void)
     IO_START(alGetSource3i);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%u, %s, &value1, &value2, &value3)\n", (uint) name, alenumString(param)); }
+    ALint *origvalue1 = (ALint *) IO_PTR();
+    ALint *origvalue2 = (ALint *) IO_PTR();
+    ALint *origvalue3 = (ALint *) IO_PTR();
+    const ALint value1 = IO_INT32();
+    const ALint value2 = IO_INT32();
+    const ALint value3 = IO_INT32();
+    if (dump_log) { printf("(%u, %s, %p, %p, %p) => { %d, %d, %d }\n", (uint) name, alenumString(param), origvalue1, origvalue2, origvalue3, (int) value1, (int) value2, (int) value3); }
     //REAL_alGetSource3i(param, value1, value2, value3);
     IO_END();
 }
@@ -1549,7 +1758,27 @@ static void dump_alGetBufferfv(void)
     IO_START(alGetBufferfv);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%u, %s, &values)\n", (uint) name, alenumString(param)); }
+    ALfloat *origvalues = (ALfloat *) IO_PTR();
+    const uint32 numvals = IO_UINT32();
+    ALfloat *values = (ALfloat *) (numvals ? get_ioblob(sizeof (ALfloat) * numvals) : NULL);
+    uint32 i;
+
+    for (i = 0; i < numvals; i++) {
+        values[i] = IO_FLOAT();
+    }
+
+    if (dump_log) {
+        printf("(%u, %s, %p)", (uint) name, alenumString(param), origvalues);
+        if (origvalues) {
+            printf(" => {");
+            for (i = 0; i < numvals; i++) {
+                printf("%s %f", i > 0 ? "," : "", values[i]);
+            }
+            printf("%s}", numvals > 0 ? " " : "");
+        }
+        printf("\n");
+    }
+
     //REAL_alGetBufferfv(param, values);
     IO_END();
 }
@@ -1559,7 +1788,9 @@ static void dump_alGetBufferf(void)
     IO_START(alGetBufferf);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%u, %s, &value)\n", (uint) name, alenumString(param)); }
+    ALfloat *origvalue = (ALfloat *) IO_PTR();
+    const ALfloat value = IO_FLOAT();
+    if (dump_log) { printf("(%u, %s, %p) => { %f }\n", (uint) name, alenumString(param), origvalue, value); }
     //REAL_alGetBufferf(name, param, value);
     IO_END();
 }
@@ -1569,7 +1800,13 @@ static void dump_alGetBuffer3f(void)
     IO_START(alGetBuffer3f);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%u, %s, &value1, &value2, &value3)\n", (uint) name, alenumString(param)); }
+    ALfloat *origvalue1 = (ALfloat *) IO_PTR();
+    ALfloat *origvalue2 = (ALfloat *) IO_PTR();
+    ALfloat *origvalue3 = (ALfloat *) IO_PTR();
+    const ALfloat value1 = IO_FLOAT();
+    const ALfloat value2 = IO_FLOAT();
+    const ALfloat value3 = IO_FLOAT();
+    if (dump_log) { printf("(%u, %s, %p, %p, %p) => { %f, %f, %f }\n", (uint) name, alenumString(param), origvalue1, origvalue2, origvalue3, value1, value2, value3); }
     //REAL_alGetBuffer3f(name, param, value1, value2, value3);
     IO_END();
 }
@@ -1579,7 +1816,9 @@ static void dump_alGetBufferi(void)
     IO_START(alGetBufferi);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%u, %s, &value)\n", (uint) name, alenumString(param)); }
+    ALint *origvalue = (ALint *) IO_PTR();
+    const ALint value = IO_INT32();
+    if (dump_log) { printf("(%u, %s, %p) => { %d }\n", (uint) name, alenumString(param), origvalue, (int) value); }
     //REAL_alGetBufferi(name, param, value);
     IO_END();
 }
@@ -1589,7 +1828,13 @@ static void dump_alGetBuffer3i(void)
     IO_START(alGetBuffer3i);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%u, %s, &value1, &value2, &value3)\n", (uint) name, alenumString(param)); }
+    ALint *origvalue1 = (ALint *) IO_PTR();
+    ALint *origvalue2 = (ALint *) IO_PTR();
+    ALint *origvalue3 = (ALint *) IO_PTR();
+    const ALint value1 = IO_INT32();
+    const ALint value2 = IO_INT32();
+    const ALint value3 = IO_INT32();
+    if (dump_log) { printf("(%u, %s, %p, %p, %p) => { %d, %d, %d }\n", (uint) name, alenumString(param), origvalue1, origvalue2, origvalue3, (int) value1, (int) value2, (int) value3); }
     //REAL_alGetBuffer3i(param, value1, value2, value3);
     IO_END();
 }
@@ -1599,7 +1844,27 @@ static void dump_alGetBufferiv(void)
     IO_START(alGetBufferiv);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
-    if (dump_log) { printf("(%u, %s, &values)\n", (uint) name, alenumString(param)); }
+    ALint *origvalues = (ALint *) IO_PTR();
+    const uint32 numvals = IO_UINT32();
+    ALint *values = (ALint *) (numvals ? get_ioblob(sizeof (ALfloat) * numvals) : NULL);
+    uint32 i;
+
+    for (i = 0; i < numvals; i++) {
+        values[i] = IO_INT32();
+    }
+
+    if (dump_log) {
+        printf("(%u, %s, %p)", (uint) name, alenumString(param), origvalues);
+        if (origvalues) {
+            printf(" => {");
+            for (i = 0; i < numvals; i++) {
+                printf("%s %d", i > 0 ? "," : "", (int) values[i]);
+            }
+            printf("%s}", numvals > 0 ? " " : "");
+        }
+        printf("\n");
+    }
+
     //REAL_alGetBufferiv(param, values);
     IO_END();
 }
