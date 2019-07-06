@@ -6,6 +6,8 @@
  *  This file written by Ryan C. Gordon.
  */
 
+#include <execinfo.h>
+
 #define APPNAME "altrace_record"
 
 #ifdef _MSC_VER
@@ -182,6 +184,23 @@ static void IO_BOOLEAN(ALboolean b)
     IO_UINT32((uint32) b);
 }
 
+static void IO_START_INFO(void)
+{
+    void* callstack[16];
+    const int frames = backtrace(callstack, sizeof (callstack) / sizeof (callstack[0]));
+    int i;
+    char** strs = backtrace_symbols(callstack, frames);
+
+    IO_UINT64((uint64) pthread_self());
+
+    IO_UINT32((uint32) frames);
+    for (i = 0; i < frames; i++) {
+        IO_STRING(strs[i]);
+    }
+
+    free(strs);
+}
+
 static void APILOCK(void)
 {
     const int rc = pthread_mutex_lock(apilock);
@@ -241,7 +260,8 @@ static void check_alc_error_events(ALCdevice *device)
     { \
         APILOCK(); \
         IO_UINT32(NOW()); \
-        IO_ENTRYENUM(ALEE_##e);
+        IO_ENTRYENUM(ALEE_##e); \
+        IO_START_INFO();
 
 #define IO_END() \
         check_al_error_events(); \

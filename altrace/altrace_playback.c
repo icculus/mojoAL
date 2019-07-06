@@ -10,6 +10,7 @@
 #include "altrace_common.h"
 
 static int dump_log = 1;
+static int dump_callers = 0;
 static int run_log = 0;
 
 static int trace_scope = 0;
@@ -224,10 +225,36 @@ static ALboolean IO_BOOLEAN(void)
     return (ALboolean) IO_UINT32();
 }
 
+static void IO_START_INFO(void)
+{
+    const uint64 threadid = IO_UINT64();
+    const uint32 frames = IO_UINT32();
+    uint32 i;
+
+    if (dump_callers) {
+        for (i = 0; i < trace_scope; i++) { printf("    "); }
+        printf("Call from threadid=%llu, stack={\n", (unsigned long long) threadid);
+    }
+
+    for (i = 0; i < frames; i++) {
+        const char *str = IO_STRING();
+        if (dump_callers) {
+            for (i = 0; i < trace_scope; i++) { printf("    "); }
+            printf("    %s\n", str);
+        }
+    }
+
+    if (dump_callers) {
+        for (i = 0; i < trace_scope; i++) { printf("    "); }
+        printf("}\n");
+    }
+}
+
 #define IO_START(e) \
     { \
+        IO_START_INFO(); \
         if (dump_log) { \
-            int i; for (i = 0; i < trace_scope; i++) { printf("    "); } \
+            int i; for (i = 0; i < trace_scope; i++) { printf("    "); }  \
             printf("%s", #e); \
         } { \
 
@@ -2242,6 +2269,10 @@ int main(int argc, char **argv)
             dump_log = 1;
         } else if (strcmp(arg, "--no-dump") == 0) {
             dump_log = 0;
+        } else if (strcmp(arg, "--dump-callers") == 0) {
+            dump_callers = 1;
+        } else if (strcmp(arg, "--no-dump-callers") == 0) {
+            dump_callers = 0;
         } else if (strcmp(arg, "--run") == 0) {
             run_log = 1;
         } else if (strcmp(arg, "--no-run") == 0) {
