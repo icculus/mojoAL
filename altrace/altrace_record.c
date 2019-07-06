@@ -377,7 +377,7 @@ void *alcGetProcAddress(ALCdevice *device, const ALCchar *funcname)
         // !!! FIXME: should set an error state.
         retval = NULL;
     }
-    #define ENTRYPOINT(ret,name,params,args) else if (strcmp(funcname, #name) == 0) { retval = (void *) name; }
+    #define ENTRYPOINT(ret,fn,params,args) else if (strcmp(funcname, #fn) == 0) { retval = (void *) fn; }
     #include "altrace_entrypoints.h"
 
     IO_PTR(retval);
@@ -1006,7 +1006,7 @@ void *alGetProcAddress(const ALchar *funcname)
         // !!! FIXME: should set an error state.
         retval = NULL;
     }
-    #define ENTRYPOINT(ret,name,params,args) else if (strcmp(funcname, #name) == 0) { retval = (void *) name; }
+    #define ENTRYPOINT(ret,fn,params,args) else if (strcmp(funcname, #fn) == 0) { retval = (void *) fn; }
     #include "altrace_entrypoints.h"
 
     IO_PTR(retval);
