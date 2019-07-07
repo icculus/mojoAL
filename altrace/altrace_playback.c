@@ -21,8 +21,8 @@ static void quit_altrace_playback(void);
 // don't bother doing a full hash map for devices and contexts, since you'll
 //  usually never have more than one or two and they live basically the entire
 //  lifetime of your app.
-SIMPLE_MAP(device, ALCdevice *)
-SIMPLE_MAP(context, ALCcontext *)
+SIMPLE_MAP(device, ALCdevice *, ALCdevice *)
+SIMPLE_MAP(context, ALCcontext *, ALCcontext *)
 
 static void free_hash_item_alname(ALuint from, ALuint to) { /* no-op */ }
 static uint8 hash_alname(const ALuint name) {
@@ -46,6 +46,9 @@ static uint8 hash_stackframe(void *from) {
     return (uint8) (val & 0xFF);  // good enough, I guess.
 }
 HASH_MAP(stackframe, void *, char *)
+
+static uint32 next_mapped_threadid = 0;
+SIMPLE_MAP(threadid, uint64, uint32);
 
 
 #define MAX_IOBLOBS 32
@@ -205,13 +208,19 @@ static ALboolean IO_BOOLEAN(void)
 
 static void IO_ENTRYINFO(void)
 {
-    const uint64 threadid = IO_UINT64();
+    const uint64 logthreadid = IO_UINT64();
     const uint32 frames = IO_UINT32();
+    uint32 threadid = get_mapped_threadid(logthreadid);
     uint32 i, framei;
+
+    if (!threadid) {
+        threadid = ++next_mapped_threadid;
+        add_threadid_to_map(logthreadid, threadid);
+    }
 
     if (dump_callers) {
         for (i = 0; i < trace_scope; i++) { printf("    "); }
-        printf("Call from threadid = %llu, stack = {\n", (unsigned long long) threadid);
+        printf("Call from threadid = %u, stack = {\n", (uint) threadid);
     }
 
     for (framei = 0; framei < frames; framei++) {
@@ -320,6 +329,7 @@ static void quit_altrace_playback(void)
     free_source_map();
     free_buffer_map();
     free_stackframe_map();
+    free_threadid_map();
 
     fflush(stderr);
 }

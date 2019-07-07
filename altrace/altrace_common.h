@@ -182,14 +182,14 @@ static void close_real_openal(void)
     }
 }
 
-#define SIMPLE_MAP(maptype, ctype) \
+#define SIMPLE_MAP(maptype, fromctype, toctype) \
     typedef struct SimpleMap_##maptype { \
-        ctype from; \
-        ctype to; \
+        fromctype from; \
+        toctype to; \
     } SimpleMap_##maptype; \
     static SimpleMap_##maptype *simplemap_##maptype = NULL; \
     static uint32 simplemap_##maptype##_map_size = 0; \
-    static void add_##maptype##_to_map(ctype from, ctype to) { \
+    static void add_##maptype##_to_map(fromctype from, toctype to) { \
         void *ptr; uint32 i; \
         for (i = 0; i < simplemap_##maptype##_map_size; i++) { \
             if (simplemap_##maptype[i].from == from) { \
@@ -207,14 +207,14 @@ static void close_real_openal(void)
         simplemap_##maptype[simplemap_##maptype##_map_size].to = to; \
         simplemap_##maptype##_map_size++; \
     } \
-    static ctype get_mapped_##maptype(ctype from) { \
+    static toctype get_mapped_##maptype(fromctype from) { \
         uint32 i; \
         for (i = 0; i < simplemap_##maptype##_map_size; i++) { \
             if (simplemap_##maptype[i].from == from) { \
                 return simplemap_##maptype[i].to; \
             } \
         } \
-        return (ctype) 0; \
+        return (toctype) 0; \
     } \
     static void free_##maptype##_map(void) { \
         free(simplemap_##maptype); \
