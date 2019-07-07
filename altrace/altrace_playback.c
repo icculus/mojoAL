@@ -90,10 +90,80 @@ static void *get_ioblob(const size_t len)
 SIMPLE_MAP(device, ALCdevice *)
 SIMPLE_MAP(context, ALCcontext *)
 
-// !!! FIXME: sources and buffers might measure in the hundreds or more,
-// !!! FIXME:  so use something more hashy here.
-SIMPLE_MAP(source, ALuint)
-SIMPLE_MAP(buffer, ALuint)
+
+#define HASH_MAP(maptype, fromctype, toctype) \
+    typedef struct HashMap_##maptype { \
+        fromctype from; \
+        toctype to; \
+        struct HashMap_##maptype *next; \
+    } HashMap_##maptype; \
+    static HashMap_##maptype *hashmap_##maptype[256]; \
+    static HashMap_##maptype *get_hashitem_##maptype(fromctype from, uint8 *_hash) { \
+        const uint8 hash = hash_##maptype(from); \
+        HashMap_##maptype *prev = NULL; \
+        HashMap_##maptype *item = hashmap_##maptype[hash]; \
+        if (_hash) { *_hash = hash; } \
+        while (item) { \
+            if (item->from == from) {  /* move to front of list */ \
+                if (prev) { \
+                    prev->next = item->next; \
+                } \
+                item->next = hashmap_##maptype[hash]; \
+                hashmap_##maptype[hash] = item; \
+                return item; \
+            } \
+            prev = item; \
+            item = item->next; \
+        } \
+        return NULL; \
+    } \
+    static void add_##maptype##_to_map(fromctype from, toctype to) { \
+        uint8 hash; HashMap_##maptype *item = get_hashitem_##maptype(from, &hash); \
+        if (item) { \
+            item->to = to; \
+        } else { \
+            item = (HashMap_##maptype *) calloc(1, sizeof (HashMap_##maptype)); \
+            if (!item) { \
+                fprintf(stderr, APPNAME ": Out of memory!\n"); \
+                quit_altrace_playback(); \
+                _exit(42); \
+            } \
+            item->from = from; \
+            item->to = to; \
+            item->next = hashmap_##maptype[hash]; \
+            hashmap_##maptype[hash] = item; \
+        } \
+    } \
+    static toctype get_mapped_##maptype(fromctype from) { \
+        HashMap_##maptype *item = get_hashitem_##maptype(from, NULL); \
+        return item ? item->to : (toctype) 0; \
+    } \
+    static void free_##maptype##_map(void) { \
+        int i; \
+        for (i = 0; i < 256; i++) { \
+            HashMap_##maptype *item; HashMap_##maptype *next; \
+            for (item = hashmap_##maptype[i]; item; item = next) { \
+                free_hash_item_##maptype(item->from, item->to); \
+                next = item->next; \
+                free(item); \
+            } \
+            hashmap_##maptype[i] = NULL; \
+        } \
+    }
+
+static void free_hash_item_alname(ALuint from, ALuint to) { /* no-op */ }
+static uint8 hash_alname(const ALuint name) {
+    /* since these are usually small numbers that increment from 0, they distribute pretty well on their own. */
+    return name & 0xFF;
+}
+
+#define free_hash_item_source free_hash_item_alname
+#define hash_source hash_alname
+HASH_MAP(source, ALuint, ALuint)
+
+#define free_hash_item_buffer free_hash_item_alname
+#define hash_buffer hash_alname
+HASH_MAP(buffer, ALuint, ALuint)
 
 
 
