@@ -92,13 +92,13 @@ static uint64 swap64(uint64 x)
 typedef enum
 {
     ALEE_EOS,
-    ALEE_ALERROR_EVENT,
-    ALEE_ALCERROR_EVENT,
-    ALEE_NEW_CALLSTACK_SYMS_EVENT,
+    ALEE_ALERROR_TRIGGERED,
+    ALEE_ALCERROR_TRIGGERED,
+    ALEE_NEW_CALLSTACK_SYMS,
     #define ENTRYPOINT(ret,name,params,args) ALEE_##name,
     #include "altrace_entrypoints.h"
     ALEE_MAX
-} EntryEnum;
+} EventEnum;
 
 
 #define ENTRYPOINT(ret,name,params,args) static ret (*REAL_##name) params = NULL;

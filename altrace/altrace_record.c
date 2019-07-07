@@ -154,7 +154,7 @@ static void IO_BLOB(const uint8 *data, const uint64 len)
     }
 }
 
-static void IO_ENTRYENUM(const EntryEnum x)
+static void IO_EVENTENUM(const EventEnum x)
 {
     IO_UINT32((uint32) x);
 }
@@ -215,7 +215,7 @@ static char *get_callstack_sym(void *frame, int *_seen_before)
     return retval;
 }
 
-__attribute__((noinline)) static void IO_ENTRYINFO(const EntryEnum entryid)
+__attribute__((noinline)) static void IO_ENTRYINFO(const EventEnum entryid)
 {
     const uint32 now = NOW();
     const size_t MAX_CALLSTACKS = 32;
@@ -249,7 +249,7 @@ __attribute__((noinline)) static void IO_ENTRYINFO(const EntryEnum entryid)
 
     if (num_new_strings > 0) {
         IO_UINT32(now);
-        IO_ENTRYENUM(ALEE_NEW_CALLSTACK_SYMS_EVENT);
+        IO_EVENTENUM(ALEE_NEW_CALLSTACK_SYMS);
         IO_UINT32((uint32) num_new_strings);
         for (i = 0; i < num_new_strings; i++) {
             IO_PTR(new_strings_ptrs[i]);
@@ -258,7 +258,7 @@ __attribute__((noinline)) static void IO_ENTRYINFO(const EntryEnum entryid)
     }
 
     IO_UINT32(now);
-    IO_ENTRYENUM(entryid);
+    IO_EVENTENUM(entryid);
     IO_UINT64((uint64) pthread_self());
 
     IO_UINT32((uint32) frames);
@@ -293,7 +293,7 @@ static void check_al_error_events(void)
         const ALenum alerr = REAL_alGetError();
         if (alerr != AL_NO_ERROR) {
             IO_UINT32(NOW());
-            IO_ENTRYENUM(ALEE_ALERROR_EVENT);
+            IO_EVENTENUM(ALEE_ALERROR_TRIGGERED);
             IO_ENUM(alerr);
             if (current_context->errorlatch == AL_NO_ERROR) {
                 current_context->errorlatch = alerr;
@@ -308,7 +308,7 @@ static void check_alc_error_events(ALCdevice *device)
     if (alcerr != ALC_NO_ERROR) {
         DeviceItem *i;
         IO_UINT32(NOW());
-        IO_ENTRYENUM(ALEE_ALCERROR_EVENT);
+        IO_EVENTENUM(ALEE_ALCERROR_TRIGGERED);
         IO_PTR(device);
         IO_ALCENUM(alcerr);
         for (i = &devices; i != NULL; i = i->next) {

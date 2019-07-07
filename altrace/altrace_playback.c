@@ -176,9 +176,9 @@ static const char *IO_STRING(void)
     return (const char *) IO_BLOB(&len);
 }
 
-static EntryEnum IO_ENTRYENUM(void)
+static EventEnum IO_EVENTENUM(void)
 {
-    return (EntryEnum) IO_UINT32();
+    return (EventEnum) IO_UINT32();
 }
 
 static void *IO_PTR(void)
@@ -2242,19 +2242,19 @@ static void process_log(void)
             }
         }
 
-        switch (IO_ENTRYENUM()) {
+        switch (IO_EVENTENUM()) {
             #define ENTRYPOINT(ret,name,params,args) case ALEE_##name: dump_##name(); break;
             #include "altrace_entrypoints.h"
 
-            case ALEE_NEW_CALLSTACK_SYMS_EVENT:
+            case ALEE_NEW_CALLSTACK_SYMS:
                 dump_callstack_syms_event();
                 break;
 
-            case ALEE_ALERROR_EVENT:
+            case ALEE_ALERROR_TRIGGERED:
                 dump_al_error_event();
                 break;
 
-            case ALEE_ALCERROR_EVENT:
+            case ALEE_ALCERROR_TRIGGERED:
                 dump_alc_error_event();
                 break;
 
