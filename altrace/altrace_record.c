@@ -184,21 +184,87 @@ static void IO_BOOLEAN(ALboolean b)
     IO_UINT32((uint32) b);
 }
 
-static void IO_START_INFO(void)
-{
-    void* callstack[16];
-    const int frames = backtrace(callstack, sizeof (callstack) / sizeof (callstack[0]));
-    int i;
-    char** strs = backtrace_symbols(callstack, frames);
 
+static void free_hash_item_stackframe(void *from, char *to) { free(to); }
+static uint8 hash_stackframe(void *from) {
+    // everything is going to end in a multiple of pointer size, so flatten down.
+    const size_t val = ((size_t) from) / (sizeof (void *));
+    return (uint8) (val & 0xFF);  // good enough, I guess.
+}
+HASH_MAP(stackframe, void *, char *)
+
+// backtrace_symbols() is pretty expensive, so we don't want to run it
+//  dozens of times per-frame. So we call it on individual frames when
+//  we haven't seen them before, assuming most of our calls come from a
+//  handful of places, and even there we can reuse most of the callstack
+//  frames anyhow.
+static char *get_callstack_sym(void *frame, int *_seen_before)
+{
+    char *retval = get_mapped_stackframe(frame);
+    if (retval) {
+        *_seen_before = 1;
+    } else {
+        char **syms = backtrace_symbols(&frame, 1);
+        retval = syms[0] ? strdup(syms[0]) : NULL;
+        free(syms);
+        *_seen_before = 0;
+        if (retval) {
+            add_stackframe_to_map(frame, retval);
+        }
+    }
+    return retval;
+}
+
+__attribute__((noinline)) static void IO_ENTRYINFO(const EntryEnum entryid)
+{
+    const uint32 now = NOW();
+    const size_t MAX_CALLSTACKS = 32;
+    void* callstack[MAX_CALLSTACKS + 2];
+    char *new_strings[MAX_CALLSTACKS];
+    void *new_strings_ptrs[MAX_CALLSTACKS];
+    int frames = backtrace(callstack, MAX_CALLSTACKS);
+    int num_new_strings = 0;
+    int i;
+
+    frames -= 2;  // skip IO_START_INFO and entry point.
+    if (frames < 0) {
+        frames = 0;
+    }
+
+    for (i = 0; i < frames; i++) {
+        int seen_before = 0;
+        void *ptr = callstack[i + 2];
+        char *str = get_callstack_sym(ptr, &seen_before);
+        if ((str == NULL) && !seen_before) {
+            break;
+        }
+
+        if (!seen_before) {
+            new_strings[num_new_strings] = str;
+            new_strings_ptrs[num_new_strings] = ptr;
+            num_new_strings++;
+        }
+    }
+    frames = i;  /* in case we stopped early. */
+
+    if (num_new_strings > 0) {
+        IO_UINT32(now);
+        IO_ENTRYENUM(ALEE_NEW_CALLSTACK_SYMS_EVENT);
+        IO_UINT32((uint32) num_new_strings);
+        for (i = 0; i < num_new_strings; i++) {
+            IO_PTR(new_strings_ptrs[i]);
+            IO_STRING(new_strings[i]);
+        }
+    }
+
+    IO_UINT32(now);
+    IO_ENTRYENUM(entryid);
     IO_UINT64((uint64) pthread_self());
 
     IO_UINT32((uint32) frames);
     for (i = 0; i < frames; i++) {
-        IO_STRING(strs[i]);
+        IO_PTR(callstack[i + 2]);
     }
-
-    free(strs);
 }
 
 static void APILOCK(void)
@@ -259,9 +325,7 @@ static void check_alc_error_events(ALCdevice *device)
 #define IO_START(e) \
     { \
         APILOCK(); \
-        IO_UINT32(NOW()); \
-        IO_ENTRYENUM(ALEE_##e); \
-        IO_START_INFO();
+        IO_ENTRYINFO(ALEE_##e)
 
 #define IO_END() \
         check_al_error_events(); \
@@ -351,6 +415,7 @@ static void quit_altrace_record(void)
     #include "altrace_entrypoints.h"
 
     close_real_openal();
+    free_stackframe_map();
 
     fflush(stderr);
 }

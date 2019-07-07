@@ -94,6 +94,7 @@ typedef enum
     ALEE_EOS,
     ALEE_ALERROR_EVENT,
     ALEE_ALCERROR_EVENT,
+    ALEE_NEW_CALLSTACK_SYMS_EVENT,
     #define ENTRYPOINT(ret,name,params,args) ALEE_##name,
     #include "altrace_entrypoints.h"
     ALEE_MAX
@@ -180,5 +181,104 @@ static void close_real_openal(void)
         dlclose(dll);
     }
 }
+
+#define SIMPLE_MAP(maptype, ctype) \
+    typedef struct SimpleMap_##maptype { \
+        ctype from; \
+        ctype to; \
+    } SimpleMap_##maptype; \
+    static SimpleMap_##maptype *simplemap_##maptype = NULL; \
+    static uint32 simplemap_##maptype##_map_size = 0; \
+    static void add_##maptype##_to_map(ctype from, ctype to) { \
+        void *ptr; uint32 i; \
+        for (i = 0; i < simplemap_##maptype##_map_size; i++) { \
+            if (simplemap_##maptype[i].from == from) { \
+                simplemap_##maptype[i].to = to; \
+                return; \
+            } \
+        } \
+        ptr = realloc(simplemap_##maptype, (simplemap_##maptype##_map_size + 1) * sizeof (SimpleMap_##maptype)); \
+        if (!ptr) { \
+            fprintf(stderr, APPNAME ": Out of memory!\n"); \
+            _exit(42); \
+        } \
+        simplemap_##maptype = (SimpleMap_##maptype *) ptr; \
+        simplemap_##maptype[simplemap_##maptype##_map_size].from = from; \
+        simplemap_##maptype[simplemap_##maptype##_map_size].to = to; \
+        simplemap_##maptype##_map_size++; \
+    } \
+    static ctype get_mapped_##maptype(ctype from) { \
+        uint32 i; \
+        for (i = 0; i < simplemap_##maptype##_map_size; i++) { \
+            if (simplemap_##maptype[i].from == from) { \
+                return simplemap_##maptype[i].to; \
+            } \
+        } \
+        return (ctype) 0; \
+    } \
+    static void free_##maptype##_map(void) { \
+        free(simplemap_##maptype); \
+        simplemap_##maptype = NULL; \
+    }
+
+
+#define HASH_MAP(maptype, fromctype, toctype) \
+    typedef struct HashMap_##maptype { \
+        fromctype from; \
+        toctype to; \
+        struct HashMap_##maptype *next; \
+    } HashMap_##maptype; \
+    static HashMap_##maptype *hashmap_##maptype[256]; \
+    static HashMap_##maptype *get_hashitem_##maptype(fromctype from, uint8 *_hash) { \
+        const uint8 hash = hash_##maptype(from); \
+        HashMap_##maptype *prev = NULL; \
+        HashMap_##maptype *item = hashmap_##maptype[hash]; \
+        if (_hash) { *_hash = hash; } \
+        while (item) { \
+            if (item->from == from) { \
+                if (prev) { /* move to front of list */ \
+                    prev->next = item->next; \
+                    item->next = hashmap_##maptype[hash]; \
+                    hashmap_##maptype[hash] = item; \
+                } \
+                return item; \
+            } \
+            prev = item; \
+            item = item->next; \
+        } \
+        return NULL; \
+    } \
+    static void add_##maptype##_to_map(fromctype from, toctype to) { \
+        uint8 hash; HashMap_##maptype *item = get_hashitem_##maptype(from, &hash); \
+        if (item) { \
+            item->to = to; \
+        } else { \
+            item = (HashMap_##maptype *) calloc(1, sizeof (HashMap_##maptype)); \
+            if (!item) { \
+                fprintf(stderr, APPNAME ": Out of memory!\n"); \
+                _exit(42); \
+            } \
+            item->from = from; \
+            item->to = to; \
+            item->next = hashmap_##maptype[hash]; \
+            hashmap_##maptype[hash] = item; \
+        } \
+    } \
+    static toctype get_mapped_##maptype(fromctype from) { \
+        HashMap_##maptype *item = get_hashitem_##maptype(from, NULL); \
+        return item ? item->to : (toctype) 0; \
+    } \
+    static void free_##maptype##_map(void) { \
+        int i; \
+        for (i = 0; i < 256; i++) { \
+            HashMap_##maptype *item; HashMap_##maptype *next; \
+            for (item = hashmap_##maptype[i]; item; item = next) { \
+                free_hash_item_##maptype(item->from, item->to); \
+                next = item->next; \
+                free(item); \
+            } \
+            hashmap_##maptype[i] = NULL; \
+        } \
+    }
 
 // end of altrace_common.h ...

@@ -17,6 +17,37 @@ static int trace_scope = 0;
 
 static void quit_altrace_playback(void);
 
+
+// don't bother doing a full hash map for devices and contexts, since you'll
+//  usually never have more than one or two and they live basically the entire
+//  lifetime of your app.
+SIMPLE_MAP(device, ALCdevice *)
+SIMPLE_MAP(context, ALCcontext *)
+
+static void free_hash_item_alname(ALuint from, ALuint to) { /* no-op */ }
+static uint8 hash_alname(const ALuint name) {
+    /* since these are usually small numbers that increment from 0, they distribute pretty well on their own. */
+    return (uint8) (name & 0xFF);
+}
+
+#define free_hash_item_source free_hash_item_alname
+#define hash_source hash_alname
+HASH_MAP(source, ALuint, ALuint)
+
+#define free_hash_item_buffer free_hash_item_alname
+#define hash_buffer hash_alname
+HASH_MAP(buffer, ALuint, ALuint)
+
+
+static void free_hash_item_stackframe(void *from, char *to) { free(to); }
+static uint8 hash_stackframe(void *from) {
+    // everything is going to end in a multiple of pointer size, so flatten down.
+    const size_t val = ((size_t) from) / (sizeof (void *));
+    return (uint8) (val & 0xFF);  // good enough, I guess.
+}
+HASH_MAP(stackframe, void *, char *)
+
+
 #define MAX_IOBLOBS 32
 static uint8 *ioblobs[MAX_IOBLOBS];
 static size_t ioblobs_len[MAX_IOBLOBS];
@@ -42,129 +73,6 @@ static void *get_ioblob(const size_t len)
     }
     return ptr;
 }
-
-
-
-// don't bother doing a full hash map for devices and contexts, since you'll
-//  usually never have more than one or two and they live basically the entire
-//  lifetime of your app.
-#define SIMPLE_MAP(maptype, ctype) \
-    typedef struct SimpleMap_##maptype { \
-        ctype from; \
-        ctype to; \
-    } SimpleMap_##maptype; \
-    static SimpleMap_##maptype *simplemap_##maptype = NULL; \
-    static uint32 simplemap_##maptype##_map_size = 0; \
-    static void add_##maptype##_to_map(ctype from, ctype to) { \
-        void *ptr; uint32 i; \
-        for (i = 0; i < simplemap_##maptype##_map_size; i++) { \
-            if (simplemap_##maptype[i].from == from) { \
-                simplemap_##maptype[i].to = to; \
-                return; \
-            } \
-        } \
-        ptr = realloc(simplemap_##maptype, (simplemap_##maptype##_map_size + 1) * sizeof (SimpleMap_##maptype)); \
-        if (!ptr) { \
-            fprintf(stderr, APPNAME ": Out of memory!\n"); \
-            quit_altrace_playback(); \
-            _exit(42); \
-        } \
-        simplemap_##maptype = (SimpleMap_##maptype *) ptr; \
-        simplemap_##maptype[simplemap_##maptype##_map_size].from = from; \
-        simplemap_##maptype[simplemap_##maptype##_map_size].to = to; \
-        simplemap_##maptype##_map_size++; \
-    } \
-    static ctype get_mapped_##maptype(ctype from) { \
-        uint32 i; \
-        for (i = 0; i < simplemap_##maptype##_map_size; i++) { \
-            if (simplemap_##maptype[i].from == from) { \
-                return simplemap_##maptype[i].to; \
-            } \
-        } \
-        return (ctype) 0; \
-    } \
-    static void free_##maptype##_map(void) { \
-        free(simplemap_##maptype); \
-        simplemap_##maptype = NULL; \
-    }
-SIMPLE_MAP(device, ALCdevice *)
-SIMPLE_MAP(context, ALCcontext *)
-
-
-#define HASH_MAP(maptype, fromctype, toctype) \
-    typedef struct HashMap_##maptype { \
-        fromctype from; \
-        toctype to; \
-        struct HashMap_##maptype *next; \
-    } HashMap_##maptype; \
-    static HashMap_##maptype *hashmap_##maptype[256]; \
-    static HashMap_##maptype *get_hashitem_##maptype(fromctype from, uint8 *_hash) { \
-        const uint8 hash = hash_##maptype(from); \
-        HashMap_##maptype *prev = NULL; \
-        HashMap_##maptype *item = hashmap_##maptype[hash]; \
-        if (_hash) { *_hash = hash; } \
-        while (item) { \
-            if (item->from == from) {  /* move to front of list */ \
-                if (prev) { \
-                    prev->next = item->next; \
-                } \
-                item->next = hashmap_##maptype[hash]; \
-                hashmap_##maptype[hash] = item; \
-                return item; \
-            } \
-            prev = item; \
-            item = item->next; \
-        } \
-        return NULL; \
-    } \
-    static void add_##maptype##_to_map(fromctype from, toctype to) { \
-        uint8 hash; HashMap_##maptype *item = get_hashitem_##maptype(from, &hash); \
-        if (item) { \
-            item->to = to; \
-        } else { \
-            item = (HashMap_##maptype *) calloc(1, sizeof (HashMap_##maptype)); \
-            if (!item) { \
-                fprintf(stderr, APPNAME ": Out of memory!\n"); \
-                quit_altrace_playback(); \
-                _exit(42); \
-            } \
-            item->from = from; \
-            item->to = to; \
-            item->next = hashmap_##maptype[hash]; \
-            hashmap_##maptype[hash] = item; \
-        } \
-    } \
-    static toctype get_mapped_##maptype(fromctype from) { \
-        HashMap_##maptype *item = get_hashitem_##maptype(from, NULL); \
-        return item ? item->to : (toctype) 0; \
-    } \
-    static void free_##maptype##_map(void) { \
-        int i; \
-        for (i = 0; i < 256; i++) { \
-            HashMap_##maptype *item; HashMap_##maptype *next; \
-            for (item = hashmap_##maptype[i]; item; item = next) { \
-                free_hash_item_##maptype(item->from, item->to); \
-                next = item->next; \
-                free(item); \
-            } \
-            hashmap_##maptype[i] = NULL; \
-        } \
-    }
-
-static void free_hash_item_alname(ALuint from, ALuint to) { /* no-op */ }
-static uint8 hash_alname(const ALuint name) {
-    /* since these are usually small numbers that increment from 0, they distribute pretty well on their own. */
-    return name & 0xFF;
-}
-
-#define free_hash_item_source free_hash_item_alname
-#define hash_source hash_alname
-HASH_MAP(source, ALuint, ALuint)
-
-#define free_hash_item_buffer free_hash_item_alname
-#define hash_buffer hash_alname
-HASH_MAP(buffer, ALuint, ALuint)
-
 
 
 NORETURN static void IO_READ_FAIL(const int eof)
@@ -295,22 +203,27 @@ static ALboolean IO_BOOLEAN(void)
     return (ALboolean) IO_UINT32();
 }
 
-static void IO_START_INFO(void)
+static void IO_ENTRYINFO(void)
 {
     const uint64 threadid = IO_UINT64();
     const uint32 frames = IO_UINT32();
-    uint32 i;
+    uint32 i, framei;
 
     if (dump_callers) {
         for (i = 0; i < trace_scope; i++) { printf("    "); }
-        printf("Call from threadid=%llu, stack={\n", (unsigned long long) threadid);
+        printf("Call from threadid = %llu, stack = {\n", (unsigned long long) threadid);
     }
 
-    for (i = 0; i < frames; i++) {
-        const char *str = IO_STRING();
+    for (framei = 0; framei < frames; framei++) {
+        void *ptr = IO_PTR();
         if (dump_callers) {
+            char *str = get_mapped_stackframe(ptr);
             for (i = 0; i < trace_scope; i++) { printf("    "); }
-            printf("    %s\n", str);
+            if (str) {
+                printf("    %s\n", str);
+            } else {
+                printf("    %p\n", ptr);
+            }
         }
     }
 
@@ -322,7 +235,7 @@ static void IO_START_INFO(void)
 
 #define IO_START(e) \
     { \
-        IO_START_INFO(); \
+        IO_ENTRYINFO(); \
         if (dump_log) { \
             int i; for (i = 0; i < trace_scope; i++) { printf("    "); }  \
             printf("%s", #e); \
@@ -406,6 +319,7 @@ static void quit_altrace_playback(void)
     free_context_map();
     free_source_map();
     free_buffer_map();
+    free_stackframe_map();
 
     fflush(stderr);
 }
@@ -2291,6 +2205,22 @@ static void dump_alc_error_event(void)
     }
 }
 
+static void dump_callstack_syms_event(void)
+{
+    const uint32 num_new_strings = IO_UINT32();
+    uint32 i;
+    for (i = 0; i < num_new_strings; i++) {
+        void *ptr = IO_PTR();
+        const char *str = IO_STRING();
+        if (str) {
+            char *dup = strdup(str);
+            if (ptr && dup) {
+                add_stackframe_to_map(ptr, dup);
+            }
+        }
+    }
+}
+
 static void process_log(void)
 {
     int eos = 0;
@@ -2305,6 +2235,10 @@ static void process_log(void)
         switch (IO_ENTRYENUM()) {
             #define ENTRYPOINT(ret,name,params,args) case ALEE_##name: dump_##name(); break;
             #include "altrace_entrypoints.h"
+
+            case ALEE_NEW_CALLSTACK_SYMS_EVENT:
+                dump_callstack_syms_event();
+                break;
 
             case ALEE_ALERROR_EVENT:
                 dump_al_error_event();
