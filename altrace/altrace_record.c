@@ -30,27 +30,24 @@ AL_API void AL_APIENTRY alcTraceContextLabel(ALCcontext *ctx, const ALchar *str)
 static pthread_mutex_t _apilock;
 static pthread_mutex_t *apilock;
 
-typedef struct DeviceItem
+typedef struct DeviceWrapper
 {
     ALCdevice *device;
     ALCenum errorlatch;
     int samplesize;   /* size of a capture device sample in bytes */
     char *extension_string;
-    struct DeviceItem *next;
-} DeviceItem;
+} DeviceWrapper;
 
-typedef struct ContextItem
+typedef struct ContextWrapper
 {
     ALCcontext *ctx;
-    ALCdevice *device;
+    DeviceWrapper *device;
     char *extension_string;
     ALenum errorlatch;
-    struct ContextItem *next;
-} ContextItem;
+} ContextWrapper;
 
-static DeviceItem devices;
-static ContextItem contexts;
-static ContextItem *current_context;
+static DeviceWrapper null_device;
+static ContextWrapper *current_context;
 
 
 static void quit_altrace_record(void) __attribute__((destructor));
@@ -226,7 +223,7 @@ __attribute__((noinline)) static void IO_ENTRYINFO(const EventEnum entryid)
     int num_new_strings = 0;
     int i;
 
-    frames -= 2;  // skip IO_START_INFO and entry point.
+    frames -= 2;  // skip IO_ENTRYINFO and entry point.
     if (frames < 0) {
         frames = 0;
     }
@@ -302,21 +299,17 @@ static void check_al_error_events(void)
     }
 }
 
-static void check_alc_error_events(ALCdevice *device)
+static void check_alc_error_events(DeviceWrapper *device)
 {
-    const ALCenum alcerr = REAL_alcGetError(device);
-    if (alcerr != ALC_NO_ERROR) {
-        DeviceItem *i;
-        IO_UINT32(NOW());
-        IO_EVENTENUM(ALEE_ALCERROR_TRIGGERED);
-        IO_PTR(device);
-        IO_ALCENUM(alcerr);
-        for (i = &devices; i != NULL; i = i->next) {
-            if (i->device == device) {
-                if (i->errorlatch == ALC_NO_ERROR) {
-                    i->errorlatch = alcerr;
-                }
-                return;
+    if (device) {
+        const ALCenum alcerr = REAL_alcGetError(device->device);
+        if (alcerr != ALC_NO_ERROR) {
+            IO_UINT32(NOW());
+            IO_EVENTENUM(ALEE_ALCERROR_TRIGGERED);
+            IO_PTR(device);
+            IO_ALCENUM(alcerr);
+            if (device->errorlatch == ALC_NO_ERROR) {
+                device->errorlatch = alcerr;
             }
         }
     }
@@ -427,43 +420,48 @@ ALCcontext *alcGetCurrentContext(void)
     ALCcontext *retval;
     IO_START(alcGetCurrentContext);
     retval = REAL_alcGetCurrentContext();
-    IO_PTR(retval);
+    (void) retval; // !!! FIXME: assert this hasn't gone out of sync with current_context...
+    IO_PTR(current_context);
     IO_END_ALC(NULL);
-    return retval;
+    return (ALCcontext *) current_context;
 }
 
-ALCdevice *alcGetContextsDevice(ALCcontext *context)
+ALCdevice *alcGetContextsDevice(ALCcontext *_ctx)
 {
+    ContextWrapper *ctx = (ContextWrapper *) _ctx;
     ALCdevice *retval;
     IO_START(alcGetContextsDevice);
-    IO_PTR(context);
-    retval = REAL_alcGetContextsDevice(context);
-    IO_PTR(retval);
-    IO_END_ALC(retval);
-    return retval;
+    IO_PTR(ctx);
+    retval = REAL_alcGetContextsDevice(ctx->ctx);
+    (void) retval; // !!! FIXME: assert this hasn't gone out of sync with current_context...
+    IO_PTR(ctx->device);
+    IO_END_ALC(ctx->device);
+    return (ALCdevice *) ctx->device;
 }
 
-ALCboolean alcIsExtensionPresent(ALCdevice *device, const ALCchar *extname)
+ALCboolean alcIsExtensionPresent(ALCdevice *_device, const ALCchar *extname)
 {
+    DeviceWrapper *device = _device ? (DeviceWrapper *) _device : &null_device;
     ALCboolean retval;
     IO_START(alcIsExtensionPresent);
-    IO_PTR(device);
+    IO_PTR(_device);
     IO_STRING(extname);
     if (strcasecmp(extname, "ALC_EXT_trace_info") == 0) {
         retval = ALC_TRUE;
     } else {
-        retval = REAL_alcIsExtensionPresent(device, extname);
+        retval = REAL_alcIsExtensionPresent(device->device, extname);
     }
     IO_ALCBOOLEAN(retval);
     IO_END_ALC(device);
     return retval;
 }
 
-void *alcGetProcAddress(ALCdevice *device, const ALCchar *funcname)
+void *alcGetProcAddress(ALCdevice *_device, const ALCchar *funcname)
 {
+    DeviceWrapper *device = _device ? (DeviceWrapper *) _device : &null_device;
     void *retval = NULL;
     IO_START(alcGetProcAddress);
-    IO_PTR(device);
+    IO_PTR(_device);
     IO_STRING(funcname);
 
     // always return our entry points, so the app always calls through here.
@@ -480,40 +478,36 @@ void *alcGetProcAddress(ALCdevice *device, const ALCchar *funcname)
 
 }
 
-ALCenum alcGetEnumValue(ALCdevice *device, const ALCchar *enumname)
+ALCenum alcGetEnumValue(ALCdevice *_device, const ALCchar *enumname)
 {
+    DeviceWrapper *device = _device ? (DeviceWrapper *) _device : &null_device;
     ALCenum retval;
     IO_START(alcGetEnumValue);
-    IO_PTR(device);
+    IO_PTR(_device);
     IO_STRING(enumname);
-    retval = REAL_alcGetEnumValue(device, enumname);
+    retval = REAL_alcGetEnumValue(device->device, enumname);
     IO_ALCENUM(retval);
     IO_END_ALC(device);
     return retval;
 }
 
-const ALCchar *alcGetString(ALCdevice *device, ALCenum param)
+const ALCchar *alcGetString(ALCdevice *_device, ALCenum param)
 {
+    DeviceWrapper *device = _device ? (DeviceWrapper *) _device : &null_device;
     const ALCchar *retval;
     IO_START(alcGetString);
-    IO_PTR(device);
+    IO_PTR(_device);
     IO_ALCENUM(param);
-    retval = REAL_alcGetString(device, param);
+    retval = REAL_alcGetString(device->device, param);
 
     if ((param == ALC_EXTENSIONS) && retval) {
         const char *addstr = "ALC_EXT_trace_info";
         const size_t slen = strlen(retval) + strlen(addstr) + 2;
-        DeviceItem *devi;
-        for (devi = &devices; devi != NULL; devi = devi->next) {
-            if (devi->device == device) {
-                char *ptr = (char *) realloc(devi->extension_string, slen);
-                if (ptr) {
-                    devi->extension_string = ptr;
-                    snprintf(ptr, slen, "%s%s%s", retval, *retval ? " " : "", addstr);
-                    retval = (const ALCchar *) ptr;
-                }
-                break;
-            }
+        char *ptr = (char *) realloc(device->extension_string, slen);
+        if (ptr) {
+            device->extension_string = ptr;
+            snprintf(ptr, slen, "%s%s%s", retval, *retval ? " " : "", addstr);
+            retval = (const ALCchar *) ptr;
         }
     }
 
@@ -524,10 +518,10 @@ const ALCchar *alcGetString(ALCdevice *device, ALCenum param)
 
 ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, ALCenum format, ALCsizei buffersize)
 {
-    DeviceItem *devitem = (DeviceItem *) calloc(1, sizeof (DeviceItem));
+    DeviceWrapper *device = (DeviceWrapper *) calloc(1, sizeof (DeviceWrapper));
     ALCdevice *retval;
 
-    if (!devitem) {
+    if (!device) {
         return NULL;
     }
 
@@ -537,130 +531,105 @@ ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, AL
     IO_ALCENUM(format);
     IO_ALSIZEI(buffersize);
     retval = REAL_alcCaptureOpenDevice(devicename, frequency, format, buffersize);
-    IO_PTR(retval);
+    IO_PTR(retval ? device : NULL);
 
     if (!retval) {
-        free(devitem);
+        free(device);
     } else {
-        devitem->device = retval;
+        device->device = retval;
         if (format == AL_FORMAT_MONO8) {
-            devitem->samplesize = 1;
+            device->samplesize = 1;
         } else if (format == AL_FORMAT_MONO16) {
-            devitem->samplesize = 2;
+            device->samplesize = 2;
         } else if (format == AL_FORMAT_STEREO8) {
-            devitem->samplesize = 2;
+            device->samplesize = 2;
         } else if (format == AL_FORMAT_STEREO16) {
-            devitem->samplesize = 4;
-        }
-        devitem->next = devices.next;
-        devices.next = devitem;
-    }
-
-    IO_END_ALC(retval);
-    return retval;
-}
-
-ALCboolean alcCaptureCloseDevice(ALCdevice *device)
-{
-    ALCboolean retval;
-    IO_START(alcCaptureCloseDevice);
-    IO_PTR(device);
-    retval = REAL_alcCaptureCloseDevice(device);
-    IO_ALCBOOLEAN(retval);
-
-    if (retval == ALC_TRUE) {
-        DeviceItem *devi;
-        DeviceItem *prev = &devices;
-        for (devi = &devices; devi != NULL; devi = devi->next) {
-            if (devi->device == device) {
-                prev->next = devi->next;
-                free(devi->extension_string);
-                free(devi);
-                break;
-            }
-            prev = devi;
+            device->samplesize = 4;
+            // !!! FIXME: float32
         }
     }
 
     IO_END_ALC(device);
+    return (ALCdevice *) device;
+}
+
+ALCboolean alcCaptureCloseDevice(ALCdevice *_device)
+{
+    DeviceWrapper *device = _device ? (DeviceWrapper *) _device : &null_device;
+    ALCboolean retval;
+    IO_START(alcCaptureCloseDevice);
+    IO_PTR(_device);
+    retval = REAL_alcCaptureCloseDevice(device->device);
+    IO_ALCBOOLEAN(retval);
+
+    if (retval == ALC_TRUE) {
+        free(device->extension_string);
+        free(device);
+    }
+
+    IO_END_ALC(retval == ALC_TRUE ? NULL : device)
     return retval;
 }
 
 ALCdevice *alcOpenDevice(const ALCchar *devicename)
 {
-    DeviceItem *devitem = (DeviceItem *) calloc(1, sizeof (DeviceItem));
+    DeviceWrapper *device = (DeviceWrapper *) calloc(1, sizeof (DeviceWrapper));
     ALCdevice *retval;
 
-    if (!devitem) {
+    if (!device) {
         return NULL;
     }
 
     IO_START(alcOpenDevice);
     IO_STRING(devicename);
     retval = REAL_alcOpenDevice(devicename);
-    IO_PTR(retval);
+    IO_PTR(retval ? device : NULL);
 
     if (!retval) {
-        free(devitem);
+        free(device);
     } else {
-        devitem->device = retval;
-        devitem->next = devices.next;
-        devices.next = devitem;
-    }
-
-    IO_END_ALC(retval);
-    return retval;
-}
-
-ALCboolean alcCloseDevice(ALCdevice *device)
-{
-    ALCboolean retval;
-    IO_START(alcCloseDevice);
-    IO_PTR(device);
-    retval = REAL_alcCloseDevice(device);
-    IO_ALCBOOLEAN(retval);
-
-    if (retval == ALC_TRUE) {
-        DeviceItem *devi;
-        DeviceItem *prev = &devices;
-        for (devi = &devices; devi != NULL; devi = devi->next) {
-            if (devi->device == device) {
-                prev->next = devi->next;
-                free(devi->extension_string);
-                free(devi);
-                break;
-            }
-            prev = devi;
-        }
+        device->device = retval;
     }
 
     IO_END_ALC(device);
+    return (ALCdevice *) device;
+}
+
+ALCboolean alcCloseDevice(ALCdevice *_device)
+{
+    DeviceWrapper *device = _device ? (DeviceWrapper *) _device : &null_device;
+    ALCboolean retval;
+    IO_START(alcCloseDevice);
+    IO_PTR(_device);
+    retval = REAL_alcCloseDevice(device->device);
+    IO_ALCBOOLEAN(retval);
+
+    if (retval == ALC_TRUE) {
+        free(device->extension_string);
+        free(device);
+    }
+
+    IO_END_ALC(retval == ALC_TRUE ? NULL : device)
     return retval;
 }
 
-ALCcontext *alcCreateContext(ALCdevice *device, const ALCint* attrlist)
+ALCcontext *alcCreateContext(ALCdevice *_device, const ALCint* attrlist)
 {
-    ContextItem *ctxitem = (ContextItem *) calloc(1, sizeof (ContextItem));
+    DeviceWrapper *device = _device ? (DeviceWrapper *) _device : &null_device;
+    ContextWrapper *ctx = (ContextWrapper *) calloc(1, sizeof (ContextWrapper));
     ALCcontext *retval;
     uint32 attrcount = 0;
     uint32 i;
 
-    if (!ctxitem) {
-        DeviceItem *devi;
-        for (devi = &devices; devi != NULL; devi = devi->next) {
-            if (devi->device == device) {
-                if (devi->errorlatch == ALC_NO_ERROR) {
-                    devi->errorlatch = ALC_OUT_OF_MEMORY;
-                }
-                break;
-            }
+    if (!ctx) {
+        if (device->errorlatch == ALC_NO_ERROR) {
+            device->errorlatch = ALC_OUT_OF_MEMORY;
         }
         return NULL;
     }
 
-
     IO_START(alcCreateContext);
-    IO_PTR(device);
+    IO_PTR(_device);
     if (attrlist) {
         while (attrlist[attrcount] != 0) { attrcount += 2; }
         attrcount++;
@@ -671,118 +640,88 @@ ALCcontext *alcCreateContext(ALCdevice *device, const ALCint* attrlist)
             IO_INT32(attrlist[i]);
         }
     }
-    retval = REAL_alcCreateContext(device, attrlist);
-    IO_PTR(retval);
+    retval = REAL_alcCreateContext(device->device, attrlist);
+    IO_PTR(retval ? device : NULL);
 
     if (retval == NULL) {
-        free(ctxitem);
+        free(ctx);
     } else {
-        ctxitem->next = contexts.next;
-        contexts.next = ctxitem;
-        ctxitem->ctx = retval;
-        ctxitem->device = device;
+        ctx->ctx = retval;
+        ctx->device = device;
     }
 
     IO_END_ALC(device);
-    return retval;
+    return (ALCcontext *) ctx;
     
 }
 
-ALCboolean alcMakeContextCurrent(ALCcontext *ctx)
+ALCboolean alcMakeContextCurrent(ALCcontext *_ctx)
 {
+    ContextWrapper *ctx = (ContextWrapper *) _ctx;
     ALCboolean retval;
     IO_START(alcMakeContextCurrent);
     IO_PTR(ctx);
-    retval = REAL_alcMakeContextCurrent(ctx);
+    retval = REAL_alcMakeContextCurrent(ctx ? ctx->ctx : NULL);
     IO_ALCBOOLEAN(retval);
     if (retval) {
-        if ((current_context ? current_context->ctx : NULL) != ctx) {
-            current_context = NULL;
-            if (ctx != NULL) {
-                ContextItem *i;
-                for (i = contexts.next; i != NULL; i = i->next) {
-                    if (i->ctx == ctx) {
-                        current_context = i;
-                        break;
-                    }
-                }
-            }
-        }
+        current_context = ctx;
     }
     IO_END_ALC(current_context ? current_context->device : NULL);
     return retval;
 }
 
-void alcProcessContext(ALCcontext *ctx)
+void alcProcessContext(ALCcontext *_ctx)
 {
+    ContextWrapper *ctx = (ContextWrapper *) _ctx;
     IO_START(alcProcessContext);
     IO_PTR(ctx);
-    REAL_alcProcessContext(ctx);
-    IO_END_ALC(current_context ? current_context->device : NULL);
+    REAL_alcProcessContext(ctx ? ctx->ctx : NULL);
+    IO_END_ALC(ctx ? ctx->device : NULL);
 }
 
-void alcSuspendContext(ALCcontext *ctx)
+void alcSuspendContext(ALCcontext *_ctx)
 {
+    ContextWrapper *ctx = (ContextWrapper *) _ctx;
     IO_START(alcSuspendContext);
     IO_PTR(ctx);
-    REAL_alcSuspendContext(ctx);
-    IO_END_ALC(current_context ? current_context->device : NULL);
+    REAL_alcSuspendContext(ctx ? ctx->ctx : NULL);
+    IO_END_ALC(ctx ? ctx->device : NULL);
 }
 
-void alcDestroyContext(ALCcontext *ctx)
+void alcDestroyContext(ALCcontext *_ctx)
 {
-    ContextItem *i;
-    ContextItem *prev = &contexts;
-    ALCdevice *device = NULL;
-
+    ContextWrapper *ctx = (ContextWrapper *) _ctx;
+    DeviceWrapper *device = NULL;
     IO_START(alcDestroyContext);
     IO_PTR(ctx);
-    REAL_alcDestroyContext(ctx);
-
+    REAL_alcDestroyContext(ctx ? ctx->ctx : NULL);
     if (ctx) {
-        for (i = contexts.next; i != NULL; i = i->next) {
-            if (i->ctx == ctx) {
-                device = i->device;
-                prev->next = i->next;
-                free(i->extension_string);
-                free(i);
-                break;
-            }
-            prev = i;
-        }
+        device = ctx->device;
+        free(ctx->extension_string);
+        free(ctx);
     }
-
     IO_END_ALC(device);
 }
 
-ALCenum alcGetError(ALCdevice *device)
+ALCenum alcGetError(ALCdevice *_device)
 {
-    DeviceItem *i;
+    DeviceWrapper *device = _device ? (DeviceWrapper *) _device : &null_device;
     ALCenum retval;
     IO_START(alcGetError);
-    IO_PTR(device);
-    for (i = &devices; i != NULL; i = i->next) {
-        if (i->device == device) {
-            retval = i->errorlatch;
-            i->errorlatch = ALC_NO_ERROR;
-            break;
-        }
-    }
-
-    if (i == NULL) {
-        retval = ALC_INVALID_DEVICE;  //REAL_alcGetError(device);
-    }
-
+    IO_PTR(_device);
+    retval = device->errorlatch;
+    device->errorlatch = ALC_NO_ERROR;
     IO_ALCENUM(retval);
     IO_END_ALC(device);
     return retval;
 }
 
-void alcGetIntegerv(ALCdevice *device, ALCenum param, ALCsizei size, ALCint *values)
+void alcGetIntegerv(ALCdevice *_device, ALCenum param, ALCsizei size, ALCint *values)
 {
+    DeviceWrapper *device = _device ? (DeviceWrapper *) _device : &null_device;
     ALsizei i;
     IO_START(alcGetIntegerv);
-    IO_PTR(device);
+    IO_PTR(_device);
     IO_ALCENUM(param);
     IO_ALCSIZEI(size);
     IO_PTR(values);
@@ -791,7 +730,7 @@ void alcGetIntegerv(ALCdevice *device, ALCenum param, ALCsizei size, ALCint *val
         memset(values, '\0', size * sizeof (ALCint));
     }
 
-    REAL_alcGetIntegerv(device, param, size, values);
+    REAL_alcGetIntegerv(device->device, param, size, values);
 
     if (values) {
         for (i = 0; i < size; i++) {
@@ -802,39 +741,35 @@ void alcGetIntegerv(ALCdevice *device, ALCenum param, ALCsizei size, ALCint *val
     IO_END_ALC(device);
 }
 
-void alcCaptureStart(ALCdevice *device)
+void alcCaptureStart(ALCdevice *_device)
 {
+    DeviceWrapper *device = _device ? (DeviceWrapper *) _device : &null_device;
     IO_START(alcCaptureStart);
-    IO_PTR(device);
-    REAL_alcCaptureStart(device);
+    IO_PTR(_device);
+    REAL_alcCaptureStart(device->device);
     IO_END_ALC(device);
 }
 
-void alcCaptureStop(ALCdevice *device)
+void alcCaptureStop(ALCdevice *_device)
 {
+    DeviceWrapper *device = _device ? (DeviceWrapper *) _device : &null_device;
     IO_START(alcCaptureStop);
-    IO_PTR(device);
-    REAL_alcCaptureStop(device);
+    IO_PTR(_device);
+    REAL_alcCaptureStop(device->device);
     IO_END_ALC(device);
 }
 
-void alcCaptureSamples(ALCdevice *device, ALCvoid *buffer, ALCsizei samples)
+void alcCaptureSamples(ALCdevice *_device, ALCvoid *buffer, ALCsizei samples)
 {
-    DeviceItem *devi;
-    ALsizei samplesize = 0;
+    DeviceWrapper *device = _device ? (DeviceWrapper *) _device : &null_device;
     IO_START(alcCaptureSamples);
-    IO_PTR(device);
+    IO_PTR(_device);
     IO_ALCSIZEI(samples);
-    for (devi = &devices; devi != NULL; devi = devi->next) {
-        if (devi->device == device) {
-            samplesize = devi->samplesize;
-        }
+    if (samples && device->samplesize) {
+        memset(buffer, '\0', samples * device->samplesize);
     }
-    if (samplesize) {
-        memset(buffer, '\0', samples * samplesize);
-    }
-    REAL_alcCaptureSamples(device, buffer, samples);
-    IO_BLOB(buffer, samples * samplesize);
+    REAL_alcCaptureSamples(device->device, buffer, samples);
+    IO_BLOB(buffer, samples * device->samplesize);
     IO_END_ALC(device);
 }
 
@@ -1979,18 +1914,18 @@ void alTraceSourceLabel(ALuint name, const ALchar *str)
     IO_END();
 }
 
-void alcTraceDeviceLabel(ALCdevice *device, const ALchar *str)
+void alcTraceDeviceLabel(ALCdevice *_device, const ALchar *str)
 {
     IO_START(alcTraceDeviceLabel);
-    IO_PTR(device);
+    IO_PTR(_device);
     IO_STRING(str);
     IO_END();
 }
 
-void alcTraceContextLabel(ALCcontext *ctx, const ALchar *str)
+void alcTraceContextLabel(ALCcontext *_ctx, const ALchar *str)
 {
     IO_START(alcTraceContextLabel);
-    IO_PTR(ctx);
+    IO_PTR(_ctx);
     IO_STRING(str);
     IO_END();
 }
