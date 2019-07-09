@@ -2209,9 +2209,10 @@ static void dump_al_error_event(void)
 
 static void dump_alc_error_event(void)
 {
-    const ALenum err = IO_ENUM();
+    ALCdevice *device = (ALCdevice *) IO_PTR();
+    const ALCenum err = IO_ALCENUM();
     if (dump_log) {
-        printf("<<< ALC ERROR SET HERE: %s >>>\n", alcenumString(err));
+        printf("<<< ALC ERROR SET HERE: device=%p %s >>>\n", device, alcenumString(err));
     }
 }
 
