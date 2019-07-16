@@ -7,6 +7,7 @@
  */
 
 #include <execinfo.h>
+#include <float.h>
 
 #define APPNAME "altrace_record"
 
@@ -30,12 +31,61 @@ AL_API void AL_APIENTRY alcTraceContextLabel(ALCcontext *ctx, const ALchar *str)
 static pthread_mutex_t _apilock;
 static pthread_mutex_t *apilock;
 
+typedef struct BufferWrapper
+{
+    ALuint name;
+    ALint channels;
+    ALint bits;
+    ALint frequency;
+    ALint size;   /* length of data in bytes. */
+} BufferWrapper;
+
+typedef struct QueuedBuffer
+{
+    ALuint wrappedname;
+    struct QueuedBuffer *next;
+} QueuedBuffer;
+
+typedef struct SourceWrapper
+{
+    ALuint name;  // real name for the real AL, not the wrapped name.
+    ALenum state;
+    ALenum type;
+    ALuint buffer;
+    ALint buffers_queued;
+    ALint buffers_processed;
+    ALboolean source_relative;
+    ALboolean looping;
+    ALint sec_offset;
+    ALint sample_offset;
+    ALint byte_offset;
+    ALfloat gain;
+    ALfloat min_gain;
+    ALfloat max_gain;
+    ALfloat reference_distance;
+    ALfloat rolloff_factor;
+    ALfloat max_distance;
+    ALfloat pitch;
+    ALfloat cone_inner_angle;
+    ALfloat cone_outer_angle;
+    ALfloat cone_outer_gain;
+    ALfloat position[3];
+    ALfloat velocity[3];
+    ALfloat direction[3];
+    QueuedBuffer *queue_head;
+    QueuedBuffer *queue_tail;
+} SourceWrapper;
+
 typedef struct DeviceWrapper
 {
     ALCdevice *device;
     ALCenum errorlatch;
+    ALCboolean iscapture;
     int samplesize;   /* size of a capture device sample in bytes */
     char *extension_string;
+    BufferWrapper *wrapped_buffers;
+    uint32 *wrapped_buffers_bitmap;
+    uint32 wrapped_buffers_size;
 } DeviceWrapper;
 
 typedef struct ContextWrapper
@@ -44,9 +94,22 @@ typedef struct ContextWrapper
     DeviceWrapper *device;
     char *extension_string;
     ALenum errorlatch;
+    SourceWrapper *wrapped_sources;
+    uint32 *wrapped_sources_bitmap;
+    uint32 wrapped_sources_size;
+    QueuedBuffer *queue_pool;
+    ALenum distance_model;
+    ALfloat doppler_factor;
+    ALfloat doppler_velocity;
+    ALfloat speed_of_sound;
+    ALfloat listener_position[3];
+    ALfloat listener_velocity[3];
+    ALfloat listener_orientation[6];
+    ALfloat listener_gain;
 } ContextWrapper;
 
 static DeviceWrapper null_device;
+static ALenum null_context_errorlatch = AL_NO_ERROR;
 static ContextWrapper *current_context;
 
 
@@ -284,25 +347,26 @@ static void APIUNLOCK(void)
     }
 }
 
-static void check_al_error_events(void)
+static ALenum check_al_error_events(void)
 {
-    if (current_context) {
-        const ALenum alerr = REAL_alGetError();
-        if (alerr != AL_NO_ERROR) {
-            IO_UINT32(NOW());
-            IO_EVENTENUM(ALEE_ALERROR_TRIGGERED);
-            IO_ENUM(alerr);
-            if (current_context->errorlatch == AL_NO_ERROR) {
-                current_context->errorlatch = alerr;
-            }
+    const ALenum alerr = REAL_alGetError();
+    if (alerr != AL_NO_ERROR) {
+        ALenum *errorlatch = current_context ? &current_context->errorlatch : &null_context_errorlatch;
+        IO_UINT32(NOW());
+        IO_EVENTENUM(ALEE_ALERROR_TRIGGERED);
+        IO_ENUM(alerr);
+        if (*errorlatch == AL_NO_ERROR) {
+            *errorlatch = alerr;
         }
     }
+    return alerr;
 }
 
-static void check_alc_error_events(DeviceWrapper *device)
+static ALCenum check_alc_error_events(DeviceWrapper *device)
 {
+    ALCenum alcerr = ALC_NO_ERROR;
     if (device) {
-        const ALCenum alcerr = REAL_alcGetError(device->device);
+        alcerr = REAL_alcGetError(device->device);
         if (alcerr != ALC_NO_ERROR) {
             IO_UINT32(NOW());
             IO_EVENTENUM(ALEE_ALCERROR_TRIGGERED);
@@ -313,6 +377,7 @@ static void check_alc_error_events(DeviceWrapper *device)
             }
         }
     }
+    return alcerr;
 }
 
 #define IO_START(e) \
@@ -536,7 +601,11 @@ ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, AL
     if (!retval) {
         free(device);
     } else {
+        ALCint alci = 0;
+        const ALCchar *alcstr;
+
         device->device = retval;
+        device->iscapture = ALC_TRUE;
         if (format == AL_FORMAT_MONO8) {
             device->samplesize = 1;
         } else if (format == AL_FORMAT_MONO16) {
@@ -547,6 +616,15 @@ ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, AL
             device->samplesize = 4;
             // !!! FIXME: float32
         }
+
+        REAL_alcGetIntegerv(device->device, ALC_MAJOR_VERSION, 1, &alci);
+        IO_INT32(alci);
+        REAL_alcGetIntegerv(device->device, ALC_MINOR_VERSION, 1, &alci);
+        IO_INT32(alci);
+        alcstr = REAL_alcGetString(device->device, ALC_CAPTURE_DEVICE_SPECIFIER);
+        IO_STRING(alcstr);
+        alcstr = REAL_alcGetString(device->device, ALC_EXTENSIONS);
+        IO_STRING(alcstr);
     }
 
     IO_END_ALC(device);
@@ -588,7 +666,20 @@ ALCdevice *alcOpenDevice(const ALCchar *devicename)
     if (!retval) {
         free(device);
     } else {
+        ALCint alci = 0;
+        const ALCchar *alcstr;
+
         device->device = retval;
+        device->iscapture = ALC_FALSE;
+
+        REAL_alcGetIntegerv(device->device, ALC_MAJOR_VERSION, 1, &alci);
+        IO_INT32(alci);
+        REAL_alcGetIntegerv(device->device, ALC_MINOR_VERSION, 1, &alci);
+        IO_INT32(alci);
+        alcstr = REAL_alcGetString(device->device, ALC_DEVICE_SPECIFIER);
+        IO_STRING(alcstr);
+        alcstr = REAL_alcGetString(device->device, ALC_EXTENSIONS);
+        IO_STRING(alcstr);
     }
 
     IO_END_ALC(device);
@@ -613,6 +704,85 @@ ALCboolean alcCloseDevice(ALCdevice *_device)
     return retval;
 }
 
+
+static void check_listener_state_floatv(const ALenum param, const int numfloats, ALfloat *current)
+{
+    if (current_context) {
+        ALfloat fval[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+        const size_t size = sizeof (ALfloat) * numfloats;
+        int i;
+        REAL_alGetListenerfv(param, fval);
+        if (memcmp(fval, current, size) != 0) {
+            IO_UINT32(NOW());
+            IO_EVENTENUM(ALEE_LISTENER_STATE_CHANGED_FLOATV);
+            IO_PTR(current_context);
+            IO_ENUM(param);
+            IO_INT32(numfloats);
+            for (i = 0; i < numfloats; i++) {
+                IO_FLOAT(fval[i]);
+            }
+            memcpy(current, fval, size);
+        }
+    }
+}
+
+static void check_listener_state(void)
+{
+    ContextWrapper *ctx = current_context;
+    if (ctx) {
+        check_listener_state_floatv(AL_POSITION, 3, ctx->listener_position);
+        check_listener_state_floatv(AL_VELOCITY, 3, ctx->listener_velocity);
+        check_listener_state_floatv(AL_ORIENTATION, 6, ctx->listener_orientation);
+        check_listener_state_floatv(AL_GAIN, 1, &ctx->listener_gain);
+    }
+}
+
+static void check_context_state_enum(const ALenum param, ALenum *current)
+{
+    if (current_context) {
+        ALint ival = 0;
+        ALenum newval;
+        REAL_alGetIntegerv(param, &ival);
+        newval = (ALenum) ival;
+        if (newval != *current) {
+            IO_UINT32(NOW());
+            IO_EVENTENUM(ALEE_CONTEXT_STATE_CHANGED_ENUM);
+            IO_PTR(current_context);
+            IO_ENUM(param);
+            IO_ENUM(newval);
+            *current = newval;
+        }
+    }
+}
+
+static void check_context_state_float(const ALenum param, ALfloat *current)
+{
+    if (current_context) {
+        ALfloat fval = 0.0f;
+        REAL_alGetFloatv(param, &fval);
+        if (fval != *current) {
+            IO_UINT32(NOW());
+            IO_EVENTENUM(ALEE_CONTEXT_STATE_CHANGED_FLOAT);
+            IO_PTR(current_context);
+            IO_ENUM(param);
+            IO_FLOAT(fval);
+            *current = fval;
+        }
+    }
+}
+
+static void check_context_state(void)
+{
+    ContextWrapper *ctx = current_context;
+    if (ctx) {
+        check_context_state_enum(AL_DISTANCE_MODEL, &ctx->distance_model);
+        check_context_state_float(AL_DOPPLER_FACTOR, &ctx->doppler_factor);
+        check_context_state_float(AL_DOPPLER_VELOCITY, &ctx->doppler_velocity);
+        check_context_state_float(AL_SPEED_OF_SOUND, &ctx->speed_of_sound);
+        check_listener_state();
+    }
+}
+
 ALCcontext *alcCreateContext(ALCdevice *_device, const ALCint* attrlist)
 {
     DeviceWrapper *device = _device ? (DeviceWrapper *) _device : &null_device;
@@ -622,10 +792,8 @@ ALCcontext *alcCreateContext(ALCdevice *_device, const ALCint* attrlist)
     uint32 i;
 
     if (!ctx) {
-        if (device->errorlatch == ALC_NO_ERROR) {
-            device->errorlatch = ALC_OUT_OF_MEMORY;
-        }
-        return NULL;
+        fprintf(stderr, APPNAME ": Out of memory!\n");
+        _exit(42);
     }
 
     IO_START(alcCreateContext);
@@ -648,6 +816,13 @@ ALCcontext *alcCreateContext(ALCdevice *_device, const ALCint* attrlist)
     } else {
         ctx->ctx = retval;
         ctx->device = device;
+        ctx->distance_model = AL_INVERSE_DISTANCE_CLAMPED;
+        ctx->doppler_factor = 1.0f;
+        ctx->doppler_velocity = 1.0f;
+        ctx->speed_of_sound = 343.3f;
+        ctx->listener_gain = 1.0f;
+        ctx->listener_orientation[2] = -1.0f;
+        ctx->listener_orientation[4] = 1.0f;
     }
 
     IO_END_ALC(device);
@@ -665,6 +840,7 @@ ALCboolean alcMakeContextCurrent(ALCcontext *_ctx)
     IO_ALCBOOLEAN(retval);
     if (retval) {
         current_context = ctx;
+        check_context_state();
     }
     IO_END_ALC(current_context ? current_context->device : NULL);
     return retval;
@@ -778,6 +954,7 @@ void alDopplerFactor(ALfloat value)
     IO_START(alDopplerFactor);
     IO_FLOAT(value);
     REAL_alDopplerFactor(value);
+    if (current_context) { check_context_state_float(AL_DOPPLER_FACTOR, &current_context->doppler_factor); }
     IO_END();
 }
 
@@ -786,6 +963,7 @@ void alDopplerVelocity(ALfloat value)
     IO_START(alDopplerVelocity);
     IO_FLOAT(value);
     REAL_alDopplerVelocity(value);
+    if (current_context) { check_context_state_float(AL_DOPPLER_VELOCITY, &current_context->doppler_velocity); }
     IO_END();
 }
 
@@ -794,6 +972,7 @@ void alSpeedOfSound(ALfloat value)
     IO_START(alSpeedOfSound);
     IO_FLOAT(value);
     REAL_alSpeedOfSound(value);
+    if (current_context) { check_context_state_float(AL_SPEED_OF_SOUND, &current_context->speed_of_sound); }
     IO_END();
 }
 
@@ -802,6 +981,7 @@ void alDistanceModel(ALenum model)
     IO_START(alDistanceModel);
     IO_ENUM(model);
     REAL_alDistanceModel(model);
+    if (current_context) { check_context_state_enum(AL_DISTANCE_MODEL, &current_context->distance_model); }
     IO_END();
 }
 
@@ -1013,7 +1193,8 @@ ALenum alGetError(void)
     IO_START(alGetError);
 
     if (current_context == NULL) {
-        retval = ALC_INVALID_CONTEXT;  //REAL_alGetError(device);
+        retval = null_context_errorlatch;
+        null_context_errorlatch = AL_NO_ERROR;
     } else {
         retval = current_context->errorlatch;
         current_context->errorlatch = AL_NO_ERROR;
@@ -1078,6 +1259,9 @@ void alListenerfv(ALenum param, const ALfloat *values)
     }
 
     REAL_alListenerfv(param, values);
+
+    check_listener_state();
+
     IO_END();
 }
 
@@ -1087,6 +1271,7 @@ void alListenerf(ALenum param, ALfloat value)
     IO_ENUM(param);
     IO_FLOAT(value);
     REAL_alListenerf(param, value);
+    check_listener_state();
     IO_END();
 }
 
@@ -1098,6 +1283,7 @@ void alListener3f(ALenum param, ALfloat value1, ALfloat value2, ALfloat value3)
     IO_FLOAT(value2);
     IO_FLOAT(value3);
     REAL_alListener3f(param, value1, value2, value3);
+    check_listener_state();
     IO_END();
 }
 
@@ -1122,6 +1308,9 @@ void alListeneriv(ALenum param, const ALint *values)
     }
 
     REAL_alListeneriv(param, values);
+
+    check_listener_state();
+
     IO_END();
 }
 
@@ -1131,6 +1320,7 @@ void alListeneri(ALenum param, ALint value)
     IO_ENUM(param);
     IO_INT32(value);
     REAL_alListeneri(param, value);
+    check_listener_state();
     IO_END();
 }
 
@@ -1142,6 +1332,7 @@ void alListener3i(ALenum param, ALint value1, ALint value2, ALint value3)
     IO_INT32(value2);
     IO_INT32(value3);
     REAL_alListener3i(param, value1, value2, value3);
+    check_listener_state();
     IO_END();
 }
 
@@ -1253,29 +1444,367 @@ void alGetListener3i(ALenum param, ALint *value1, ALint *value2, ALint *value3)
     IO_END();
 }
 
+static SourceWrapper *source_wrapped_lookup(const ALuint wrappedname)
+{
+    const ALuint name = wrappedname - 1;
+    ContextWrapper *ctx = current_context;
+    if (!ctx || !wrappedname || (name >= ctx->wrapped_sources_size) || (ctx->wrapped_sources[name].name == 0)) {
+        return NULL;
+    }
+
+    return &ctx->wrapped_sources[name];
+}
+
+static ALuint buffer_wrapped_to_real(const ALuint wrappedname);
+
+static ALuint source_wrapped_to_real(const ALuint wrappedname)
+{
+    SourceWrapper *src = source_wrapped_lookup(wrappedname);
+    if (!src) {
+        return 0xFFFFFFFF;  // just so this will produce an error for a bogus name.
+    }
+    return src->name;
+}
+
+static void check_source_state_bool(const ALuint name, const ALenum param, ALboolean *current)
+{
+    ALint ival = 0;
+    ALboolean newval;
+    REAL_alGetSourcei(name, param, &ival);
+    newval = ival ? AL_TRUE : AL_FALSE;
+    if (newval != *current) {
+        IO_UINT32(NOW());
+        IO_EVENTENUM(ALEE_SOURCE_STATE_CHANGED_BOOL);
+        IO_UINT32(name);
+        IO_ENUM(param);
+        IO_BOOLEAN(newval);
+        *current = newval;
+    }
+}
+
+static void check_source_state_enum(const ALuint name, const ALenum param, ALenum *current)
+{
+    ALint ival = 0;
+    ALenum newval;
+    REAL_alGetSourcei(name, param, &ival);
+    newval = (ALenum) ival;
+    if (newval != *current) {
+        IO_UINT32(NOW());
+        IO_EVENTENUM(ALEE_SOURCE_STATE_CHANGED_ENUM);
+        IO_UINT32(name);
+        IO_ENUM(param);
+        IO_ENUM(newval);
+        *current = newval;
+    }
+}
+
+static void check_source_state_int(const ALuint name, const ALenum param, ALint *current)
+{
+    ALint ival = 0;
+    REAL_alGetSourcei(name, param, &ival);
+    if (ival != *current) {
+        IO_UINT32(NOW());
+        IO_EVENTENUM(ALEE_SOURCE_STATE_CHANGED_INT);
+        IO_UINT32(name);
+        IO_ENUM(param);
+        IO_INT32(ival);
+        *current = ival;
+    }
+}
+
+static void check_source_state_uint(const ALuint name, const ALenum param, ALuint *current)
+{
+    ALint ival = 0;
+    ALuint newval;
+    REAL_alGetSourcei(name, param, &ival);
+    newval = (ALuint) ival;
+    if (newval != *current) {
+        IO_UINT32(NOW());
+        IO_EVENTENUM(ALEE_SOURCE_STATE_CHANGED_UINT);
+        IO_UINT32(name);
+        IO_ENUM(param);
+        IO_UINT32(newval);
+        *current = newval;
+    }
+}
+
+static void check_source_state_float(const ALuint name, const ALenum param, ALfloat *current)
+{
+    ALfloat fval = 0;
+    REAL_alGetSourcef(name, param, &fval);
+    if (fval != *current) {
+        IO_UINT32(NOW());
+        IO_EVENTENUM(ALEE_SOURCE_STATE_CHANGED_FLOAT);
+        IO_UINT32(name);
+        IO_ENUM(param);
+        IO_FLOAT(fval);
+        *current = fval;
+    }
+}
+
+static void check_source_state_float3(const ALuint name, const ALenum param, ALfloat *current)
+{
+    const size_t size = sizeof (ALfloat) * 3;
+    ALfloat fval[3] = { 0.0f, 0.0f, 0.0f };
+    REAL_alGetSourcefv(name, param, fval);
+    if (memcmp(fval, current, size) != 0) {
+        IO_UINT32(NOW());
+        IO_EVENTENUM(ALEE_SOURCE_STATE_CHANGED_FLOAT3);
+        IO_UINT32(name);
+        IO_ENUM(param);
+        IO_FLOAT(fval[0]);
+        IO_FLOAT(fval[1]);
+        IO_FLOAT(fval[2]);
+        memcpy(current, fval, size);
+    }
+}
+
+static void check_source_state(SourceWrapper *src)
+{
+    if (src) {
+        const ALuint name = src->name;
+
+        check_source_state_enum(name, AL_SOURCE_STATE, &src->state);
+        check_source_state_enum(name, AL_SOURCE_TYPE, &src->type);
+        check_source_state_uint(name, AL_BUFFER, &src->buffer);
+        check_source_state_int(name, AL_BUFFERS_QUEUED, &src->buffers_queued);
+        check_source_state_int(name, AL_BUFFERS_PROCESSED, &src->buffers_processed);
+        check_source_state_bool(name, AL_SOURCE_RELATIVE, &src->source_relative);
+        check_source_state_bool(name, AL_LOOPING, &src->looping);
+        check_source_state_int(name, AL_SEC_OFFSET, &src->sec_offset);
+        check_source_state_int(name, AL_SAMPLE_OFFSET, &src->sample_offset);
+        check_source_state_int(name, AL_BYTE_OFFSET, &src->byte_offset);
+
+        check_source_state_float(name, AL_GAIN, &src->gain);
+        check_source_state_float(name, AL_MIN_GAIN, &src->min_gain);
+        check_source_state_float(name, AL_MAX_GAIN, &src->max_gain);
+        check_source_state_float(name, AL_REFERENCE_DISTANCE, &src->reference_distance);
+        check_source_state_float(name, AL_ROLLOFF_FACTOR, &src->rolloff_factor);
+        check_source_state_float(name, AL_MAX_DISTANCE, &src->max_distance);
+        check_source_state_float(name, AL_PITCH, &src->pitch);
+        check_source_state_float(name, AL_CONE_INNER_ANGLE, &src->cone_inner_angle);
+        check_source_state_float(name, AL_CONE_OUTER_ANGLE, &src->cone_outer_angle);
+        check_source_state_float(name, AL_CONE_OUTER_GAIN, &src->cone_outer_gain);
+
+        check_source_state_float3(name, AL_POSITION, src->position);
+        check_source_state_float3(name, AL_VELOCITY, src->velocity);
+        check_source_state_float3(name, AL_DIRECTION, src->direction);
+    }
+}
+
+static void check_source_state_from_name(const ALuint wrappedname)
+{
+    check_source_state(source_wrapped_lookup(wrappedname));
+}
+
+static void init_source_state(SourceWrapper *src, const ALuint name)
+{
+    memset(src, '\0', sizeof (*src));
+    src->name = name;
+    src->state = AL_INITIAL;
+    src->type = AL_UNDETERMINED;
+    src->gain = 1.0f;
+    src->max_gain = 1.0f;
+    src->reference_distance = 1.0f;
+    src->max_distance = FLT_MAX;
+    src->rolloff_factor = 1.0f;
+    src->pitch = 1.0f;
+    src->cone_inner_angle = 360.0f;
+    src->cone_outer_angle = 360.0f;
+
+    /* check everything for newly-generated sources. The theory being that
+       we can catch defaults in the AL that aren't what we expected. */
+    check_source_state(src);
+}
+
+static void queue_buffer(const ALuint wrappedname, const ALuint wrappedbufname)
+{
+    QueuedBuffer *item;
+    SourceWrapper *src = source_wrapped_lookup(wrappedname);
+    if (!src || !current_context) {
+        return;
+    }
+
+    item = current_context->queue_pool;
+    if (item) {
+        current_context->queue_pool = current_context->queue_pool->next;
+    } else {
+        item = (QueuedBuffer *) calloc(1, sizeof (QueuedBuffer));
+        if (!item) {
+            fprintf(stderr, APPNAME ": Out of memory!\n");
+            _exit(42);
+        }
+    }
+
+    item->wrappedname = wrappedbufname;
+    item->next = NULL;
+    if (src->queue_tail) {
+        src->queue_tail->next = item;
+        src->queue_tail = item;
+    } else {
+        src->queue_head = src->queue_tail = item;
+    }
+}
+
+static BufferWrapper *buffer_wrapped_lookup(const ALuint wrappedname);
+
+static ALuint unqueue_buffer(const ALuint wrappedname, const ALuint realbufname)
+{
+    QueuedBuffer *item;
+    BufferWrapper *buf;
+    SourceWrapper *src = source_wrapped_lookup(wrappedname);
+    ALuint wrappedbufname;
+
+    if (!src || !src->queue_head) {
+        fprintf(stderr, "Unexpected unqueue_buffer() call at %s:%d\n", __FILE__, __LINE__);
+        _exit(42);
+    }
+
+    // in theory these should always pop in order.
+    buf = buffer_wrapped_lookup(src->queue_head->wrappedname);
+    if (!buf || (buf->name != realbufname)) {
+        fprintf(stderr, "Unexpected unqueue_buffer() call at %s:%d\n", __FILE__, __LINE__);
+        _exit(42);
+    }
+
+    item = src->queue_head;
+    src->queue_head = item->next;
+    if (!src->queue_head) {
+        src->queue_tail = NULL;
+    }
+
+    wrappedbufname = item->wrappedname;
+
+    item->wrappedname = 0;
+    item->next = current_context->queue_pool;
+    current_context->queue_pool = item;
+
+    return wrappedbufname;
+}
+
+
 void alGenSources(ALsizei n, ALuint *names)
 {
-    ALsizei i;
-    IO_START(alGenSources);
-    IO_ALSIZEI(n);
+    ContextWrapper *ctx = current_context;
+    ALsizei i, j;
+    ALsizei wrapped = 0;
+    ALsizei starting_index = 0;
+
     memset(names, 0, n * sizeof (ALuint));
     REAL_alGenSources(n, names);
+
+    if (ctx) {  // presumably this generated an error anyhow, but we have to skip all our stuff without a context.
+        while (wrapped < n) {
+            if (names[wrapped] == 0) {
+                wrapped++;
+                continue;
+            }
+
+            for (i = starting_index; i < (ctx->wrapped_sources_size / 32); i++) {
+                uint32 bits = ctx->wrapped_sources_bitmap[i];
+                if (bits == 0xFFFFFFFF) {
+                    starting_index = i + 1;
+                } else {
+                    ALsizei wrappedidx = (i * 32);
+                    for (j = 0; j < 32; j++, wrappedidx++) {
+                        if (ctx->wrapped_sources[wrappedidx].name == 0) {
+                            ctx->wrapped_sources[wrappedidx].name = names[wrapped];
+                            names[wrapped] = (ALuint) (wrappedidx + 1);
+                            bits |= (1 << j);
+                            ctx->wrapped_sources_bitmap[i] = bits;
+                            if (++wrapped == n) {
+                                break;
+                            }
+                        }
+                    }
+
+                    if (wrapped == n) {
+                        break;
+                    }
+                }
+            }
+
+            if (wrapped < n) {
+                void *ptr1;
+                void *ptr2;
+                ctx->wrapped_sources_size += 32;
+                ptr1 = realloc(ctx->wrapped_sources, sizeof (SourceWrapper) * ctx->wrapped_sources_size);
+                ptr2 = realloc(ctx->wrapped_sources_bitmap, sizeof (uint32) * (ctx->wrapped_sources_size / 32));
+                if (!ptr1 || !ptr2) {
+                    fprintf(stderr, APPNAME ": Out of memory!\n");
+                    _exit(42);
+                }
+                ctx->wrapped_sources = (SourceWrapper *) ptr1;
+                memset(ctx->wrapped_sources + (ctx->wrapped_sources_size - 32), '\0', sizeof (SourceWrapper) * 32);
+                ctx->wrapped_sources_bitmap = (uint32 *) ptr2;
+                ctx->wrapped_sources_bitmap[(ctx->wrapped_sources_size / 32) - 1] = 0;
+            }
+        }
+    }
+
+    IO_START(alGenSources);
+    IO_ALSIZEI(n);
     for (i = 0; i < n; i++) {
         IO_UINT32(names[i]);
     }
+
+    /* Set up our default states... */
+    if (ctx) {
+        for (i = 0; i < n; i++) {
+            const ALuint wrappedname = names[i];
+            if (wrappedname) {
+                SourceWrapper *src = &ctx->wrapped_sources[wrappedname-1];
+                const ALuint realname = src->name;
+                init_source_state(src, realname);
+            }
+        }
+    }
+
     IO_END();
 }
 
 void alDeleteSources(ALsizei n, const ALuint *names)
 {
+    ContextWrapper *ctx = current_context;
     ALsizei i;
+    ALuint realnamesstack[16];
+    ALuint *realnames = (n <= (sizeof (realnamesstack) / sizeof (realnamesstack[0]))) ? realnamesstack : (ALuint *) calloc(n, sizeof (ALuint));
+
+    if (!realnames) {
+        fprintf(stderr, APPNAME ": Out of memory!\n");
+        _exit(42);
+    }
+
     IO_START(alDeleteSources);
     IO_ALSIZEI(n);
     for (i = 0; i < n; i++) {
         IO_UINT32(names[i]);
     }
-    REAL_alDeleteSources(n, names);
+
+    for (i = 0; i < n; i++) {
+        realnames[i] = source_wrapped_to_real(names[i]);
+    }
+
+    REAL_alDeleteSources(n, realnames);
+
+    // objects are only deleted if there are no errors.
+    if (check_al_error_events() == AL_NO_ERROR) {
+        if (ctx) {
+            for (i = 0; i < n; i++) {
+                ALuint name = names[i];
+                SourceWrapper *src = source_wrapped_lookup(name);
+                if (src) {
+                    src->name = 0;
+                    name--;
+                    ctx->wrapped_sources_bitmap[name / 32] &= ~(1 << (name % 32));
+                }
+            }
+        }
+    }
+
     IO_END();
+
+    if (realnames != realnamesstack) free(realnames);
 }
 
 ALboolean alIsSource(ALuint name)
@@ -1283,7 +1812,7 @@ ALboolean alIsSource(ALuint name)
     ALboolean retval;
     IO_START(alIsSource);
     IO_UINT32(name);
-    retval = REAL_alIsSource(name);
+    retval = REAL_alIsSource(source_wrapped_to_real(name));
     IO_BOOLEAN(retval);
     IO_END();
     return retval;
@@ -1318,7 +1847,8 @@ void alSourcefv(ALuint name, ALenum param, const ALfloat *values)
         IO_FLOAT(values[i]);
     }
 
-    REAL_alSourcefv(name, param, values);
+    REAL_alSourcefv(source_wrapped_to_real(name), param, values);
+    check_source_state_from_name(name);
     IO_END();
 }
 
@@ -1328,7 +1858,8 @@ void alSourcef(ALuint name, ALenum param, ALfloat value)
     IO_UINT32(name);
     IO_ENUM(param);
     IO_FLOAT(value);
-    REAL_alSourcef(name, param, value);
+    REAL_alSourcef(source_wrapped_to_real(name), param, value);
+    check_source_state_from_name(name);
     IO_END();
 }
 
@@ -1340,7 +1871,8 @@ void alSource3f(ALuint name, ALenum param, ALfloat value1, ALfloat value2, ALflo
     IO_FLOAT(value1);
     IO_FLOAT(value2);
     IO_FLOAT(value3);
-    REAL_alSource3f(name, param, value1, value2, value3);
+    REAL_alSource3f(source_wrapped_to_real(name), param, value1, value2, value3);
+    check_source_state_from_name(name);
     IO_END();
 }
 
@@ -1373,7 +1905,8 @@ void alSourceiv(ALuint name, ALenum param, const ALint *values)
         IO_INT32(values[i]);
     }
 
-    REAL_alSourceiv(name, param, values);
+    REAL_alSourceiv(source_wrapped_to_real(name), param, values);
+    check_source_state_from_name(name);
     IO_END();
 }
 
@@ -1383,7 +1916,8 @@ void alSourcei(ALuint name, ALenum param, ALint value)
     IO_UINT32(name);
     IO_ENUM(param);
     IO_INT32(value);
-    REAL_alSourcei(name, param, value);
+    REAL_alSourcei(source_wrapped_to_real(name), param, value);
+    check_source_state_from_name(name);
     IO_END();
 }
 
@@ -1395,7 +1929,8 @@ void alSource3i(ALuint name, ALenum param, ALint value1, ALint value2, ALint val
     IO_INT32(value1);
     IO_INT32(value2);
     IO_INT32(value3);
-    REAL_alSource3i(name, param, value1, value2, value3);
+    REAL_alSource3i(source_wrapped_to_real(name), param, value1, value2, value3);
+    check_source_state_from_name(name);
     IO_END();
 }
 
@@ -1433,7 +1968,7 @@ void alGetSourcefv(ALuint name, ALenum param, ALfloat *values)
         memset(values, '\0', numvals * sizeof (ALfloat));
     }
 
-    REAL_alGetSourcefv(name, param, values);
+    REAL_alGetSourcefv(source_wrapped_to_real(name), param, values);
 
     IO_UINT32(numvals);
     for (i = 0; i < numvals; i++) {
@@ -1449,7 +1984,7 @@ void alGetSourcef(ALuint name, ALenum param, ALfloat *value)
     IO_UINT32(name);
     IO_ENUM(param);
     IO_PTR(value);
-    REAL_alGetSourcef(name, param, value);
+    REAL_alGetSourcef(source_wrapped_to_real(name), param, value);
     IO_FLOAT(value ? *value : 0.0f);
     IO_END();
 }
@@ -1462,7 +1997,7 @@ void alGetSource3f(ALuint name, ALenum param, ALfloat *value1, ALfloat *value2, 
     IO_PTR(value1);
     IO_PTR(value2);
     IO_PTR(value3);
-    REAL_alGetSource3f(name, param, value1, value2, value3);
+    REAL_alGetSource3f(source_wrapped_to_real(name), param, value1, value2, value3);
     IO_FLOAT(value1 ? *value1 : 0.0f);
     IO_FLOAT(value2 ? *value2 : 0.0f);
     IO_FLOAT(value3 ? *value3 : 0.0f);
@@ -1502,7 +2037,7 @@ void alGetSourceiv(ALuint name, ALenum param, ALint *values)
         memset(values, '\0', numvals * sizeof (ALint));
     }
 
-    REAL_alGetSourceiv(name, param, values);
+    REAL_alGetSourceiv(source_wrapped_to_real(name), param, values);
 
     IO_UINT32(numvals);
     for (i = 0; i < numvals; i++) {
@@ -1518,7 +2053,7 @@ void alGetSourcei(ALuint name, ALenum param, ALint *value)
     IO_UINT32(name);
     IO_ENUM(param);
     IO_PTR(value);
-    REAL_alGetSourcei(name, param, value);
+    REAL_alGetSourcei(source_wrapped_to_real(name), param, value);
     IO_INT32(value ? *value : 0);
     IO_END();
 }
@@ -1531,7 +2066,7 @@ void alGetSource3i(ALuint name, ALenum param, ALint *value1, ALint *value2, ALin
     IO_PTR(value1);
     IO_PTR(value2);
     IO_PTR(value3);
-    REAL_alGetSource3i(name, param, value1, value2, value3);
+    REAL_alGetSource3i(source_wrapped_to_real(name), param, value1, value2, value3);
     IO_INT32(value1 ? *value1 : 0);
     IO_INT32(value2 ? *value2 : 0);
     IO_INT32(value3 ? *value3 : 0);
@@ -1542,93 +2077,155 @@ void alSourcePlay(ALuint name)
 {
     IO_START(alSourcePlay);
     IO_UINT32(name);
-    REAL_alSourcePlay(name);
+    REAL_alSourcePlay(source_wrapped_to_real(name));
+    check_source_state_from_name(name);
     IO_END();
 }
 
 void alSourcePlayv(ALsizei n, const ALuint *names)
 {
+    ALuint realnamesstack[16];
+    ALuint *realnames = (n <= (sizeof (realnamesstack) / sizeof (realnamesstack[0]))) ? realnamesstack : (ALuint *) calloc(n, sizeof (ALuint));
     ALsizei i;
+
     IO_START(alSourcePlayv);
     IO_ALSIZEI(n);
     for (i = 0; i < n; i++) {
         IO_UINT32(names[i]);
+        realnames[i] = source_wrapped_to_real(names[i]);
     }
-    REAL_alSourcePlayv(n, names);
+
+    REAL_alSourcePlayv(n, realnames);
+
+    for (i = 0; i < n; i++) {
+        check_source_state_from_name(names[i]);
+    }
+
     IO_END();
+
+    if (realnames != realnamesstack) free(realnames);
 }
 
 void alSourcePause(ALuint name)
 {
     IO_START(alSourcePause);
     IO_UINT32(name);
-    REAL_alSourcePause(name);
+    REAL_alSourcePause(source_wrapped_to_real(name));
+    check_source_state_from_name(name);
     IO_END();
 }
 
 void alSourcePausev(ALsizei n, const ALuint *names)
 {
+    ALuint realnamesstack[16];
+    ALuint *realnames = (n <= (sizeof (realnamesstack) / sizeof (realnamesstack[0]))) ? realnamesstack : (ALuint *) calloc(n, sizeof (ALuint));
     ALsizei i;
+
     IO_START(alSourcePausev);
     IO_ALSIZEI(n);
     for (i = 0; i < n; i++) {
         IO_UINT32(names[i]);
+        realnames[i] = source_wrapped_to_real(names[i]);
     }
-    REAL_alSourcePausev(n, names);
+
+    REAL_alSourcePausev(n, realnames);
+
+    for (i = 0; i < n; i++) {
+        check_source_state_from_name(names[i]);
+    }
+
     IO_END();
+
+    if (realnames != realnamesstack) free(realnames);
 }
 
 void alSourceRewind(ALuint name)
 {
     IO_START(alSourceRewind);
     IO_UINT32(name);
-    REAL_alSourceRewind(name);
+    REAL_alSourceRewind(source_wrapped_to_real(name));
+    check_source_state_from_name(name);
     IO_END();
 }
 
 void alSourceRewindv(ALsizei n, const ALuint *names)
 {
+    ALuint realnamesstack[16];
+    ALuint *realnames = (n <= (sizeof (realnamesstack) / sizeof (realnamesstack[0]))) ? realnamesstack : (ALuint *) calloc(n, sizeof (ALuint));
     ALsizei i;
+
     IO_START(alSourceRewindv);
     IO_ALSIZEI(n);
     for (i = 0; i < n; i++) {
         IO_UINT32(names[i]);
+        realnames[i] = source_wrapped_to_real(names[i]);
     }
-    REAL_alSourceRewindv(n, names);
+
+    REAL_alSourceRewindv(n, realnames);
+
+    for (i = 0; i < n; i++) {
+        check_source_state_from_name(names[i]);
+    }
+
     IO_END();
+
+    if (realnames != realnamesstack) free(realnames);
 }
 
 void alSourceStop(ALuint name)
 {
     IO_START(alSourceStop);
     IO_UINT32(name);
-    REAL_alSourceStop(name);
+    REAL_alSourceStop(source_wrapped_to_real(name));
+    check_source_state_from_name(name);
     IO_END();
 }
 
 void alSourceStopv(ALsizei n, const ALuint *names)
 {
+    ALuint realnamesstack[16];
+    ALuint *realnames = (n <= (sizeof (realnamesstack) / sizeof (realnamesstack[0]))) ? realnamesstack : (ALuint *) calloc(n, sizeof (ALuint));
     ALsizei i;
+
     IO_START(alSourceStopv);
     IO_ALSIZEI(n);
     for (i = 0; i < n; i++) {
         IO_UINT32(names[i]);
+        realnames[i] = source_wrapped_to_real(names[i]);
     }
-    REAL_alSourceStopv(n, names);
+
+    REAL_alSourceStopv(n, realnames);
+
+    for (i = 0; i < n; i++) {
+        check_source_state_from_name(names[i]);
+    }
+
     IO_END();
+
+    if (realnames != realnamesstack) free(realnames);
 }
 
 void alSourceQueueBuffers(ALuint name, ALsizei nb, const ALuint *bufnames)
 {
+    ALuint realnamesstack[16];
+    ALuint *realnames = (nb <= (sizeof (realnamesstack) / sizeof (realnamesstack[0]))) ? realnamesstack : (ALuint *) calloc(nb, sizeof (ALuint));
     ALsizei i;
     IO_START(alSourceQueueBuffers);
     IO_UINT32(name);
     IO_ALSIZEI(nb);
     for (i = 0; i < nb; i++) {
         IO_UINT32(bufnames[i]);
+        queue_buffer(name, bufnames[i]);
+        realnames[i] = buffer_wrapped_to_real(bufnames[i]);
     }
-    REAL_alSourceQueueBuffers(name, nb, bufnames);
+
+    REAL_alSourceQueueBuffers(source_wrapped_to_real(name), nb, realnames);
+
+    check_source_state_from_name(name);
+
     IO_END();
+
+    if (realnames != realnamesstack) free(realnames);
 }
 
 void alSourceUnqueueBuffers(ALuint name, ALsizei nb, ALuint *bufnames)
@@ -1638,36 +2235,202 @@ void alSourceUnqueueBuffers(ALuint name, ALsizei nb, ALuint *bufnames)
     IO_UINT32(name);
     IO_ALSIZEI(nb);
     memset(bufnames, 0, nb * sizeof (ALuint));
-    REAL_alSourceUnqueueBuffers(name, nb, bufnames);
+    REAL_alSourceUnqueueBuffers(source_wrapped_to_real(name), nb, bufnames);
     for (i = 0; i < nb; i++) {
+        bufnames[i] = unqueue_buffer(name, bufnames[i]);
         IO_UINT32(bufnames[i]);
     }
+
+    check_source_state_from_name(name);
+
     IO_END();
+}
+
+
+static BufferWrapper *buffer_wrapped_lookup(const ALuint wrappedname)
+{
+    const ALuint name = wrappedname - 1;
+    DeviceWrapper *device = current_context ? current_context->device : NULL;
+    if (!device || !wrappedname || (name >= device->wrapped_buffers_size) || (device->wrapped_buffers[name].name == 0)) {
+        return NULL;
+    }
+
+    return &device->wrapped_buffers[name];
+}
+
+static ALuint buffer_wrapped_to_real(const ALuint wrappedname)
+{
+    BufferWrapper *buf = buffer_wrapped_lookup(wrappedname);
+    if (!buf) {
+        return 0xFFFFFFFF;  // just so this will produce an error for a bogus name.
+    }
+    return buf->name;
+}
+
+static void check_buffer_state_int(const ALuint name, const ALenum param, ALint *current)
+{
+    ALint ival = 0;
+    REAL_alGetBufferi(name, param, &ival);
+    if (ival != *current) {
+        IO_UINT32(NOW());
+        IO_EVENTENUM(ALEE_BUFFER_STATE_CHANGED_INT);
+        IO_UINT32(name);
+        IO_ENUM(param);
+        IO_INT32(ival);
+        *current = ival;
+    }
+}
+
+static void check_buffer_state(BufferWrapper *buf)
+{
+    if (buf) {
+        const ALuint name = buf->name;
+        check_buffer_state_int(name, AL_FREQUENCY, &buf->frequency);
+        check_buffer_state_int(name, AL_SIZE, &buf->size);
+        check_buffer_state_int(name, AL_BITS, &buf->bits);
+        check_buffer_state_int(name, AL_CHANNELS, &buf->channels);
+    }
+}
+
+static void check_buffer_state_from_name(const ALuint wrappedname)
+{
+    check_buffer_state(buffer_wrapped_lookup(wrappedname));
+}
+
+static void init_buffer_state(BufferWrapper *buf, const ALuint name)
+{
+    memset(buf, '\0', sizeof (*buf));
+    buf->name = name;
+    buf->channels = 1;
+    buf->bits = 16;
+
+    /* check everything for newly-generated buffers. The theory being that
+       we can catch defaults in the AL that aren't what we expected. */
+    check_buffer_state(buf);
 }
 
 void alGenBuffers(ALsizei n, ALuint *names)
 {
-    ALsizei i;
-    IO_START(alGenBuffers);
-    IO_ALSIZEI(n);
+    DeviceWrapper *device = current_context ? current_context->device : NULL;
+    ALsizei i, j;
+    ALsizei wrapped = 0;
+    ALsizei starting_index = 0;
+
     memset(names, 0, n * sizeof (ALuint));
     REAL_alGenBuffers(n, names);
+
+    if (device) {  // presumably this generated an error anyhow, but we have to skip all our stuff without a context/device.
+        while (wrapped < n) {
+            if (names[wrapped] == 0) {
+                wrapped++;
+                continue;
+            }
+
+            for (i = starting_index; i < (device->wrapped_buffers_size / 32); i++) {
+                uint32 bits = device->wrapped_buffers_bitmap[i];
+                if (bits == 0xFFFFFFFF) {
+                    starting_index = i + 1;
+                } else {
+                    ALsizei wrappedidx = (i * 32);
+                    for (j = 0; j < 32; j++, wrappedidx++) {
+                        if (device->wrapped_buffers[wrappedidx].name == 0) {
+                            device->wrapped_buffers[wrappedidx].name = names[wrapped];
+                            names[wrapped] = (ALuint) (wrappedidx + 1);
+                            bits |= (1 << j);
+                            device->wrapped_buffers_bitmap[i] = bits;
+                            if (++wrapped == n) {
+                                break;
+                            }
+                        }
+                    }
+
+                    if (wrapped == n) {
+                        break;
+                    }
+                }
+            }
+
+            if (wrapped < n) {
+                void *ptr1;
+                void *ptr2;
+                device->wrapped_buffers_size += 32;
+                ptr1 = realloc(device->wrapped_buffers, sizeof (SourceWrapper) * device->wrapped_buffers_size);
+                ptr2 = realloc(device->wrapped_buffers_bitmap, sizeof (uint32) * (device->wrapped_buffers_size / 32));
+                if (!ptr1 || !ptr2) {
+                    fprintf(stderr, APPNAME ": Out of memory!\n");
+                    _exit(42);
+                }
+                device->wrapped_buffers = (BufferWrapper *) ptr1;
+                memset(device->wrapped_buffers + (device->wrapped_buffers_size - 32), '\0', sizeof (BufferWrapper) * 32);
+                device->wrapped_buffers_bitmap = (uint32 *) ptr2;
+                device->wrapped_buffers_bitmap[(device->wrapped_buffers_size / 32) - 1] = 0;
+            }
+        }
+    }
+
+    IO_START(alGenBuffers);
+    IO_ALSIZEI(n);
     for (i = 0; i < n; i++) {
         IO_UINT32(names[i]);
     }
+
+    /* Set up our default states... */
+    if (device) {
+        for (i = 0; i < n; i++) {
+            const ALuint wrappedname = names[i];
+            if (wrappedname) {
+                BufferWrapper *buf = &device->wrapped_buffers[wrappedname-1];
+                const ALuint realname = buf->name;
+                init_buffer_state(buf, realname);
+            }
+        }
+    }
+
     IO_END();
 }
 
 void alDeleteBuffers(ALsizei n, const ALuint *names)
 {
+    DeviceWrapper *device = current_context ? current_context->device : NULL;
     ALsizei i;
-    IO_START(alDeleteSources);
+    ALuint realnamesstack[16];
+    ALuint *realnames = (n <= (sizeof (realnamesstack) / sizeof (realnamesstack[0]))) ? realnamesstack : (ALuint *) calloc(n, sizeof (ALuint));
+
+    if (!realnames) {
+        fprintf(stderr, APPNAME ": Out of memory!\n");
+        _exit(42);
+    }
+
+    IO_START(alDeleteBuffers);
     IO_ALSIZEI(n);
     for (i = 0; i < n; i++) {
         IO_UINT32(names[i]);
     }
-    REAL_alDeleteBuffers(n, names);
+
+    for (i = 0; i < n; i++) {
+        realnames[i] = buffer_wrapped_to_real(names[i]);
+    }
+
+    REAL_alDeleteBuffers(n, realnames);
+
+    // objects are only deleted if there are no errors.
+    if (check_al_error_events() == AL_NO_ERROR) {
+        if (device) {
+            for (i = 0; i < n; i++) {
+                ALuint name = names[i];
+                BufferWrapper *buf = buffer_wrapped_lookup(name);
+                if (buf) {
+                    buf->name = 0;
+                    name--;
+                    device->wrapped_buffers_bitmap[name / 32] &= ~(1 << (name % 32));
+                }
+            }
+        }
+    }
+
     IO_END();
+
+    if (realnames != realnamesstack) free(realnames);
 }
 
 ALboolean alIsBuffer(ALuint name)
@@ -1675,7 +2438,7 @@ ALboolean alIsBuffer(ALuint name)
     ALboolean retval;
     IO_START(alIsBuffer);
     IO_UINT32(name);
-    retval = REAL_alIsBuffer(name);
+    retval = REAL_alIsBuffer(buffer_wrapped_to_real(name));
     IO_BOOLEAN(retval);
     IO_END();
     return retval;
@@ -1688,7 +2451,8 @@ void alBufferData(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, A
     IO_ENUM(alfmt);
     IO_ALSIZEI(freq);
     IO_BLOB(data, size);
-    REAL_alBufferData(name, alfmt, data, size, freq);
+    REAL_alBufferData(buffer_wrapped_to_real(name), alfmt, data, size, freq);
+    check_buffer_state_from_name(name);
     IO_END();
 }
 
@@ -1704,7 +2468,8 @@ void alBufferfv(ALuint name, ALenum param, const ALfloat *values)
     for (i = 0; i < numvals; i++) {
         IO_FLOAT(values[i]);
     }
-    REAL_alBufferfv(name, param, values);
+    REAL_alBufferfv(buffer_wrapped_to_real(name), param, values);
+    check_buffer_state_from_name(name);
     IO_END();
 }
 
@@ -1714,7 +2479,8 @@ void alBufferf(ALuint name, ALenum param, ALfloat value)
     IO_UINT32(name);
     IO_ENUM(param);
     IO_FLOAT(value);
-    REAL_alBufferf(name, param, value);
+    REAL_alBufferf(buffer_wrapped_to_real(name), param, value);
+    check_buffer_state_from_name(name);
     IO_END();
 }
 
@@ -1726,7 +2492,8 @@ void alBuffer3f(ALuint name, ALenum param, ALfloat value1, ALfloat value2, ALflo
     IO_FLOAT(value1);
     IO_FLOAT(value2);
     IO_FLOAT(value3);
-    REAL_alBuffer3f(name, param, value1, value2, value3);
+    REAL_alBuffer3f(buffer_wrapped_to_real(name), param, value1, value2, value3);
+    check_buffer_state_from_name(name);
     IO_END();
 }
 
@@ -1742,7 +2509,8 @@ void alBufferiv(ALuint name, ALenum param, const ALint *values)
     for (i = 0; i < numvals; i++) {
         IO_INT32(values[i]);
     }
-    REAL_alBufferiv(name, param, values);
+    REAL_alBufferiv(buffer_wrapped_to_real(name), param, values);
+    check_buffer_state_from_name(name);
     IO_END();
 }
 
@@ -1752,7 +2520,8 @@ void alBufferi(ALuint name, ALenum param, ALint value)
     IO_UINT32(name);
     IO_ENUM(param);
     IO_INT32(value);
-    REAL_alBufferi(name, param, value);
+    REAL_alBufferi(buffer_wrapped_to_real(name), param, value);
+    check_buffer_state_from_name(name);
     IO_END();
 }
 
@@ -1764,7 +2533,7 @@ void alBuffer3i(ALuint name, ALenum param, ALint value1, ALint value2, ALint val
     IO_INT32(value1);
     IO_INT32(value2);
     IO_INT32(value3);
-    REAL_alBuffer3i(name, param, value1, value2, value3);
+    REAL_alBuffer3i(buffer_wrapped_to_real(name), param, value1, value2, value3);
     IO_END();
 }
 
@@ -1784,7 +2553,7 @@ void alGetBufferfv(ALuint name, ALenum param, ALfloat *values)
         memset(values, '\0', numvals * sizeof (ALfloat));
     }
 
-    REAL_alGetBufferfv(name, param, values);
+    REAL_alGetBufferfv(buffer_wrapped_to_real(name), param, values);
 
     IO_UINT32(numvals);
     for (i = 0; i < numvals; i++) {
@@ -1800,7 +2569,7 @@ void alGetBufferf(ALuint name, ALenum param, ALfloat *value)
     IO_UINT32(name);
     IO_ENUM(param);
     IO_PTR(value);
-    REAL_alGetBufferf(name, param, value);
+    REAL_alGetBufferf(buffer_wrapped_to_real(name), param, value);
     IO_FLOAT(value ? *value : 0.0f);
     IO_END();
 }
@@ -1813,7 +2582,7 @@ void alGetBuffer3f(ALuint name, ALenum param, ALfloat *value1, ALfloat *value2, 
     IO_PTR(value1);
     IO_PTR(value2);
     IO_PTR(value3);
-    REAL_alGetBuffer3f(name, param, value1, value2, value3);
+    REAL_alGetBuffer3f(buffer_wrapped_to_real(name), param, value1, value2, value3);
     IO_FLOAT(value1 ? *value1 : 0.0f);
     IO_FLOAT(value2 ? *value2 : 0.0f);
     IO_FLOAT(value3 ? *value3 : 0.0f);
@@ -1826,7 +2595,7 @@ void alGetBufferi(ALuint name, ALenum param, ALint *value)
     IO_UINT32(name);
     IO_ENUM(param);
     IO_PTR(value);
-    REAL_alGetBufferi(name, param, value);
+    REAL_alGetBufferi(buffer_wrapped_to_real(name), param, value);
     IO_INT32(value ? *value : 0);
     IO_END();
 }
@@ -1839,7 +2608,7 @@ void alGetBuffer3i(ALuint name, ALenum param, ALint *value1, ALint *value2, ALin
     IO_PTR(value1);
     IO_PTR(value2);
     IO_PTR(value3);
-    REAL_alGetBuffer3i(name, param, value1, value2, value3);
+    REAL_alGetBuffer3i(buffer_wrapped_to_real(name), param, value1, value2, value3);
     IO_INT32(value1 ? *value1 : 0);
     IO_INT32(value2 ? *value2 : 0);
     IO_INT32(value3 ? *value3 : 0);
@@ -1868,7 +2637,7 @@ void alGetBufferiv(ALuint name, ALenum param, ALint *values)
         memset(values, '\0', numvals * sizeof (ALint));
     }
 
-    REAL_alGetBufferiv(name, param, values);
+    REAL_alGetBufferiv(buffer_wrapped_to_real(name), param, values);
 
     IO_UINT32(numvals);
     for (i = 0; i < numvals; i++) {

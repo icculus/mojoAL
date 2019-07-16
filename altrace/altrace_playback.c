@@ -11,6 +11,8 @@
 
 static int dump_log = 1;
 static int dump_callers = 0;
+static int dump_state_changes = 0;
+static int dump_errors = 0;
 static int run_log = 0;
 
 static int trace_scope = 0;
@@ -575,7 +577,16 @@ static void dump_alcCaptureOpenDevice(void)
     const ALCenum format = IO_ALCENUM();
     const ALCsizei buffersize = IO_ALSIZEI();
     ALCdevice *retval = (ALCdevice *) IO_PTR();
+    const ALint major_version = retval ? IO_INT32() : 0;
+    const ALint minor_version = retval ? IO_INT32() : 0;
+    const ALCchar *devspec = (const ALCchar *) (retval ? IO_STRING() : NULL);
+    const ALCchar *extensions = (const ALCchar *) (retval ? IO_STRING() : NULL);
+
     if (dump_log) { printf("(%s, %u, %s, %u) => %p\n", litString(devicename), (uint) frequency, alcenumString(format), (uint) buffersize, retval); }
+
+    if (dump_state_changes) {
+        printf("<<< CAPTURE DEVICE STATE: alc_version=%d.%d device_specifier=%s extensions=%s >>>\n", (int) major_version, (int) minor_version, litString(devspec), litString(extensions));
+    }
 
     if (run_log) {
         ALCdevice *dev = REAL_alcCaptureOpenDevice(devicename, frequency, format, buffersize);
@@ -614,7 +625,16 @@ static void dump_alcOpenDevice(void)
     IO_START(alcOpenDevice);
     const ALCchar *devicename = IO_STRING();
     ALCdevice *retval = (ALCdevice *) IO_PTR();
+    const ALint major_version = retval ? IO_INT32() : 0;
+    const ALint minor_version = retval ? IO_INT32() : 0;
+    const ALCchar *devspec = (const ALCchar *) (retval ? IO_STRING() : NULL);
+    const ALCchar *extensions = (const ALCchar *) (retval ? IO_STRING() : NULL);
+
     if (dump_log) { printf("(%s) => %p\n", litString(devicename), retval); }
+
+    if (dump_state_changes) {
+        printf("<<< PLAYBACK DEVICE STATE: alc_version=%d.%d device_specifier=%s extensions=%s >>>\n", (int) major_version, (int) minor_version, litString(devspec), litString(extensions));
+    }
 
     if (run_log) {
         ALCdevice *dev = REAL_alcOpenDevice(devicename);
@@ -2204,7 +2224,7 @@ static void dump_alcTraceContextLabel(void)
 static void dump_al_error_event(void)
 {
     const ALenum err = IO_ENUM();
-    if (dump_log) {
+    if (dump_errors) {
         printf("<<< AL ERROR SET HERE: %s >>>\n", alenumString(err));
     }
 }
@@ -2213,7 +2233,7 @@ static void dump_alc_error_event(void)
 {
     ALCdevice *device = (ALCdevice *) IO_PTR();
     const ALCenum err = IO_ALCENUM();
-    if (dump_log) {
+    if (dump_errors) {
         printf("<<< ALC ERROR SET HERE: device=%p %s >>>\n", device, alcenumString(err));
     }
 }
@@ -2233,6 +2253,122 @@ static void dump_callstack_syms_event(void)
         }
     }
 }
+
+static void dump_context_state_changed_enum(void)
+{
+    void *ctx = IO_PTR();
+    const ALenum param = IO_ENUM();
+    const ALenum newval = IO_ENUM();
+    if (dump_state_changes) {
+        printf("<<< CONTEXT STATE CHANGE: ctx=%p param=%s value=%s >>>\n", ctx, alenumString(param), alenumString(newval));
+    }
+}
+
+static void dump_context_state_changed_float(void)
+{
+    void *ctx = IO_PTR();
+    const ALenum param = IO_ENUM();
+    const ALfloat newval = IO_FLOAT();
+    if (dump_state_changes) {
+        printf("<<< CONTEXT STATE CHANGE: ctx=%p param=%s value=%f >>>\n", ctx, alenumString(param), newval);
+    }
+}
+
+static void dump_listener_state_changed_floatv(void)
+{
+    void *ctx = IO_PTR();
+    const ALenum param = IO_ENUM();
+    const int32 numfloats = IO_INT32();
+    int32 i;
+
+    if (dump_state_changes) {
+        printf("<<< LISTENER STATE CHANGE: ctx=%p param=%s values={", ctx, alenumString(param));
+    }
+
+    for (i = 0; i < numfloats; i++) {
+        const ALfloat newval = IO_FLOAT();
+        if (dump_state_changes) {
+            printf("%s %f", i > 0 ? "," : "", newval);
+        }
+    }
+
+    if (dump_state_changes) {
+        printf("%s} >>>\n", numfloats > 0 ? " " : "");
+    }
+}
+
+static void dump_source_state_changed_bool(void)
+{
+    const ALuint name = IO_UINT32();
+    const ALenum param = IO_ENUM();
+    const ALboolean newval = IO_BOOLEAN();
+    if (dump_state_changes) {
+        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value=%s >>>\n", (uint) name, alenumString(param), alboolString(newval));
+    }
+}
+
+static void dump_source_state_changed_enum(void)
+{
+    const ALuint name = IO_UINT32();
+    const ALenum param = IO_ENUM();
+    const ALenum newval = IO_ENUM();
+    if (dump_state_changes) {
+        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value=%s >>>\n", (uint) name, alenumString(param), alenumString(newval));
+    }
+}
+
+static void dump_source_state_changed_int(void)
+{
+    const ALuint name = IO_UINT32();
+    const ALenum param = IO_ENUM();
+    const ALint newval = IO_INT32();
+    if (dump_state_changes) {
+        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value=%d >>>\n", (uint) name, alenumString(param), (int) newval);
+    }
+}
+
+static void dump_source_state_changed_uint(void)
+{
+    const ALuint name = IO_UINT32();
+    const ALenum param = IO_ENUM();
+    const ALuint newval = IO_UINT32();
+    if (dump_state_changes) {
+        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value=%u >>>\n", (uint) name, alenumString(param), (uint) newval);
+    }
+}
+
+static void dump_source_state_changed_float(void)
+{
+    const ALuint name = IO_UINT32();
+    const ALenum param = IO_ENUM();
+    const ALfloat newval = IO_FLOAT();
+    if (dump_state_changes) {
+        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value=%f >>>\n", (uint) name, alenumString(param), newval);
+    }
+}
+
+static void dump_source_state_changed_float3(void)
+{
+    const ALuint name = IO_UINT32();
+    const ALenum param = IO_ENUM();
+    const ALfloat newval1 = IO_FLOAT();
+    const ALfloat newval2 = IO_FLOAT();
+    const ALfloat newval3 = IO_FLOAT();
+    if (dump_state_changes) {
+        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value={ %f, %f, %f } >>>\n", (uint) name, alenumString(param), newval1, newval2, newval3);
+    }
+}
+
+static void dump_buffer_state_changed_int(void)
+{
+    const ALuint name = IO_UINT32();
+    const ALenum param = IO_ENUM();
+    const ALint newval = IO_INT32();
+    if (dump_state_changes) {
+        printf("<<< BUFFER STATE CHANGE: name=%u param=%s value=%d >>>\n", (uint) name, alenumString(param), (int) newval);
+    }
+}
+
 
 static void process_log(void)
 {
@@ -2259,6 +2395,46 @@ static void process_log(void)
 
             case ALEE_ALCERROR_TRIGGERED:
                 dump_alc_error_event();
+                break;
+
+            case ALEE_CONTEXT_STATE_CHANGED_ENUM:
+                dump_context_state_changed_enum();
+                break;
+
+            case ALEE_CONTEXT_STATE_CHANGED_FLOAT:
+                dump_context_state_changed_float();
+                break;
+
+            case ALEE_LISTENER_STATE_CHANGED_FLOATV:
+                dump_listener_state_changed_floatv();
+                break;
+
+            case ALEE_SOURCE_STATE_CHANGED_BOOL:
+                dump_source_state_changed_bool();
+                break;
+
+            case ALEE_SOURCE_STATE_CHANGED_ENUM:
+                dump_source_state_changed_enum();
+                break;
+
+            case ALEE_SOURCE_STATE_CHANGED_INT:
+                dump_source_state_changed_int();
+                break;
+
+            case ALEE_SOURCE_STATE_CHANGED_UINT:
+                dump_source_state_changed_uint();
+                break;
+
+            case ALEE_SOURCE_STATE_CHANGED_FLOAT:
+                dump_source_state_changed_float();
+                break;
+
+            case ALEE_SOURCE_STATE_CHANGED_FLOAT3:
+                dump_source_state_changed_float3();
+                break;
+
+            case ALEE_BUFFER_STATE_CHANGED_INT:
+                dump_buffer_state_changed_int();
                 break;
 
             case ALEE_EOS:
@@ -2290,6 +2466,14 @@ int main(int argc, char **argv)
             dump_callers = 1;
         } else if (strcmp(arg, "--no-dump-callers") == 0) {
             dump_callers = 0;
+        } else if (strcmp(arg, "--dump-errors") == 0) {
+            dump_errors = 1;
+        } else if (strcmp(arg, "--no-dump-errors") == 0) {
+            dump_errors = 0;
+        } else if (strcmp(arg, "--dump-state-changes") == 0) {
+            dump_state_changes = 1;
+        } else if (strcmp(arg, "--no-dump-state-changes") == 0) {
+            dump_state_changes = 0;
         } else if (strcmp(arg, "--run") == 0) {
             run_log = 1;
         } else if (strcmp(arg, "--no-run") == 0) {
