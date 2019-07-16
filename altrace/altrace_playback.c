@@ -494,6 +494,8 @@ static const char *litString(const char *str)
             } else if (ch == '"') {
                 *(ptr++) = '\\';
                 *(ptr++) = '"';
+            } else {
+                *(ptr++) = ch;
             }
         }
         return retval;
