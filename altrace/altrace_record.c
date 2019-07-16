@@ -74,18 +74,28 @@ typedef struct SourceWrapper
     ALfloat direction[3];
     QueuedBuffer *queue_head;
     QueuedBuffer *queue_tail;
+    struct SourceWrapper *playlist_next;
+    struct SourceWrapper *playlist_prev;
 } SourceWrapper;
+
+struct ContextWrapper;
 
 typedef struct DeviceWrapper
 {
     ALCdevice *device;
     ALCenum errorlatch;
     ALCboolean iscapture;
+    ALCboolean connected;
+    ALCboolean supports_disconnect_ext;
+    ALCint capture_samples;
     int samplesize;   /* size of a capture device sample in bytes */
     char *extension_string;
     BufferWrapper *wrapped_buffers;
     uint32 *wrapped_buffers_bitmap;
     uint32 wrapped_buffers_size;
+    struct ContextWrapper *contexts;
+    struct DeviceWrapper *prev;
+    struct DeviceWrapper *next;
 } DeviceWrapper;
 
 typedef struct ContextWrapper
@@ -106,6 +116,9 @@ typedef struct ContextWrapper
     ALfloat listener_velocity[3];
     ALfloat listener_orientation[6];
     ALfloat listener_gain;
+    SourceWrapper *playlist;
+    struct ContextWrapper *next;
+    struct ContextWrapper *prev;
 } ContextWrapper;
 
 static DeviceWrapper null_device;
@@ -380,6 +393,8 @@ static ALCenum check_alc_error_events(DeviceWrapper *device)
     return alcerr;
 }
 
+static void check_al_async_states(void);
+
 #define IO_START(e) \
     { \
         APILOCK(); \
@@ -387,11 +402,13 @@ static ALCenum check_alc_error_events(DeviceWrapper *device)
 
 #define IO_END() \
         check_al_error_events(); \
+        check_al_async_states(); \
         APIUNLOCK(); \
     }
 
 #define IO_END_ALC(dev) \
         check_alc_error_events(dev); \
+        check_al_async_states(); \
         APIUNLOCK(); \
     }
 
@@ -606,6 +623,8 @@ ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, AL
 
         device->device = retval;
         device->iscapture = ALC_TRUE;
+        device->connected = ALC_TRUE;
+        device->supports_disconnect_ext = REAL_alcIsExtensionPresent(device->device, "ALC_EXT_disconnect");
         if (format == AL_FORMAT_MONO8) {
             device->samplesize = 1;
         } else if (format == AL_FORMAT_MONO16) {
@@ -615,6 +634,13 @@ ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, AL
         } else if (format == AL_FORMAT_STEREO16) {
             device->samplesize = 4;
             // !!! FIXME: float32
+        }
+
+        device->next = null_device.next;
+        device->prev = &null_device;
+        null_device.next = device;
+        if (device->next) {
+            device->next->prev = device;
         }
 
         REAL_alcGetIntegerv(device->device, ALC_MAJOR_VERSION, 1, &alci);
@@ -641,6 +667,14 @@ ALCboolean alcCaptureCloseDevice(ALCdevice *_device)
     IO_ALCBOOLEAN(retval);
 
     if (retval == ALC_TRUE) {
+        if (device != &null_device) {
+            if (device->next) {
+                device->next->prev = device->prev;
+            }
+            if (device->prev) {
+                device->prev->next = device->next;
+            }
+        }
         free(device->extension_string);
         free(device);
     }
@@ -671,6 +705,15 @@ ALCdevice *alcOpenDevice(const ALCchar *devicename)
 
         device->device = retval;
         device->iscapture = ALC_FALSE;
+        device->connected = ALC_TRUE;
+        device->supports_disconnect_ext = REAL_alcIsExtensionPresent(device->device, "ALC_EXT_disconnect");
+
+        device->next = null_device.next;
+        device->prev = &null_device;
+        null_device.next = device;
+        if (device->next) {
+            device->next->prev = device;
+        }
 
         REAL_alcGetIntegerv(device->device, ALC_MAJOR_VERSION, 1, &alci);
         IO_INT32(alci);
@@ -696,6 +739,14 @@ ALCboolean alcCloseDevice(ALCdevice *_device)
     IO_ALCBOOLEAN(retval);
 
     if (retval == ALC_TRUE) {
+        if (device != &null_device) {
+            if (device->next) {
+                device->next->prev = device->prev;
+            }
+            if (device->prev) {
+                device->prev->next = device->next;
+            }
+        }
         free(device->extension_string);
         free(device);
     }
@@ -823,6 +874,13 @@ ALCcontext *alcCreateContext(ALCdevice *_device, const ALCint* attrlist)
         ctx->listener_gain = 1.0f;
         ctx->listener_orientation[2] = -1.0f;
         ctx->listener_orientation[4] = 1.0f;
+
+        ctx->prev = NULL;
+        ctx->next = device->contexts;
+        device->contexts = ctx;
+        if (ctx->next) {
+            ctx->next->prev = ctx;
+        }
     }
 
     IO_END_ALC(device);
@@ -873,6 +931,16 @@ void alcDestroyContext(ALCcontext *_ctx)
     REAL_alcDestroyContext(ctx ? ctx->ctx : NULL);
     if (ctx) {
         device = ctx->device;
+
+        if (ctx->next) {
+            ctx->next->prev = ctx->prev;
+        }
+        if (ctx->prev) {
+            ctx->prev->next = ctx->next;
+        } else {
+            device->contexts = ctx->next;
+        }
+
         free(ctx->extension_string);
         free(ctx);
     }
@@ -1561,9 +1629,8 @@ static void check_source_state_float3(const ALuint name, const ALenum param, ALf
 
 static void check_source_state(SourceWrapper *src)
 {
-    if (src) {
-        const ALuint name = src->name;
-
+    const ALuint name = src ? src->name : 0;
+    if (name) {
         check_source_state_enum(name, AL_SOURCE_STATE, &src->state);
         check_source_state_enum(name, AL_SOURCE_TYPE, &src->type);
         check_source_state_uint(name, AL_BUFFER, &src->buffer);
@@ -2073,12 +2140,31 @@ void alGetSource3i(ALuint name, ALenum param, ALint *value1, ALint *value2, ALin
     IO_END();
 }
 
+static void add_source_to_playlist(const ALuint wrappedname)
+{
+    SourceWrapper *src = source_wrapped_lookup(wrappedname);
+    ContextWrapper *ctx = current_context;
+    if (src && ctx && !src->playlist_next && !src->playlist_prev) {
+        src->playlist_prev = NULL;
+        src->playlist_next = ctx->playlist;
+        ctx->playlist = src;
+        if (src->playlist_next) {
+            src->playlist_next->playlist_prev = src;
+        }
+    }
+}
+
 void alSourcePlay(ALuint name)
 {
     IO_START(alSourcePlay);
     IO_UINT32(name);
     REAL_alSourcePlay(source_wrapped_to_real(name));
-    check_source_state_from_name(name);
+
+    add_source_to_playlist(name);
+
+    // Don't call, check_source_state_from_name(name), it's in the
+    //  playlist now and will be checked.
+
     IO_END();
 }
 
@@ -2098,7 +2184,9 @@ void alSourcePlayv(ALsizei n, const ALuint *names)
     REAL_alSourcePlayv(n, realnames);
 
     for (i = 0; i < n; i++) {
-        check_source_state_from_name(names[i]);
+        add_source_to_playlist(names[i]);
+        // Don't call, check_source_state_from_name(names[i]), it's in the
+        //  playlist now and will be checked.
     }
 
     IO_END();
@@ -2697,6 +2785,77 @@ void alcTraceContextLabel(ALCcontext *_ctx, const ALchar *str)
     IO_PTR(_ctx);
     IO_STRING(str);
     IO_END();
+}
+
+static void check_device_state_bool(DeviceWrapper *device, const ALCenum param, ALCboolean *current)
+{
+    ALCint ival = 0;
+    ALCboolean newval;
+    REAL_alcGetIntegerv(device->device, param, 1, &ival);
+    newval = ival ? ALC_TRUE : ALC_FALSE;
+    if (newval != *current) {
+        IO_UINT32(NOW());
+        IO_EVENTENUM(ALEE_DEVICE_STATE_CHANGED_BOOL);
+        IO_PTR(device);
+        IO_ENUM(param);
+        IO_ALCBOOLEAN(newval);
+        *current = newval;
+    }
+}
+
+static void check_device_state_int(DeviceWrapper *device, const ALCenum param, ALCint *current)
+{
+    ALCint ival = 0;
+    REAL_alcGetIntegerv(device->device, param, 1, &ival);
+    if (ival != *current) {
+        IO_UINT32(NOW());
+        IO_EVENTENUM(ALEE_DEVICE_STATE_CHANGED_INT);
+        IO_PTR(device);
+        IO_ENUM(param);
+        IO_INT32(ival);
+        *current = ival;
+    }
+}
+
+
+/* this call checks for state changes that can happen outside of an entry
+   point: sources that are playing change state in the mixer, devices can
+   disconnect, captured samples accumulate, etc. */
+static void check_al_async_states(void)
+{
+    DeviceWrapper *device;
+    for (device = null_device.next; device != NULL; device = device->next) {
+        if (device->supports_disconnect_ext) {
+            check_device_state_bool(device, ALC_CONNECTED, &device->connected);
+        }
+
+        if (device->iscapture) {
+            check_device_state_int(device, ALC_CAPTURE_SAMPLES, &device->capture_samples);
+        } else {
+            ContextWrapper *ctx;
+            for (ctx = device->contexts; ctx != NULL; ctx = ctx->next) {
+                SourceWrapper *src;
+                SourceWrapper *next;
+                for (src = ctx->playlist; src != NULL; src = next) {
+                    next = src->playlist_next;
+                    check_source_state(src);
+                    if (src->state != AL_PLAYING) {
+                        /* source has stopped for whatever reason, take it out of the playlist. */
+                        if (next) {
+                            next->playlist_prev = src->playlist_prev;
+                        }
+                        if (src->playlist_prev) {
+                            src->playlist_prev->playlist_next = next;
+                        } else {
+                            ctx->playlist = next;
+                        }
+                        src->playlist_prev = NULL;
+                        src->playlist_next = NULL;
+                    }
+                }
+            }
+        }
+    }
 }
 
 // end of altrace_record.c ...
