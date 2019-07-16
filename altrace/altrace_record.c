@@ -809,7 +809,7 @@ ALCcontext *alcCreateContext(ALCdevice *_device, const ALCint* attrlist)
         }
     }
     retval = REAL_alcCreateContext(device->device, attrlist);
-    IO_PTR(retval ? device : NULL);
+    IO_PTR(retval ? ctx : NULL);
 
     if (retval == NULL) {
         free(ctx);
