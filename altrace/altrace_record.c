@@ -320,7 +320,6 @@ __attribute__((noinline)) static void IO_ENTRYINFO(const EventEnum entryid)
     frames = i;  /* in case we stopped early. */
 
     if (num_new_strings > 0) {
-        IO_UINT32(now);
         IO_EVENTENUM(ALEE_NEW_CALLSTACK_SYMS);
         IO_UINT32((uint32) num_new_strings);
         for (i = 0; i < num_new_strings; i++) {
@@ -329,8 +328,8 @@ __attribute__((noinline)) static void IO_ENTRYINFO(const EventEnum entryid)
         }
     }
 
-    IO_UINT32(now);
     IO_EVENTENUM(entryid);
+    IO_UINT32(now);
     IO_UINT64((uint64) pthread_self());
 
     IO_UINT32((uint32) frames);
@@ -471,9 +470,9 @@ static void quit_altrace_record(void)
     fflush(stderr);
 
     if (io != -1) {
-        const uint32 ticks = swap32(NOW());
         const uint32 eos = swap32((uint32) ALEE_EOS);
-        if ((write(io, &ticks, 4) != 4) || (write(io, &eos, 4) != 4)) {
+        const uint32 ticks = swap32(NOW());
+        if ((write(io, &eos, 4) != 4) || (write(io, &ticks, 4) != 4)) {
             fprintf(stderr, APPNAME ": Failed to write EOS to OpenAL log file: %s\n", strerror(errno));
         }
         if (close(io) < 0) {
@@ -763,7 +762,6 @@ static void check_listener_state_floatv(const ALenum param, const int numfloats,
         int i;
         REAL_alGetListenerfv(param, fval);
         if (memcmp(fval, current, size) != 0) {
-            IO_UINT32(NOW());
             IO_EVENTENUM(ALEE_LISTENER_STATE_CHANGED_FLOATV);
             IO_PTR(current_context);
             IO_ENUM(param);
@@ -795,7 +793,6 @@ static void check_context_state_enum(const ALenum param, ALenum *current)
         REAL_alGetIntegerv(param, &ival);
         newval = (ALenum) ival;
         if (newval != *current) {
-            IO_UINT32(NOW());
             IO_EVENTENUM(ALEE_CONTEXT_STATE_CHANGED_ENUM);
             IO_PTR(current_context);
             IO_ENUM(param);
@@ -811,7 +808,6 @@ static void check_context_state_float(const ALenum param, ALfloat *current)
         ALfloat fval = 0.0f;
         REAL_alGetFloatv(param, &fval);
         if (fval != *current) {
-            IO_UINT32(NOW());
             IO_EVENTENUM(ALEE_CONTEXT_STATE_CHANGED_FLOAT);
             IO_PTR(current_context);
             IO_ENUM(param);
@@ -1542,7 +1538,6 @@ static void check_source_state_bool(const ALuint name, const ALenum param, ALboo
     REAL_alGetSourcei(name, param, &ival);
     newval = ival ? AL_TRUE : AL_FALSE;
     if (newval != *current) {
-        IO_UINT32(NOW());
         IO_EVENTENUM(ALEE_SOURCE_STATE_CHANGED_BOOL);
         IO_UINT32(name);
         IO_ENUM(param);
@@ -1558,7 +1553,6 @@ static void check_source_state_enum(const ALuint name, const ALenum param, ALenu
     REAL_alGetSourcei(name, param, &ival);
     newval = (ALenum) ival;
     if (newval != *current) {
-        IO_UINT32(NOW());
         IO_EVENTENUM(ALEE_SOURCE_STATE_CHANGED_ENUM);
         IO_UINT32(name);
         IO_ENUM(param);
@@ -1572,7 +1566,6 @@ static void check_source_state_int(const ALuint name, const ALenum param, ALint 
     ALint ival = 0;
     REAL_alGetSourcei(name, param, &ival);
     if (ival != *current) {
-        IO_UINT32(NOW());
         IO_EVENTENUM(ALEE_SOURCE_STATE_CHANGED_INT);
         IO_UINT32(name);
         IO_ENUM(param);
@@ -1588,7 +1581,6 @@ static void check_source_state_uint(const ALuint name, const ALenum param, ALuin
     REAL_alGetSourcei(name, param, &ival);
     newval = (ALuint) ival;
     if (newval != *current) {
-        IO_UINT32(NOW());
         IO_EVENTENUM(ALEE_SOURCE_STATE_CHANGED_UINT);
         IO_UINT32(name);
         IO_ENUM(param);
@@ -1602,7 +1594,6 @@ static void check_source_state_float(const ALuint name, const ALenum param, ALfl
     ALfloat fval = 0;
     REAL_alGetSourcef(name, param, &fval);
     if (fval != *current) {
-        IO_UINT32(NOW());
         IO_EVENTENUM(ALEE_SOURCE_STATE_CHANGED_FLOAT);
         IO_UINT32(name);
         IO_ENUM(param);
@@ -1617,7 +1608,6 @@ static void check_source_state_float3(const ALuint name, const ALenum param, ALf
     ALfloat fval[3] = { 0.0f, 0.0f, 0.0f };
     REAL_alGetSourcefv(name, param, fval);
     if (memcmp(fval, current, size) != 0) {
-        IO_UINT32(NOW());
         IO_EVENTENUM(ALEE_SOURCE_STATE_CHANGED_FLOAT3);
         IO_UINT32(name);
         IO_ENUM(param);
@@ -2372,7 +2362,6 @@ static void check_buffer_state_int(const ALuint name, const ALenum param, ALint 
     ALint ival = 0;
     REAL_alGetBufferi(name, param, &ival);
     if (ival != *current) {
-        IO_UINT32(NOW());
         IO_EVENTENUM(ALEE_BUFFER_STATE_CHANGED_INT);
         IO_UINT32(name);
         IO_ENUM(param);
@@ -2811,7 +2800,6 @@ static void check_device_state_bool(DeviceWrapper *device, const ALCenum param, 
     REAL_alcGetIntegerv(device->device, param, 1, &ival);
     newval = ival ? ALC_TRUE : ALC_FALSE;
     if (newval != *current) {
-        IO_UINT32(NOW());
         IO_EVENTENUM(ALEE_DEVICE_STATE_CHANGED_BOOL);
         IO_PTR(device);
         IO_ENUM(param);
@@ -2825,7 +2813,6 @@ static void check_device_state_int(DeviceWrapper *device, const ALCenum param, A
     ALCint ival = 0;
     REAL_alcGetIntegerv(device->device, param, 1, &ival);
     if (ival != *current) {
-        IO_UINT32(NOW());
         IO_EVENTENUM(ALEE_DEVICE_STATE_CHANGED_INT);
         IO_PTR(device);
         IO_ENUM(param);

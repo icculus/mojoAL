@@ -214,10 +214,12 @@ typedef struct CallerInfo
     int num_callstack_frames;
     uint32 threadid;
     uint32 trace_scope;
+    uint32 wait_until;
 } CallerInfo;
 
 static void IO_ENTRYINFO(CallerInfo *callerinfo)
 {
+    const uint32 wait_until = IO_UINT32();
     const uint64 logthreadid = IO_UINT64();
     const uint32 frames = IO_UINT32();
     uint32 threadid = get_mapped_threadid(logthreadid);
@@ -231,6 +233,7 @@ static void IO_ENTRYINFO(CallerInfo *callerinfo)
     callerinfo->num_callstack_frames = (frames < MAX_CALLSTACKS) ? frames : MAX_CALLSTACKS;
     callerinfo->threadid = threadid;
     callerinfo->trace_scope = trace_scope;
+    callerinfo->wait_until = wait_until;
 
     for (i = 0; i < frames; i++) {
         void *ptr = IO_PTR();
@@ -1933,14 +1936,6 @@ static void process_log(void)
 {
     int eos = 0;
     while (!eos) {
-        const uint32 wait_until = IO_UINT32();
-#warning fixme
-        //if (run_calls) {
-            while (NOW() < wait_until) {
-                usleep(1000);  /* keep the pace of the original run */
-            }
-        //}
-
         switch (IO_EVENTENUM()) {
             #define ENTRYPOINT(ret,name,params,args,visitparams,visitargs) case ALEE_##name: decode_##name(); break;
             #include "altrace_entrypoints.h"

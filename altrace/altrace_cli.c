@@ -1405,12 +1405,21 @@ static void dump_callerinfo(const CallerInfo *callerinfo, const char *fn)
     }
 }
 
+static void wait_until(const uint32 ticks)
+{
+    while (NOW() < ticks) {
+        usleep(1000);  /* keep the pace of the original run */
+    }
+}
 
 #define ENTRYPOINT(ret,name,params,args,visitparams,visitargs) \
     static void visit_##name visitparams { \
         dump_callerinfo(callerinfo, #name); \
         if (dump_calls) { dump_##name visitargs; } \
-        if (run_calls) { run_##name visitargs; } \
+        if (run_calls) { \
+            wait_until(callerinfo->wait_until); \
+            run_##name visitargs; \
+        } \
         if (dumping) { fflush(stdout); } \
     }
 
