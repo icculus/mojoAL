@@ -1,5 +1,5 @@
 /**
- * MojoAL; a simple drop-in OpenAL implementation.
+ * alTrace; a debugging tool for OpenAL.
  *
  * Please see the file LICENSE.txt in the source's root directory.
  *
@@ -291,7 +291,6 @@ static char *get_callstack_sym(void *frame, int *_seen_before)
 __attribute__((noinline)) static void IO_ENTRYINFO(const EventEnum entryid)
 {
     const uint32 now = NOW();
-    const size_t MAX_CALLSTACKS = 32;
     void* callstack[MAX_CALLSTACKS + 2];
     char *new_strings[MAX_CALLSTACKS];
     void *new_strings_ptrs[MAX_CALLSTACKS];
@@ -486,7 +485,7 @@ static void quit_altrace_record(void)
         pthread_mutex_destroy(mutex);
     }
 
-    #define ENTRYPOINT(ret,name,params,args) REAL_##name = NULL;
+    #define ENTRYPOINT(ret,name,params,args,visitparams,visitargs) REAL_##name = NULL;
     #include "altrace_entrypoints.h"
 
     close_real_openal();
@@ -551,7 +550,7 @@ void *alcGetProcAddress(ALCdevice *_device, const ALCchar *funcname)
         // !!! FIXME: should set an error state.
         retval = NULL;
     }
-    #define ENTRYPOINT(ret,fn,params,args) else if (strcmp(funcname, #fn) == 0) { retval = (void *) fn; }
+    #define ENTRYPOINT(ret,fn,params,args,visitparams,visitargs) else if (strcmp(funcname, #fn) == 0) { retval = (void *) fn; }
     #include "altrace_entrypoints.h"
 
     IO_PTR(retval);
@@ -849,6 +848,7 @@ ALCcontext *alcCreateContext(ALCdevice *_device, const ALCint* attrlist)
 
     IO_START(alcCreateContext);
     IO_PTR(_device);
+    IO_PTR(attrlist);
     if (attrlist) {
         while (attrlist[attrcount] != 0) { attrcount += 2; }
         attrcount++;
@@ -1008,6 +1008,7 @@ void alcCaptureSamples(ALCdevice *_device, ALCvoid *buffer, ALCsizei samples)
     DeviceWrapper *device = _device ? (DeviceWrapper *) _device : &null_device;
     IO_START(alcCaptureSamples);
     IO_PTR(_device);
+    IO_PTR(buffer);
     IO_ALCSIZEI(samples);
     if (samples && device->samplesize) {
         memset(buffer, '\0', samples * device->samplesize);
@@ -1107,8 +1108,8 @@ const ALchar *alGetString(const ALenum param)
 
 void alGetBooleanv(ALenum param, ALboolean *values)
 {
-    ALsizei numvals = 0;
-    ALsizei i;
+    uint32 numvals = 0;
+    uint32 i;
     IO_START(alGetBooleanv);
     IO_ENUM(param);
     IO_PTR(values);
@@ -1119,7 +1120,7 @@ void alGetBooleanv(ALenum param, ALboolean *values)
         memset(values, '\0', numvals * sizeof (ALboolean));
     }
     REAL_alGetBooleanv(param, values);
-    IO_ALSIZEI(numvals);
+    IO_UINT32(numvals);
     for (i = 0; i < numvals; i++) {
         IO_BOOLEAN(values[i]);
     }
@@ -1128,8 +1129,8 @@ void alGetBooleanv(ALenum param, ALboolean *values)
 
 void alGetIntegerv(ALenum param, ALint *values)
 {
-    ALsizei numvals = 0;
-    ALsizei i;
+    uint32 numvals = 0;
+    uint32 i;
     IO_START(alGetIntegerv);
     IO_ENUM(param);
     IO_PTR(values);
@@ -1143,7 +1144,7 @@ void alGetIntegerv(ALenum param, ALint *values)
         memset(values, '\0', numvals * sizeof (ALint));
     }
     REAL_alGetIntegerv(param, values);
-    IO_ALSIZEI(numvals);
+    IO_UINT32(numvals);
     for (i = 0; i < numvals; i++) {
         IO_INT32(values[i]);
     }
@@ -1152,8 +1153,8 @@ void alGetIntegerv(ALenum param, ALint *values)
 
 void alGetFloatv(ALenum param, ALfloat *values)
 {
-    ALsizei numvals = 0;
-    ALsizei i;
+    uint32 numvals = 0;
+    uint32 i;
     IO_START(alGetFloatv);
     IO_ENUM(param);
     IO_PTR(values);
@@ -1169,7 +1170,7 @@ void alGetFloatv(ALenum param, ALfloat *values)
         memset(values, '\0', numvals * sizeof (ALfloat));
     }
     REAL_alGetFloatv(param, values);
-    IO_ALSIZEI(numvals);
+    IO_UINT32(numvals);
     for (i = 0; i < numvals; i++) {
         IO_FLOAT(values[i]);
     }
@@ -1178,8 +1179,8 @@ void alGetFloatv(ALenum param, ALfloat *values)
 
 void alGetDoublev(ALenum param, ALdouble *values)
 {
-    ALsizei numvals = 0;
-    ALsizei i;
+    uint32 numvals = 0;
+    uint32 i;
     IO_START(alGetDoublev);
     IO_ENUM(param);
     IO_PTR(values);
@@ -1189,7 +1190,7 @@ void alGetDoublev(ALenum param, ALdouble *values)
         memset(values, '\0', numvals * sizeof (ALdouble));
     }
     REAL_alGetDoublev(param, values);
-    IO_ALSIZEI(numvals);
+    IO_UINT32(numvals);
     for (i = 0; i < numvals; i++) {
         IO_DOUBLE(values[i]);
     }
@@ -1284,7 +1285,7 @@ void *alGetProcAddress(const ALchar *funcname)
         // !!! FIXME: should set an error state.
         retval = NULL;
     }
-    #define ENTRYPOINT(ret,fn,params,args) else if (strcmp(funcname, #fn) == 0) { retval = (void *) fn; }
+    #define ENTRYPOINT(ret,fn,params,args,visitparams,visitargs) else if (strcmp(funcname, #fn) == 0) { retval = (void *) fn; }
     #include "altrace_entrypoints.h"
 
     IO_PTR(retval);
@@ -1811,6 +1812,7 @@ void alGenSources(ALsizei n, ALuint *names)
 
     IO_START(alGenSources);
     IO_ALSIZEI(n);
+    IO_PTR(names);
     for (i = 0; i < n; i++) {
         IO_UINT32(names[i]);
     }
@@ -1844,6 +1846,7 @@ void alDeleteSources(ALsizei n, const ALuint *names)
 
     IO_START(alDeleteSources);
     IO_ALSIZEI(n);
+    IO_PTR(names);
     for (i = 0; i < n; i++) {
         IO_UINT32(names[i]);
     }
@@ -1892,6 +1895,8 @@ void alSourcefv(ALuint name, ALenum param, const ALfloat *values)
     IO_START(alSourcefv);
     IO_UINT32(name);
     IO_ENUM(param);
+    IO_PTR(values);
+
     switch (param) {
         case AL_GAIN: break;
         case AL_POSITION: numvals = 3; break;
@@ -1950,6 +1955,7 @@ void alSourceiv(ALuint name, ALenum param, const ALint *values)
     IO_START(alSourceiv);
     IO_UINT32(name);
     IO_ENUM(param);
+    IO_PTR(values);
 
     switch (param) {
         case AL_BUFFER: break;
@@ -2176,6 +2182,7 @@ void alSourcePlayv(ALsizei n, const ALuint *names)
 
     IO_START(alSourcePlayv);
     IO_ALSIZEI(n);
+    IO_PTR(names);
     for (i = 0; i < n; i++) {
         IO_UINT32(names[i]);
         realnames[i] = source_wrapped_to_real(names[i]);
@@ -2211,6 +2218,7 @@ void alSourcePausev(ALsizei n, const ALuint *names)
 
     IO_START(alSourcePausev);
     IO_ALSIZEI(n);
+    IO_PTR(names);
     for (i = 0; i < n; i++) {
         IO_UINT32(names[i]);
         realnames[i] = source_wrapped_to_real(names[i]);
@@ -2244,6 +2252,7 @@ void alSourceRewindv(ALsizei n, const ALuint *names)
 
     IO_START(alSourceRewindv);
     IO_ALSIZEI(n);
+    IO_PTR(names);
     for (i = 0; i < n; i++) {
         IO_UINT32(names[i]);
         realnames[i] = source_wrapped_to_real(names[i]);
@@ -2277,6 +2286,7 @@ void alSourceStopv(ALsizei n, const ALuint *names)
 
     IO_START(alSourceStopv);
     IO_ALSIZEI(n);
+    IO_PTR(names);
     for (i = 0; i < n; i++) {
         IO_UINT32(names[i]);
         realnames[i] = source_wrapped_to_real(names[i]);
@@ -2301,6 +2311,7 @@ void alSourceQueueBuffers(ALuint name, ALsizei nb, const ALuint *bufnames)
     IO_START(alSourceQueueBuffers);
     IO_UINT32(name);
     IO_ALSIZEI(nb);
+    IO_PTR(bufnames);
     for (i = 0; i < nb; i++) {
         IO_UINT32(bufnames[i]);
         queue_buffer(name, bufnames[i]);
@@ -2322,6 +2333,7 @@ void alSourceUnqueueBuffers(ALuint name, ALsizei nb, ALuint *bufnames)
     IO_START(alSourceUnqueueBuffers);
     IO_UINT32(name);
     IO_ALSIZEI(nb);
+    IO_PTR(bufnames);
     memset(bufnames, 0, nb * sizeof (ALuint));
     REAL_alSourceUnqueueBuffers(source_wrapped_to_real(name), nb, bufnames);
     for (i = 0; i < nb; i++) {
@@ -2458,6 +2470,7 @@ void alGenBuffers(ALsizei n, ALuint *names)
 
     IO_START(alGenBuffers);
     IO_ALSIZEI(n);
+    IO_PTR(names);
     for (i = 0; i < n; i++) {
         IO_UINT32(names[i]);
     }
@@ -2491,6 +2504,7 @@ void alDeleteBuffers(ALsizei n, const ALuint *names)
 
     IO_START(alDeleteBuffers);
     IO_ALSIZEI(n);
+    IO_PTR(names);
     for (i = 0; i < n; i++) {
         IO_UINT32(names[i]);
     }
@@ -2538,6 +2552,7 @@ void alBufferData(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, A
     IO_UINT32(name);
     IO_ENUM(alfmt);
     IO_ALSIZEI(freq);
+    IO_PTR(data);
     IO_BLOB(data, size);
     REAL_alBufferData(buffer_wrapped_to_real(name), alfmt, data, size, freq);
     check_buffer_state_from_name(name);
@@ -2551,6 +2566,7 @@ void alBufferfv(ALuint name, ALenum param, const ALfloat *values)
     IO_START(alBufferfv);
     IO_UINT32(name);
     IO_ENUM(param);
+    IO_PTR(values);
     /* nothing uses this at the moment. */
     IO_UINT32(numvals);
     for (i = 0; i < numvals; i++) {
@@ -2592,6 +2608,7 @@ void alBufferiv(ALuint name, ALenum param, const ALint *values)
     IO_START(alBufferiv);
     IO_UINT32(name);
     IO_ENUM(param);
+    IO_PTR(values);
     /* nothing uses this at the moment. */
     IO_UINT32(numvals);
     for (i = 0; i < numvals; i++) {

@@ -1,5 +1,5 @@
 /**
- * MojoAL; a simple drop-in OpenAL implementation.
+ * alTrace; a debugging tool for OpenAL.
  *
  * Please see the file LICENSE.txt in the source's root directory.
  *
@@ -9,14 +9,7 @@
 #define APPNAME "altrace_playback"
 #include "altrace_common.h"
 
-static int dump_calls = 1;
-static int dump_callers = 0;
-static int dump_state_changes = 0;
-static int dump_errors = 0;
-static int dumping = 1;
-static int run_log = 0;
-
-static int trace_scope = 0;
+static uint32 trace_scope = 0;
 
 static void quit_altrace_playback(void);
 
@@ -54,7 +47,7 @@ static uint32 next_mapped_threadid = 0;
 SIMPLE_MAP(threadid, uint64, uint32);
 
 
-#define MAX_IOBLOBS 32
+#define MAX_IOBLOBS 256
 static uint8 *ioblobs[MAX_IOBLOBS];
 static size_t ioblobs_len[MAX_IOBLOBS];
 static int next_ioblob = 0;
@@ -186,7 +179,7 @@ static EventEnum IO_EVENTENUM(void)
 
 static void *IO_PTR(void)
 {
-    return (void *) (size_t) IO_UINT64();
+    return (void *) (size_t) IO_UINT64();  // !!! FIXME: probably need to map this on 32-bit systems.
 }
 
 static ALCenum IO_ALCENUM(void)
@@ -209,62 +202,62 @@ static ALboolean IO_BOOLEAN(void)
     return (ALboolean) IO_UINT32();
 }
 
-static void IO_ENTRYINFO(void)
+typedef struct CallstackFrame
+{
+    void *frame;
+    const char *sym;
+} CallstackFrame;
+
+typedef struct CallerInfo
+{
+    CallstackFrame callstack[MAX_CALLSTACKS];
+    int num_callstack_frames;
+    uint32 threadid;
+    uint32 trace_scope;
+} CallerInfo;
+
+static void IO_ENTRYINFO(CallerInfo *callerinfo)
 {
     const uint64 logthreadid = IO_UINT64();
     const uint32 frames = IO_UINT32();
     uint32 threadid = get_mapped_threadid(logthreadid);
-    uint32 i, framei;
+    uint32 i;
 
     if (!threadid) {
         threadid = ++next_mapped_threadid;
         add_threadid_to_map(logthreadid, threadid);
     }
 
-    if (dump_callers) {
-        for (i = 0; i < trace_scope; i++) { printf("    "); }
-        printf("Call from threadid = %u, stack = {\n", (uint) threadid);
-    }
+    callerinfo->num_callstack_frames = (frames < MAX_CALLSTACKS) ? frames : MAX_CALLSTACKS;
+    callerinfo->threadid = threadid;
+    callerinfo->trace_scope = trace_scope;
 
-    for (framei = 0; framei < frames; framei++) {
+    for (i = 0; i < frames; i++) {
         void *ptr = IO_PTR();
-        if (dump_callers) {
-            char *str = get_mapped_stackframe(ptr);
-            for (i = 0; i < trace_scope; i++) { printf("    "); }
-            if (str) {
-                printf("    %s\n", str);
-            } else {
-                printf("    %p\n", ptr);
-            }
+        if (i < MAX_CALLSTACKS) {
+            callerinfo->callstack[i].frame = ptr;
+            callerinfo->callstack[i].sym = get_mapped_stackframe(ptr);
         }
-    }
-
-    if (dump_callers) {
-        for (i = 0; i < trace_scope; i++) { printf("    "); }
-        printf("}\n");
     }
 }
 
-#define IO_START(e) \
-    { \
-        IO_ENTRYINFO(); \
-        if (dump_calls) { \
-            int i; for (i = 0; i < trace_scope; i++) { printf("    "); }  \
-            printf("%s", #e); \
-        } { \
+#define IO_START(e) { CallerInfo callerinfo; IO_ENTRYINFO(&callerinfo); {
+#define IO_END() } }
 
-#define IO_END() \
-        if (dumping) { fflush(stdout); } } \
-    }
 
-static void init_altrace_playback(const char *filename)
+#define ENTRYPOINT(ret,name,params,args,visitparams,visitargs) static void visit_##name visitparams;
+#include "altrace_entrypoints.h"
+
+static int dump_state_changes;
+
+static void init_altrace_playback(const char *filename, const int run_calls)
 {
     int okay = 1;
 
     fprintf(stderr, APPNAME ": starting up...\n");
     fflush(stderr);
 
-    if (run_log) {
+    if (run_calls) {
         if (!init_clock()) {
             fflush(stderr);
             _exit(42);
@@ -506,71 +499,75 @@ static const char *litString(const char *str)
     return "NULL";
 }
 
-static void dump_alcGetCurrentContext(void)
+static const char *ptrString(const void *ptr)
+{
+    if (ptr) {
+        char *retval = (char *) get_ioblob(32);
+        snprintf(retval, 32, "%p", ptr);
+        return retval;
+    }
+    return "NULL";
+}
+
+static void decode_alcGetCurrentContext(void)
 {
     IO_START(alcGetCurrentContext);
     ALCcontext *retval = (ALCcontext *) IO_PTR();
-    if (dump_calls) { printf("() => %p\n", retval); }
-    if (run_log) { REAL_alcGetCurrentContext(); }
+    visit_alcGetCurrentContext(&callerinfo, retval);
     IO_END();
 }
 
-static void dump_alcGetContextsDevice(void)
+static void decode_alcGetContextsDevice(void)
 {
     IO_START(alcGetContextsDevice);
     ALCcontext *context = (ALCcontext *) IO_PTR();
     ALCdevice *retval = (ALCdevice *) IO_PTR();
-    if (dump_calls) { printf("(%p) => %p\n", context, retval); }
-    if (run_log) { REAL_alcGetContextsDevice(context); }
+    visit_alcGetContextsDevice(&callerinfo, retval, context);
     IO_END();
 }
 
-static void dump_alcIsExtensionPresent(void)
+static void decode_alcIsExtensionPresent(void)
 {
     IO_START(alcIsExtensionPresent);
     ALCdevice *device = (ALCdevice *) IO_PTR();
     const ALCchar *extname = (const ALCchar *) IO_STRING();
     const ALCboolean retval = IO_ALCBOOLEAN();
-    if (dump_calls) { printf("(%p, %s) => %s\n", device, litString(extname), alcboolString(retval)); }
-    if (run_log) { REAL_alcIsExtensionPresent(device, extname); }
+    visit_alcIsExtensionPresent(&callerinfo, retval, device, extname);
     IO_END();
 }
 
-static void dump_alcGetProcAddress(void)
+static void decode_alcGetProcAddress(void)
 {
     IO_START(alcGetProcAddress);
     ALCdevice *device = (ALCdevice *) IO_PTR();
     const ALCchar *funcname = (const ALCchar *) IO_STRING();
     void *retval = IO_PTR();
-    if (dump_calls) { printf("(%p, %s) => %p\n", device, litString(funcname), retval); }
-    if (run_log) { REAL_alcGetProcAddress(get_mapped_device(device), funcname); }
+    visit_alcGetProcAddress(&callerinfo, retval, device, funcname);
     IO_END();
 
 }
 
-static void dump_alcGetEnumValue(void)
+static void decode_alcGetEnumValue(void)
 {
     IO_START(alcGetEnumValue);
     ALCdevice *device = (ALCdevice *) IO_PTR();
     const ALCchar *enumname = (const ALCchar *) IO_STRING();
     const ALCenum retval = IO_ALCENUM();
-    if (dump_calls) { printf("(%p, %s) => %s\n", device, litString(enumname), alcenumString(retval)); }
-    if (run_log) { REAL_alcGetEnumValue(device, enumname); }
+    visit_alcGetEnumValue(&callerinfo, retval, device, enumname);
     IO_END();
 }
 
-static void dump_alcGetString(void)
+static void decode_alcGetString(void)
 {
     IO_START(alcGetEnumValue);
     ALCdevice *device = (ALCdevice *) IO_PTR();
     const ALCenum param = IO_ALCENUM();
     const ALCchar *retval = (const ALCchar *) IO_STRING();
-    if (dump_calls) { printf("(%p, %s) => %s\n", device, alcenumString(param), litString(retval)); }
-    if (run_log) { REAL_alcGetString(device, param); }
+    visit_alcGetString(&callerinfo, retval, device, param);
     IO_END();
 }
 
-static void dump_alcCaptureOpenDevice(void)
+static void decode_alcCaptureOpenDevice(void)
 {
     IO_START(alcCaptureOpenDevice);
     const ALCchar *devicename = (const ALCchar *) IO_STRING();
@@ -578,104 +575,71 @@ static void dump_alcCaptureOpenDevice(void)
     const ALCenum format = IO_ALCENUM();
     const ALCsizei buffersize = IO_ALSIZEI();
     ALCdevice *retval = (ALCdevice *) IO_PTR();
+
+
     const ALint major_version = retval ? IO_INT32() : 0;
     const ALint minor_version = retval ? IO_INT32() : 0;
     const ALCchar *devspec = (const ALCchar *) (retval ? IO_STRING() : NULL);
     const ALCchar *extensions = (const ALCchar *) (retval ? IO_STRING() : NULL);
 
-    if (dump_calls) { printf("(%s, %u, %s, %u) => %p\n", litString(devicename), (uint) frequency, alcenumString(format), (uint) buffersize, retval); }
-
+#warning move this to an event
     if (dump_state_changes) {
         printf("<<< CAPTURE DEVICE STATE: alc_version=%d.%d device_specifier=%s extensions=%s >>>\n", (int) major_version, (int) minor_version, litString(devspec), litString(extensions));
     }
 
-    if (run_log) {
-        ALCdevice *dev = REAL_alcCaptureOpenDevice(devicename, frequency, format, buffersize);
-        if (!dev && retval) {
-            fprintf(stderr, "Uhoh, failed to open capture device when log did!\n");
-            if (devicename) {
-                fprintf(stderr, "Trying NULL device...\n");
-                dev = REAL_alcCaptureOpenDevice(NULL, frequency, format, buffersize);
-                if (!dev) {
-                    fprintf(stderr, "Still no luck. This is probably going to go wrong.\n");
-                } else {
-                    fprintf(stderr, "That worked. Carrying on.\n");
-                }
-            }
-        }
-        if (dev) {
-            add_device_to_map(retval, dev);
-        }
-    }
+    visit_alcCaptureOpenDevice(&callerinfo, retval, devicename, frequency, format, buffersize);
 
     IO_END();
 }
 
-static void dump_alcCaptureCloseDevice(void)
+static void decode_alcCaptureCloseDevice(void)
 {
     IO_START(alcCaptureCloseDevice);
     ALCdevice *device = (ALCdevice *) IO_PTR();
     const ALCboolean retval = IO_ALCBOOLEAN();
-    if (dump_calls) { printf("(%p) => %s\n", device, alcboolString(retval)); }
-    if (run_log) { REAL_alcCaptureCloseDevice(get_mapped_device(device)); }
+    visit_alcCaptureCloseDevice(&callerinfo, retval, device);
     IO_END();
 }
 
-static void dump_alcOpenDevice(void)
+static void decode_alcOpenDevice(void)
 {
     IO_START(alcOpenDevice);
     const ALCchar *devicename = IO_STRING();
     ALCdevice *retval = (ALCdevice *) IO_PTR();
+
+
     const ALint major_version = retval ? IO_INT32() : 0;
     const ALint minor_version = retval ? IO_INT32() : 0;
     const ALCchar *devspec = (const ALCchar *) (retval ? IO_STRING() : NULL);
     const ALCchar *extensions = (const ALCchar *) (retval ? IO_STRING() : NULL);
 
-    if (dump_calls) { printf("(%s) => %p\n", litString(devicename), retval); }
-
+#warning move this to an event
     if (dump_state_changes) {
         printf("<<< PLAYBACK DEVICE STATE: alc_version=%d.%d device_specifier=%s extensions=%s >>>\n", (int) major_version, (int) minor_version, litString(devspec), litString(extensions));
     }
 
-    if (run_log) {
-        ALCdevice *dev = REAL_alcOpenDevice(devicename);
-        if (!dev && retval) {
-            fprintf(stderr, "Uhoh, failed to open playback device when log did!\n");
-            if (devicename) {
-                fprintf(stderr, "Trying NULL device...\n");
-                dev = REAL_alcOpenDevice(NULL);
-                if (!dev) {
-                    fprintf(stderr, "Still no luck. This is probably going to go wrong.\n");
-                } else {
-                    fprintf(stderr, "That worked. Carrying on.\n");
-                }
-            }
-        }
-        if (dev) {
-            add_device_to_map(retval, dev);
-        }
-    }
+    visit_alcOpenDevice(&callerinfo, retval, devicename);
 
     IO_END();
 }
 
-static void dump_alcCloseDevice(void)
+static void decode_alcCloseDevice(void)
 {
     IO_START(alcCloseDevice);
     ALCdevice *device = (ALCdevice *) IO_PTR();
     const ALCboolean retval = IO_ALCBOOLEAN();
-    if (dump_calls) { printf("(%p) => %s\n", device, alcboolString(retval)); }
-    if (run_log) { REAL_alcCloseDevice(get_mapped_device(device)); }
+    visit_alcCloseDevice(&callerinfo, retval, device);
     IO_END();
 }
 
-static void dump_alcCreateContext(void)
+static void decode_alcCreateContext(void)
 {
     IO_START(alcCreateContext);
     ALCcontext *retval;
-    ALCint *attrlist = NULL;
     ALCdevice *device = (ALCdevice *) IO_PTR();
+    ALCint *origattrlist = (ALCint *) IO_PTR();
     const uint32 attrcount = IO_UINT32();
+    ALCint *attrlist = NULL;
     if (attrcount) {
         ALCint i;
         attrlist = get_ioblob(sizeof (ALCint) * attrcount);
@@ -684,92 +648,56 @@ static void dump_alcCreateContext(void)
         }
     }
     retval = (ALCcontext *) IO_PTR();
-    if (dump_calls) {
-        printf("(%p, ", device);
-        if (!attrlist) {
-            printf("NULL");
-        } else {
-            ALCint i;
-            printf("{");
-            for (i = 0; i < attrcount; i += 2) {
-                printf(" %s, %u,", alcenumString(attrlist[i]), (uint) attrlist[i+1]);
-            }
-            printf(" 0 }");
-        }
-        printf(") => %p\n", retval);
-    }
 
-    if (run_log) {
-        ALCcontext *ctx = REAL_alcCreateContext(get_mapped_device(device), attrlist);
-        if (!ctx && retval) {
-            fprintf(stderr, "Uhoh, failed to create context when log did!\n");
-            if (attrlist) {
-                fprintf(stderr, "Trying default context...\n");
-                ctx = REAL_alcCreateContext(get_mapped_device(device), NULL);
-                if (!ctx) {
-                    fprintf(stderr, "Still no luck. This is probably going to go wrong.\n");
-                } else {
-                    fprintf(stderr, "That worked. Carrying on.\n");
-                }
-            }
-        }
-        if (ctx) {
-            add_context_to_map(retval, ctx);
-        }
-    }
+    visit_alcCreateContext(&callerinfo, retval, device, origattrlist, attrcount, attrlist);
 
     IO_END();
 
 }
 
-static void dump_alcMakeContextCurrent(void)
+static void decode_alcMakeContextCurrent(void)
 {
     IO_START(alcMakeContextCurrent);
     ALCcontext *ctx = (ALCcontext *) IO_PTR();
     const ALCboolean retval = IO_ALCBOOLEAN();
-    if (dump_calls) { printf("(%p) => %s\n", ctx, alcboolString(retval)); }
-    if (run_log) { REAL_alcMakeContextCurrent(get_mapped_context(ctx)); }
+    visit_alcMakeContextCurrent(&callerinfo, retval, ctx);
     IO_END();
 }
 
-static void dump_alcProcessContext(void)
+static void decode_alcProcessContext(void)
 {
     IO_START(alcProcessContext);
     ALCcontext *ctx = (ALCcontext *) IO_PTR();
-    if (dump_calls) { printf("(%p)\n", ctx); }
-    if (run_log) { REAL_alcProcessContext(get_mapped_context(ctx)); }
+    visit_alcProcessContext(&callerinfo, ctx);
     IO_END();
 }
 
-static void dump_alcSuspendContext(void)
+static void decode_alcSuspendContext(void)
 {
     IO_START(alcSuspendContext);
     ALCcontext *ctx = (ALCcontext *) IO_PTR();
-    if (dump_calls) { printf("(%p)\n", ctx); }
-    if (run_log) { REAL_alcSuspendContext(get_mapped_context(ctx)); }
+    visit_alcSuspendContext(&callerinfo, ctx);
     IO_END();
 }
 
-static void dump_alcDestroyContext(void)
+static void decode_alcDestroyContext(void)
 {
     IO_START(alcDestroyContext);
     ALCcontext *ctx = (ALCcontext *) IO_PTR();
-    if (dump_calls) { printf("(%p)\n", ctx); }
-    if (run_log) { REAL_alcDestroyContext(get_mapped_context(ctx)); }
+    visit_alcDestroyContext(&callerinfo, ctx);
     IO_END();
 }
 
-static void dump_alcGetError(void)
+static void decode_alcGetError(void)
 {
     IO_START(alcGetError);
     ALCdevice *device = (ALCdevice *) IO_PTR();
     const ALCenum retval = IO_ALCENUM();
-    if (dump_calls) { printf("(%p) => %s\n", device, alcboolString(retval)); }
-    if (run_log) { REAL_alcGetError(get_mapped_device(device)); }
+    visit_alcGetError(&callerinfo, retval, device);
     IO_END();
 }
 
-static void dump_alcGetIntegerv(void)
+static void decode_alcGetIntegerv(void)
 {
     IO_START(alcGetIntegerv);
     ALCdevice *device = (ALCdevice *) IO_PTR();
@@ -785,157 +713,129 @@ static void dump_alcGetIntegerv(void)
         }
     }
 
-    if (dump_calls) {
-        printf("(%p, %s, %u, %p) => {", device, alcenumString(param), (uint) size, origvalues);
-        if (values) {
-            for (i = 0; i < size; i++) {
-                printf("%s %d", i > 0 ? "," : "", values[i]);
-            }
-            printf("%s", size > 0 ? " " : "");
-        }
-        printf("}\n");
-    }
-
-    if (run_log) { REAL_alcGetIntegerv(get_mapped_device(device), param, size, values); }
+    visit_alcGetIntegerv(&callerinfo, device, param, size, origvalues, values);
 
     IO_END();
 }
 
-static void dump_alcCaptureStart(void)
+static void decode_alcCaptureStart(void)
 {
     IO_START(alcCaptureStart);
     ALCdevice *device = (ALCdevice *) IO_PTR();
-    if (dump_calls) { printf("(%p)\n", device); }
-    if (run_log) { REAL_alcCaptureStart(get_mapped_device(device)); }
+    visit_alcCaptureStart(&callerinfo, device);
     IO_END();
 }
 
-static void dump_alcCaptureStop(void)
+static void decode_alcCaptureStop(void)
 {
     IO_START(alcCaptureStop);
     ALCdevice *device = (ALCdevice *) IO_PTR();
-    if (dump_calls) { printf("(%p)\n", device); }
-    if (run_log) { REAL_alcCaptureStop(get_mapped_device(device)); }
+    visit_alcCaptureStop(&callerinfo, device);
     IO_END();
 }
 
-static void dump_alcCaptureSamples(void)
+static void decode_alcCaptureSamples(void)
 {
     IO_START(alcCaptureSamples);
     ALCdevice *device = (ALCdevice *) IO_PTR();
+    void *origbuffer = IO_PTR();
     const ALCsizei samples = IO_ALCSIZEI();
     uint64 bloblen;
     uint8 *blob = IO_BLOB(&bloblen); (void) bloblen;
-    if (dump_calls) { printf("(%p, &buffer, %u)\n", device, (uint) samples); }
-    if (run_log) { REAL_alcCaptureSamples(get_mapped_device(device), blob, samples); }
+    visit_alcCaptureSamples(&callerinfo, device, origbuffer, blob, samples);
     IO_END();
 }
 
-static void dump_alDopplerFactor(void)
+static void decode_alDopplerFactor(void)
 {
     IO_START(alDopplerFactor);
     const ALfloat value = IO_FLOAT();
-    if (dump_calls) { printf("(%f)\n", value); }
-    if (run_log) { REAL_alDopplerFactor(value); }
+    visit_alDopplerFactor(&callerinfo, value);
     IO_END();
 }
 
-static void dump_alDopplerVelocity(void)
+static void decode_alDopplerVelocity(void)
 {
     IO_START(alDopplerVelocity);
     const ALfloat value = IO_FLOAT();
-    if (dump_calls) { printf("(%f)\n", value); }
-    if (run_log) { REAL_alDopplerVelocity(value); }
+    visit_alDopplerVelocity(&callerinfo, value);
     IO_END();
 }
 
-static void dump_alSpeedOfSound(void)
+static void decode_alSpeedOfSound(void)
 {
     IO_START(alSpeedOfSound);
     const ALfloat value = IO_FLOAT();
-    if (dump_calls) { printf("(%f)\n", value); }
-    if (run_log) { REAL_alSpeedOfSound(value); }
+    visit_alSpeedOfSound(&callerinfo, value);
     IO_END();
 }
 
-static void dump_alDistanceModel(void)
+static void decode_alDistanceModel(void)
 {
     IO_START(alDistanceModel);
     const ALenum model = IO_ENUM();
-    if (dump_calls) { printf("(%s)\n", alenumString(model)); }
-    if (run_log) { REAL_alDistanceModel(model); }
+    visit_alDistanceModel(&callerinfo, model);
     IO_END();
 }
 
-static void dump_alEnable(void)
+static void decode_alEnable(void)
 {
     IO_START(alEnable);
     const ALenum capability = IO_ENUM();
-    if (dump_calls) { printf("(%s)\n", alenumString(capability)); }
-    if (run_log) { REAL_alEnable(capability); }
+    visit_alEnable(&callerinfo, capability);
     IO_END();
 }
 
-static void dump_alDisable(void)
+static void decode_alDisable(void)
 {
     IO_START(alDisable);
     const ALenum capability = IO_ENUM();
-    if (dump_calls) { printf("(%s)\n", alenumString(capability)); }
-    if (run_log) { REAL_alDisable(capability); }
+    visit_alDisable(&callerinfo, capability);
     IO_END();
 }
 
-static void dump_alIsEnabled(void)
+static void decode_alIsEnabled(void)
 {
     IO_START(alIsEnabled);
     const ALenum capability = IO_ENUM();
     const ALboolean retval = IO_BOOLEAN();
-    if (dump_calls) { printf("(%s) => %s\n", alenumString(capability), alboolString(retval)); }
-    if (run_log) { REAL_alIsEnabled(capability); }
+    visit_alIsEnabled(&callerinfo, retval, capability);
     IO_END();
 }
 
-static void dump_alGetString(void)
+static void decode_alGetString(void)
 {
     IO_START(alGetString);
     const ALenum param = IO_ENUM();
     const ALchar *retval = (const ALchar *) IO_STRING();
-    if (dump_calls) { printf("(%s) => %s\n", alenumString(param), litString(retval)); }
-    if (run_log) { REAL_alGetString(param); }
+    visit_alGetString(&callerinfo, retval, param);
     IO_END();
 }
 
-static void dump_alGetBooleanv(void)
+static void decode_alGetBooleanv(void)
 {
     IO_START(alGetBooleanv);
     const ALenum param = IO_ENUM();
     ALboolean *origvalues = (ALboolean *) IO_PTR();
-    const ALsizei numvals = IO_ALSIZEI();
+    const uint32 numvals = IO_UINT32();
     ALboolean *values = numvals ? get_ioblob(numvals * sizeof (ALboolean)) : NULL;
     ALsizei i;
+
     for (i = 0; i < numvals; i++) {
         values[i] = IO_BOOLEAN();
     }
 
-    if (dump_calls) {
-        printf("(%s, %p) => {", alenumString(param), origvalues);
-        for (i = 0; i < numvals; i++) {
-            printf("%s %s", i > 0 ? "," : "", alboolString(values[i]));
-        }
-        printf("%s}\n", numvals > 0 ? " " : "");
-    }
-
-    if (run_log) { REAL_alGetBooleanv(param, values); }
+    visit_alGetBooleanv(&callerinfo, param, origvalues, numvals, values);
 
     IO_END();
 }
 
-static void dump_alGetIntegerv(void)
+static void decode_alGetIntegerv(void)
 {
     IO_START(alGetIntegerv);
     const ALenum param = IO_ENUM();
     ALint *origvalues = (ALint *) IO_PTR();
-    const ALsizei numvals = IO_ALSIZEI();
+    const uint32 numvals = IO_UINT32();
     ALint *values = numvals ? get_ioblob(numvals * sizeof (ALint)) : NULL;
     ALsizei i;
     ALboolean isenum = AL_FALSE;
@@ -949,153 +849,118 @@ static void dump_alGetIntegerv(void)
         default: break;
     }
 
-    if (dump_calls) {
-        printf("(%s, %p) => {", alenumString(param), origvalues);
-        for (i = 0; i < numvals; i++) {
-            if (isenum) {
-                printf("%s %s", i > 0 ? "," : "", alenumString((ALenum) values[i]));
-            } else {
-                printf("%s %d", i > 0 ? "," : "", (int) values[i]);
-            }
-        }
-        printf("%s}\n", numvals > 0 ? " " : "");
-    }
-
-    if (run_log) { REAL_alGetIntegerv(param, values); }
+    visit_alGetIntegerv(&callerinfo, param, origvalues, numvals, isenum, values);
 
     IO_END();
 }
 
-static void dump_alGetFloatv(void)
+static void decode_alGetFloatv(void)
 {
     IO_START(alGetFloatv);
     const ALenum param = IO_ENUM();
     ALfloat *origvalues = (ALfloat *) IO_PTR();
-    const ALsizei numvals = IO_ALSIZEI();
+    const uint32 numvals = IO_UINT32();
     ALfloat *values = numvals ? get_ioblob(numvals * sizeof (ALfloat)) : NULL;
     ALsizei i;
     for (i = 0; i < numvals; i++) {
         values[i] = IO_FLOAT();
     }
 
-    if (dump_calls) {
-        printf("(%s, %p) => {", alenumString(param), origvalues);
-        for (i = 0; i < numvals; i++) {
-            printf("%s %f", i > 0 ? "," : "", values[i]);
-        }
-        printf("%s}\n", numvals > 0 ? " " : "");
-    }
-
-    if (run_log) { REAL_alGetFloatv(param, values); }
+    visit_alGetFloatv(&callerinfo, param, origvalues, numvals, values);
 
     IO_END();
 }
 
-static void dump_alGetDoublev(void)
+static void decode_alGetDoublev(void)
 {
     IO_START(alGetDoublev);
     const ALenum param = IO_ENUM();
     ALdouble *origvalues = (ALdouble *) IO_PTR();
-    const ALsizei numvals = IO_ALSIZEI();
+    const uint32 numvals = IO_UINT32();
     ALdouble *values = numvals ? get_ioblob(numvals * sizeof (ALdouble)) : NULL;
     ALsizei i;
     for (i = 0; i < numvals; i++) {
         values[i] = IO_DOUBLE();
     }
 
-    if (dump_calls) {
-        printf("(%s, %p) => {", alenumString(param), origvalues);
-        for (i = 0; i < numvals; i++) {
-            printf("%s %f", i > 0 ? "," : "", values[i]);
-        }
-        printf("%s}\n", numvals > 0 ? " " : "");
-    }
-
-    if (run_log) { REAL_alGetDoublev(param, values); }
+    visit_alGetDoublev(&callerinfo, param, origvalues, numvals, values);
 
     IO_END();
 }
 
-static void dump_alGetBoolean(void)
+static void decode_alGetBoolean(void)
 {
     IO_START(alGetBoolean);
     const ALenum param = IO_ENUM();
     const ALboolean retval = IO_BOOLEAN();
-    if (dump_calls) { printf("(%s) => %s\n", alenumString(param), alboolString(retval)); }
-    if (run_log) { REAL_alGetBoolean(param); }
+    visit_alGetBoolean(&callerinfo, retval, param);
     IO_END();
 }
 
-static void dump_alGetInteger(void)
+static void decode_alGetInteger(void)
 {
     IO_START(alGetInteger);
     const ALenum param = IO_ENUM();
     const ALint retval = IO_INT32();
-    if (dump_calls) { printf("(%s) => %d\n", alenumString(param), (int) retval); }
-    if (run_log) { REAL_alGetInteger(param); }
+#warning fixme isenum?
+    visit_alGetInteger(&callerinfo, retval, param);
     IO_END();
 }
 
-static void dump_alGetFloat(void)
+static void decode_alGetFloat(void)
 {
     IO_START(alGetFloat);
     const ALenum param = IO_ENUM();
     const ALfloat retval = IO_FLOAT();
-    if (dump_calls) { printf("(%s) => %f\n", alenumString(param), retval); }
-    if (run_log) { REAL_alGetFloat(param); }
+    visit_alGetFloat(&callerinfo, retval, param);
     IO_END();
 }
 
-static void dump_alGetDouble(void)
+static void decode_alGetDouble(void)
 {
     IO_START(alGetDouble);
     const ALenum param = IO_ENUM();
     const ALdouble retval = IO_DOUBLE();
-    if (dump_calls) { printf("(%s) => %f\n", alenumString(param), (float) retval); }
-    if (run_log) { REAL_alGetDouble(param); }
+    visit_alGetDouble(&callerinfo, retval, param);
     IO_END();
 }
 
-static void dump_alIsExtensionPresent(void)
+static void decode_alIsExtensionPresent(void)
 {
     IO_START(alIsExtensionPresent);
     const ALchar *extname = (const ALchar *) IO_STRING();
     const ALboolean retval = IO_BOOLEAN();
-    if (dump_calls) { printf("(%s) => %s\n", litString(extname), alboolString(retval)); }
-    if (run_log) { REAL_alIsExtensionPresent(extname); }
+    visit_alIsExtensionPresent(&callerinfo, retval, extname);
     IO_END();
 }
 
-static void dump_alGetError(void)
+static void decode_alGetError(void)
 {
     IO_START(alGetError);
     const ALenum retval = IO_ENUM();
-    if (dump_calls) { printf("() => %s\n", alenumString(retval)); }
-    if (run_log) { REAL_alGetError(); }
+    visit_alGetError(&callerinfo, retval);
     IO_END();
 }
 
-static void dump_alGetProcAddress(void)
+static void decode_alGetProcAddress(void)
 {
     IO_START(alGetProcAddress);
     const ALchar *funcname = (const ALchar *) IO_STRING();
     void *retval = IO_PTR();
-    if (dump_calls) { printf("(%s) => %p\n", litString(funcname), retval); }
-    if (run_log) { REAL_alGetProcAddress(funcname); }
+    visit_alGetProcAddress(&callerinfo, retval, funcname);
     IO_END();
 }
 
-static void dump_alGetEnumValue(void)
+static void decode_alGetEnumValue(void)
 {
     IO_START(alGetProcAddress);
     const ALchar *enumname = (const ALchar *) IO_STRING();
     const ALenum retval = IO_ENUM();
-    if (dump_calls) { printf("(%s) => %s\n", litString(enumname), alenumString(retval)); }
-    if (run_log) {  REAL_alGetEnumValue(enumname); }
+    visit_alGetEnumValue(&callerinfo, retval, enumname);
     IO_END();
 }
 
-static void dump_alListenerfv(void)
+static void decode_alListenerfv(void)
 {
     IO_START(alListenerfv);
     const ALenum param = IO_ENUM();
@@ -1108,47 +973,32 @@ static void dump_alListenerfv(void)
         values[i] = IO_FLOAT();
     }
 
-    if (dump_calls) {
-        printf("(%s, ", alenumString(param));
-        if (!origvalues) {
-            printf("NULL)\n");
-        } else {
-            printf("{");
-            for (i = 0; i < numvals; i++) {
-                printf("%s %f", i > 0 ? "," : "", values[i]);
-            }
-            printf("%s})\n", numvals > 0 ? " " : "");
-        }
-    }
-
-    if (run_log) { REAL_alListenerfv(param, values); }
+    visit_alListenerfv(&callerinfo, param, origvalues, numvals, values);
 
     IO_END();
 }
 
-static void dump_alListenerf(void)
+static void decode_alListenerf(void)
 {
     IO_START(alListenerf);
     const ALenum param = IO_ENUM();
     const ALfloat value = IO_FLOAT();
-    if (dump_calls) { printf("(%s, %f)\n", alenumString(param), value); }
-    if (run_log) { REAL_alListenerf(param, value); }
+    visit_alListenerf(&callerinfo, param, value);
     IO_END();
 }
 
-static void dump_alListener3f(void)
+static void decode_alListener3f(void)
 {
     IO_START(alListener3f);
     const ALenum param = IO_ENUM();
     const ALfloat value1 = IO_FLOAT();
     const ALfloat value2 = IO_FLOAT();
     const ALfloat value3 = IO_FLOAT();
-    if (dump_calls) { printf("(%s, %f, %f, %f)\n", alenumString(param), value1, value2, value3); }
-    if (run_log) { REAL_alListener3f(param, value1, value2, value3); }
+    visit_alListener3f(&callerinfo, param, value1, value2, value3);
     IO_END();
 }
 
-static void dump_alListeneriv(void)
+static void decode_alListeneriv(void)
 {
     IO_START(alListeneriv);
     const ALenum param = IO_ENUM();
@@ -1161,47 +1011,32 @@ static void dump_alListeneriv(void)
         values[i] = IO_INT32();
     }
 
-    if (dump_calls) {
-        printf("(%s, ", alenumString(param));
-        if (!origvalues) {
-            printf("NULL)\n");
-        } else {
-            printf("{");
-            for (i = 0; i < numvals; i++) {
-                printf("%s %d", i > 0 ? "," : "", (int) values[i]);
-            }
-            printf("%s})\n", numvals > 0 ? " " : "");
-        }
-    }
-
-    if (run_log) { REAL_alListeneriv(param, values); }
+    visit_alListeneriv(&callerinfo, param, origvalues, numvals, values);
 
     IO_END();
 }
 
-static void dump_alListeneri(void)
+static void decode_alListeneri(void)
 {
     IO_START(alListeneri);
     const ALenum param = IO_ENUM();
     const ALint value = IO_INT32();
-    if (dump_calls) { printf("(%s, %d)\n", alenumString(param), value); }
-    if (run_log) { REAL_alListeneri(param, value); }
+    visit_alListeneri(&callerinfo, param, value);
     IO_END();
 }
 
-static void dump_alListener3i(void)
+static void decode_alListener3i(void)
 {
     IO_START(alListener3i);
     const ALenum param = IO_ENUM();
     const ALint value1 = IO_INT32();
     const ALint value2 = IO_INT32();
     const ALint value3 = IO_INT32();
-    if (dump_calls) { printf("(%s, %d, %d, %d)\n", alenumString(param), (int) value1, (int) value2, (int) value3); }
-    if (run_log) { REAL_alListener3i(param, value1, value2, value3); }
+    visit_alListener3i(&callerinfo, param, value1, value2, value3);
     IO_END();
 }
 
-static void dump_alGetListenerfv(void)
+static void decode_alGetListenerfv(void)
 {
     IO_START(alGetListenerfv);
     const ALenum param = IO_ENUM();
@@ -1214,35 +1049,22 @@ static void dump_alGetListenerfv(void)
         values[i] = IO_FLOAT();
     }
 
-    if (dump_calls) {
-        printf("(%s, %p)", alenumString(param), origvalues);
-        if (origvalues) {
-            printf(" => {");
-            for (i = 0; i < numvals; i++) {
-                printf("%s %f", i > 0 ? "," : "", values[i]);
-            }
-            printf("%s}", numvals > 0 ? " " : "");
-        }
-        printf("\n");
-    }
-
-    if (run_log) { REAL_alGetListenerfv(param, values); }
+    visit_alGetListenerfv(&callerinfo, param, origvalues, numvals, values);
 
     IO_END();
 }
 
-static void dump_alGetListenerf(void)
+static void decode_alGetListenerf(void)
 {
     IO_START(alGetListenerf);
     const ALenum param = IO_ENUM();
     ALfloat *origvalue = (ALfloat *) IO_PTR();
     const ALfloat value = IO_FLOAT();
-    if (dump_calls) { printf("(%s, %p) => { %f }\n", alenumString(param), origvalue, value); }
-    if (run_log) { ALfloat f; REAL_alGetListenerf(param, &f); }
+    visit_alGetListenerf(&callerinfo, param, origvalue, value);
     IO_END();
 }
 
-static void dump_alGetListener3f(void)
+static void decode_alGetListener3f(void)
 {
     IO_START(alGetListener3f);
     const ALenum param = IO_ENUM();
@@ -1252,12 +1074,11 @@ static void dump_alGetListener3f(void)
     const ALfloat value1 = IO_FLOAT();
     const ALfloat value2 = IO_FLOAT();
     const ALfloat value3 = IO_FLOAT();
-    if (dump_calls) { printf("(%s, %p, %p, %p) => { %f, %f %f }\n", alenumString(param), origvalue1, origvalue2, origvalue3, value1, value2, value3); }
-    if (run_log) { ALfloat f1, f2, f3; REAL_alGetListener3f(param, &f1, &f2, &f3); }
+    visit_alGetListener3f(&callerinfo, param, origvalue1, origvalue2, origvalue3, value1, value2, value3);
     IO_END();
 }
 
-static void dump_alGetListeneriv(void)
+static void decode_alGetListeneriv(void)
 {
     IO_START(alGetListeneriv);
     const ALenum param = IO_ENUM();
@@ -1270,37 +1091,24 @@ static void dump_alGetListeneriv(void)
         values[i] = IO_INT32();
     }
 
-    if (dump_calls) {
-        printf("(%s, %p)", alenumString(param), origvalues);
-        if (origvalues) {
-            printf(" => {");
-            for (i = 0; i < numvals; i++) {
-                printf("%s %d", i > 0 ? "," : "", (int) values[i]);
-            }
-            printf("%s}", numvals > 0 ? " " : "");
-        }
-        printf("\n");
-    }
-
-    if (run_log) { REAL_alGetListeneriv(param, values); }
+    visit_alGetListeneriv(&callerinfo, param, origvalues, numvals, values);
 
     IO_END();
 }
 
-static void dump_alGetListeneri(void)
+static void decode_alGetListeneri(void)
 {
     IO_START(alGetListeneri);
     const ALenum param = IO_ENUM();
     ALint *origvalue = (ALint *) IO_PTR();
     const ALint value = IO_INT32();
-    if (dump_calls) { printf("(%s, %p) => { %d }\n", alenumString(param), origvalue, (int) value); }
 
-    if (run_log) { ALint i; REAL_alGetListeneri(param, &i); }
+    visit_alGetListeneri(&callerinfo, param, origvalue, value);
 
     IO_END();
 }
 
-static void dump_alGetListener3i(void)
+static void decode_alGetListener3i(void)
 {
     IO_START(alGetListener3i);
     const ALenum param = IO_ENUM();
@@ -1310,15 +1118,15 @@ static void dump_alGetListener3i(void)
     const ALint value1 = IO_INT32();
     const ALint value2 = IO_INT32();
     const ALint value3 = IO_INT32();
-    if (dump_calls) { printf("(%s, %p, %p, %p) => { %d, %d %d }\n", alenumString(param), origvalue1, origvalue2, origvalue3, (int) value1, (int) value2, (int) value3); }
-    if (run_log) { ALint i1, i2, i3; REAL_alGetListener3i(param, &i1, &i2, &i3); }
+    visit_alGetListener3i(&callerinfo, param, origvalue1, origvalue2, origvalue3, value1, value2, value3);
     IO_END();
 }
 
-static void dump_alGenSources(void)
+static void decode_alGenSources(void)
 {
     IO_START(alGenSources);
     const ALsizei n = IO_ALSIZEI();
+    ALuint *orignames = (ALuint *) IO_PTR();
     ALuint *names = (ALuint *) get_ioblob(sizeof (ALuint) * n);
     ALsizei i;
 
@@ -1326,35 +1134,16 @@ static void dump_alGenSources(void)
         names[i] = IO_UINT32();
     }
 
-    if (dump_calls) {
-        printf("(%u) => {", (uint) n);
-        for (i = 0; i < n; i++) {
-            printf("%s %u", i > 0 ? "," : "", (uint) names[i]);
-        }
-        printf("%s}\n", n > 0 ? " " : "");
-    }
-
-    if (run_log) {
-        ALuint *realnames = (ALuint *) get_ioblob(sizeof (ALuint) * n);
-        memset(realnames, '\0', sizeof (ALuint) * n);
-        REAL_alGenSources(n, realnames);
-        for (i = 0; i < n; i++) {
-            if (!realnames[i] && names[i]) {
-                fprintf(stderr, "Uhoh, we didn't generate enough sources!\n");
-                fprintf(stderr, "This is probably going to cause playback problems.\n");
-            } else {
-                add_source_to_map(names[i], realnames[i]);
-            }
-        }
-    }
+    visit_alGenSources(&callerinfo, n, orignames, names);
 
     IO_END();
 }
 
-static void dump_alDeleteSources(void)
+static void decode_alDeleteSources(void)
 {
     IO_START(alDeleteSources);
     const ALsizei n = IO_ALSIZEI();
+    ALuint *orignames = (ALuint *) IO_PTR();
     ALuint *names = (ALuint *) get_ioblob(sizeof (ALuint) * n);
     ALsizei i;
 
@@ -1362,40 +1151,26 @@ static void dump_alDeleteSources(void)
         names[i] = IO_UINT32();
     }
 
-    if (dump_calls) {
-        printf("(%u, {", (uint) n);
-        for (i = 0; i < n; i++) {
-            printf("%s %u", i > 0 ? "," : "", (uint) names[i]);
-        }
-        printf("%s})\n", n > 0 ? " " : "");
-    }
-
-    if (run_log) {
-        ALuint *realnames = (ALuint *) get_ioblob(sizeof (ALuint) * n);
-        for (i = 0; i < n; i++) {
-            realnames[i] = get_mapped_source(names[i]);
-        }
-        REAL_alDeleteSources(n, realnames);
-    }
+    visit_alDeleteSources(&callerinfo, n, orignames, names);
 
     IO_END();
 }
 
-static void dump_alIsSource(void)
+static void decode_alIsSource(void)
 {
     IO_START(alIsSource);
     const ALuint name = IO_UINT32();
     const ALboolean retval = IO_BOOLEAN();
-    if (dump_calls) { printf("(%u) => %s\n", (uint) name, alboolString(retval)); }
-    if (run_log) { REAL_alIsSource(get_mapped_source(name)); }
+    visit_alIsSource(&callerinfo, retval, name);
     IO_END();
 }
 
-static void dump_alSourcefv(void)
+static void decode_alSourcefv(void)
 {
     IO_START(alSourcefv);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
+    const ALfloat *origvalues = (ALfloat *) IO_PTR();
     const uint32 numvals = IO_UINT32();
     ALfloat *values = (ALfloat *) get_ioblob(sizeof (ALfloat) * numvals);
     uint32 i;
@@ -1404,31 +1179,22 @@ static void dump_alSourcefv(void)
         values[i] = IO_FLOAT();
     }
 
-    if (dump_calls) {
-        printf("(%u, %s, {", (uint) name, alenumString(param));
-        for (i = 0; i < numvals; i++) {
-            printf("%s %f", i > 0 ? "," : "", values[i]);
-        }
-        printf("%s})\n", numvals > 0 ? " " : "");
-    }
-
-    if (run_log) { REAL_alSourcefv(get_mapped_source(name), param, values); }
+    visit_alSourcefv(&callerinfo, name, param, origvalues, numvals, values);
 
     IO_END();
 }
 
-static void dump_alSourcef(void)
+static void decode_alSourcef(void)
 {
     IO_START(alSourcef);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
     const ALfloat value = IO_FLOAT();
-    if (dump_calls) { printf("(%u, %s, %f)\n", (uint) name, alenumString(param), value); }
-    if (run_log) { REAL_alSourcef(get_mapped_source(name), param, value); }
+    visit_alSourcef(&callerinfo, name, param, value);
     IO_END();
 }
 
-static void dump_alSource3f(void)
+static void decode_alSource3f(void)
 {
     IO_START(alSource3f);
     const ALuint name = IO_UINT32();
@@ -1436,16 +1202,16 @@ static void dump_alSource3f(void)
     const ALfloat value1 = IO_FLOAT();
     const ALfloat value2 = IO_FLOAT();
     const ALfloat value3 = IO_FLOAT();
-    if (dump_calls) { printf("(%u, %s, %f, %f, %f)\n", (uint) name, alenumString(param), value1, value2, value3); }
-    if (run_log) { REAL_alSource3f(get_mapped_source(name), param, value1, value2, value3); }
+    visit_alSource3f(&callerinfo, name, param, value1, value2, value3);
     IO_END();
 }
 
-static void dump_alSourceiv(void)
+static void decode_alSourceiv(void)
 {
     IO_START(alSourceiv);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
+    const ALint *origvalues = (ALint *) IO_PTR();
     const uint32 numvals = IO_UINT32();
     ALint *values = (ALint *) get_ioblob(sizeof (ALint) * numvals);
     uint32 i;
@@ -1454,31 +1220,22 @@ static void dump_alSourceiv(void)
         values[i] = IO_INT32();
     }
 
-    if (dump_calls) {
-        printf("(%u, %s, {", (uint) name, alenumString(param));
-        for (i = 0; i < numvals; i++) {
-            printf("%s %d", i > 0 ? "," : "", (int) values[i]);
-        }
-        printf("%s})\n", numvals > 0 ? " " : "");
-    }
-
-    if (run_log) { REAL_alSourceiv(get_mapped_source(name), param, values); }
+    visit_alSourceiv(&callerinfo, name, param, origvalues, numvals, values);
 
     IO_END();
 }
 
-static void dump_alSourcei(void)
+static void decode_alSourcei(void)
 {
     IO_START(alSourcei);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
     const ALint value = IO_INT32();
-    if (dump_calls) { printf("(%u, %s, %d)\n", (uint) name, alenumString(param), (int) value); }
-    if (run_log) { REAL_alSourcei(get_mapped_source(name), param, value); }
+    visit_alSourcei(&callerinfo, name, param, value);
     IO_END();
 }
 
-static void dump_alSource3i(void)
+static void decode_alSource3i(void)
 {
     IO_START(alSource3i);
     const ALuint name = IO_UINT32();
@@ -1486,12 +1243,11 @@ static void dump_alSource3i(void)
     const ALint value1 = IO_INT32();
     const ALint value2 = IO_INT32();
     const ALint value3 = IO_INT32();
-    if (dump_calls) { printf("(%u, %s, %d, %d, %d)\n", (uint) name, alenumString(param), (int) value1, (int) value2, (int) value3); }
-    if (run_log) { REAL_alSource3i(get_mapped_source(name), param, value1, value2, value3); }
+    visit_alSource3i(&callerinfo, name, param, value1, value2, value3);
     IO_END();
 }
 
-static void dump_alGetSourcefv(void)
+static void decode_alGetSourcefv(void)
 {
     IO_START(alGetSourcefv);
     const ALuint name = IO_UINT32();
@@ -1505,36 +1261,23 @@ static void dump_alGetSourcefv(void)
         values[i] = IO_FLOAT();
     }
 
-    if (dump_calls) {
-        printf("(%u, %s, %p)", (uint) name, alenumString(param), origvalues);
-        if (origvalues) {
-            printf(" => {");
-            for (i = 0; i < numvals; i++) {
-                printf("%s %f", i > 0 ? "," : "", values[i]);
-            }
-            printf("%s}", numvals > 0 ? " " : "");
-        }
-        printf("\n");
-    }
-
-    if (run_log) { REAL_alGetSourcefv(get_mapped_source(name), param, values); }
+    visit_alGetSourcefv(&callerinfo, name, param, origvalues, numvals, values);
 
     IO_END();
 }
 
-static void dump_alGetSourcef(void)
+static void decode_alGetSourcef(void)
 {
     IO_START(alGetSourcef);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
     ALfloat *origvalue = (ALfloat *) IO_PTR();
     const ALfloat value = IO_FLOAT();
-    if (dump_calls) { printf("(%u, %s, %p) => { %f }\n", (uint) name, alenumString(param), origvalue, value); }
-    if (run_log) { ALfloat f; REAL_alGetSourcef(get_mapped_source(name), param, &f); }
+    visit_alGetSourcef(&callerinfo, name, param, origvalue, value);
     IO_END();
 }
 
-static void dump_alGetSource3f(void)
+static void decode_alGetSource3f(void)
 {
     IO_START(alGetSource3f);
     const ALuint name = IO_UINT32();
@@ -1545,12 +1288,11 @@ static void dump_alGetSource3f(void)
     const ALfloat value1 = IO_FLOAT();
     const ALfloat value2 = IO_FLOAT();
     const ALfloat value3 = IO_FLOAT();
-    if (dump_calls) { printf("(%u, %s, %p, %p, %p) => { %f, %f, %f }\n", (uint) name, alenumString(param), origvalue1, origvalue2, origvalue3, value1, value2, value3); }
-    if (run_log) { ALfloat f1, f2, f3; REAL_alGetSource3f(get_mapped_source(name), param, &f1, &f2, &f3); }
+    visit_alGetSource3f(&callerinfo, name, param, origvalue1, origvalue2, origvalue3, value1, value2, value3);
     IO_END();
 }
 
-static void dump_alGetSourceiv(void)
+static void decode_alGetSourceiv(void)
 {
     IO_START(alGetSourceiv);
     const ALuint name = IO_UINT32();
@@ -1570,28 +1312,12 @@ static void dump_alGetSourceiv(void)
         default: break;
     }
 
-    if (dump_calls) {
-        printf("(%u, %s, %p)", (uint) name, alenumString(param), origvalues);
-        if (origvalues) {
-            printf(" => {");
-            for (i = 0; i < numvals; i++) {
-                if (isenum) {
-                    printf("%s %s", i > 0 ? "," : "", alenumString((ALenum) values[i]));
-                } else {
-                    printf("%s %d", i > 0 ? "," : "", (int) values[i]);
-                }
-            }
-            printf("%s}", numvals > 0 ? " " : "");
-        }
-        printf("\n");
-    }
-
-    if (run_log) { REAL_alGetSourceiv(get_mapped_source(name), param, values); }
+    visit_alGetSourceiv(&callerinfo, name, param, isenum, origvalues, numvals, values);
 
     IO_END();
 }
 
-static void dump_alGetSourcei(void)
+static void decode_alGetSourcei(void)
 {
     IO_START(alGetSourcei);
     const ALuint name = IO_UINT32();
@@ -1605,20 +1331,12 @@ static void dump_alGetSourcei(void)
         default: break;
     }
 
-    if (dump_calls) {
-        if (isenum) {
-            printf("(%u, %s, %p) => { %s }\n", (uint) name, alenumString(param), origvalue, alenumString((ALenum) value));
-        } else {
-            printf("(%u, %s, %p) => { %d }\n", (uint) name, alenumString(param), origvalue, (int) value);
-        }
-    }
-
-    if (run_log) { ALint i; REAL_alGetSourcei(get_mapped_source(name), param, &i); }
+    visit_alGetSourcei(&callerinfo, name, param, isenum, origvalue, value);
 
     IO_END();
 }
 
-static void dump_alGetSource3i(void)
+static void decode_alGetSource3i(void)
 {
     IO_START(alGetSource3i);
     const ALuint name = IO_UINT32();
@@ -1629,24 +1347,23 @@ static void dump_alGetSource3i(void)
     const ALint value1 = IO_INT32();
     const ALint value2 = IO_INT32();
     const ALint value3 = IO_INT32();
-    if (dump_calls) { printf("(%u, %s, %p, %p, %p) => { %d, %d, %d }\n", (uint) name, alenumString(param), origvalue1, origvalue2, origvalue3, (int) value1, (int) value2, (int) value3); }
-    if (run_log) { ALint i1, i2, i3; REAL_alGetSource3i(get_mapped_source(name), param, &i1, &i2, &i3); }
+    visit_alGetSource3i(&callerinfo, name, param, origvalue1, origvalue2, origvalue3, value1, value2, value3);
     IO_END();
 }
 
-static void dump_alSourcePlay(void)
+static void decode_alSourcePlay(void)
 {
     IO_START(alSourcePlay);
     const ALuint name = IO_UINT32();
-    if (dump_calls) { printf("(%u)\n", (uint) name); }
-    if (run_log) { REAL_alSourcePlay(get_mapped_source(name)); }
+    visit_alSourcePlay(&callerinfo, name);
     IO_END();
 }
 
-static void dump_alSourcePlayv(void)
+static void decode_alSourcePlayv(void)
 {
     IO_START(alSourcePlayv);
     const ALsizei n = IO_ALSIZEI();
+    ALuint *orignames = (ALuint *) IO_PTR();
     ALuint *names = (ALuint *) get_ioblob(sizeof (ALuint) * n);
     ALsizei i;
 
@@ -1654,38 +1371,24 @@ static void dump_alSourcePlayv(void)
         names[i] = IO_UINT32();
     }
 
-    if (dump_calls) {
-        printf("(%u, {", (uint) n);
-        for (i = 0; i < n; i++) {
-            printf("%s %u", i > 0 ? "," : "", (uint) names[i]);
-        }
-        printf("%s})\n", n > 0 ? " " : "");
-    }
-
-    if (run_log) {
-        ALuint *realnames = (ALuint *) get_ioblob(sizeof (ALuint) * n);
-        for (i = 0; i < n; i++) {
-            realnames[i] = get_mapped_source(names[i]);
-        }
-        REAL_alSourcePlayv(n, realnames);
-    }
+    visit_alSourcePlayv(&callerinfo, n, orignames, names);
 
     IO_END();
 }
 
-static void dump_alSourcePause(void)
+static void decode_alSourcePause(void)
 {
     IO_START(alSourcePause);
     const ALuint name = IO_UINT32();
-    if (dump_calls) { printf("(%u)\n", (uint) name); }
-    if (run_log) { REAL_alSourcePause(get_mapped_source(name)); }
+    visit_alSourcePause(&callerinfo, name);
     IO_END();
 }
 
-static void dump_alSourcePausev(void)
+static void decode_alSourcePausev(void)
 {
     IO_START(alSourcePausev);
     const ALsizei n = IO_ALSIZEI();
+    ALuint *orignames = (ALuint *) IO_PTR();
     ALuint *names = (ALuint *) get_ioblob(sizeof (ALuint) * n);
     ALsizei i;
 
@@ -1693,38 +1396,24 @@ static void dump_alSourcePausev(void)
         names[i] = IO_UINT32();
     }
 
-    if (dump_calls) {
-        printf("(%u, {", (uint) n);
-        for (i = 0; i < n; i++) {
-            printf("%s %u", i > 0 ? "," : "", (uint) names[i]);
-        }
-        printf("%s})\n", n > 0 ? " " : "");
-    }
-
-    if (run_log) {
-        ALuint *realnames = (ALuint *) get_ioblob(sizeof (ALuint) * n);
-        for (i = 0; i < n; i++) {
-            realnames[i] = get_mapped_source(names[i]);
-        }
-        REAL_alSourcePausev(n, realnames);
-    }
+    visit_alSourcePausev(&callerinfo, n, orignames, names);
 
     IO_END();
 }
 
-static void dump_alSourceRewind(void)
+static void decode_alSourceRewind(void)
 {
     IO_START(alSourceRewind);
     const ALuint name = IO_UINT32();
-    if (dump_calls) { printf("(%u)\n", (uint) name); }
-    if (run_log) { REAL_alSourceRewind(get_mapped_source(name)); }
+    visit_alSourceRewind(&callerinfo, name);
     IO_END();
 }
 
-static void dump_alSourceRewindv(void)
+static void decode_alSourceRewindv(void)
 {
     IO_START(alSourceRewindv);
     const ALsizei n = IO_ALSIZEI();
+    ALuint *orignames = (ALuint *) IO_PTR();
     ALuint *names = (ALuint *) get_ioblob(sizeof (ALuint) * n);
     ALsizei i;
 
@@ -1732,38 +1421,24 @@ static void dump_alSourceRewindv(void)
         names[i] = IO_UINT32();
     }
 
-    if (dump_calls) {
-        printf("(%u, {", (uint) n);
-        for (i = 0; i < n; i++) {
-            printf("%s %u", i > 0 ? "," : "", (uint) names[i]);
-        }
-        printf("%s})\n", n > 0 ? " " : "");
-    }
-
-    if (run_log) {
-        ALuint *realnames = (ALuint *) get_ioblob(sizeof (ALuint) * n);
-        for (i = 0; i < n; i++) {
-            realnames[i] = get_mapped_source(names[i]);
-        }
-        REAL_alSourceRewindv(n, realnames);
-    }
+    visit_alSourceRewindv(&callerinfo, n, orignames, names);
 
     IO_END();
 }
 
-static void dump_alSourceStop(void)
+static void decode_alSourceStop(void)
 {
     IO_START(alSourceStop);
     const ALuint name = IO_UINT32();
-    if (dump_calls) { printf("(%u)\n", (uint) name); }
-    if (run_log) { REAL_alSourceStop(get_mapped_source(name)); }
+    visit_alSourceStop(&callerinfo, name);
     IO_END();
 }
 
-static void dump_alSourceStopv(void)
+static void decode_alSourceStopv(void)
 {
     IO_START(alSourceStopv);
     const ALsizei n = IO_ALSIZEI();
+    ALuint *orignames = (ALuint *) IO_PTR();
     ALuint *names = (ALuint *) get_ioblob(sizeof (ALuint) * n);
     ALsizei i;
 
@@ -1771,30 +1446,17 @@ static void dump_alSourceStopv(void)
         names[i] = IO_UINT32();
     }
 
-    if (dump_calls) {
-        printf("(%u, {", (uint) n);
-        for (i = 0; i < n; i++) {
-            printf("%s %u", i > 0 ? "," : "", (uint) names[i]);
-        }
-        printf("%s})\n", n > 0 ? " " : "");
-    }
-
-    if (run_log) {
-        ALuint *realnames = (ALuint *) get_ioblob(sizeof (ALuint) * n);
-        for (i = 0; i < n; i++) {
-            realnames[i] = get_mapped_source(names[i]);
-        }
-        REAL_alSourceStopv(n, realnames);
-    }
+    visit_alSourceStopv(&callerinfo, n, orignames, names);
 
     IO_END();
 }
 
-static void dump_alSourceQueueBuffers(void)
+static void decode_alSourceQueueBuffers(void)
 {
     IO_START(alSourceQueueBuffers);
     const ALuint name = IO_UINT32();
     const ALsizei nb = IO_ALSIZEI();
+    ALuint *orignames = (ALuint *) IO_PTR();
     ALuint *names = (ALuint *) get_ioblob(sizeof (ALuint) * nb);
     ALsizei i;
 
@@ -1802,30 +1464,17 @@ static void dump_alSourceQueueBuffers(void)
         names[i] = IO_UINT32();
     }
 
-    if (dump_calls) {
-        printf("(%u, %u, {", (uint) name, (uint) nb);
-        for (i = 0; i < nb; i++) {
-            printf("%s %u", i > 0 ? "," : "", (uint) names[i]);
-        }
-        printf("%s})\n", nb > 0 ? " " : "");
-    }
-
-    if (run_log) {
-        ALuint *realnames = (ALuint *) get_ioblob(sizeof (ALuint) * nb);
-        for (i = 0; i < nb; i++) {
-            realnames[i] = get_mapped_buffer(names[i]);
-        }
-        REAL_alSourceQueueBuffers(get_mapped_source(name), nb, realnames);
-    }
+    visit_alSourceQueueBuffers(&callerinfo, name, nb, orignames, names);
 
     IO_END();
 }
 
-static void dump_alSourceUnqueueBuffers(void)
+static void decode_alSourceUnqueueBuffers(void)
 {
     IO_START(alSourceUnqueueBuffers);
     const ALuint name = IO_UINT32();
     const ALsizei nb = IO_ALSIZEI();
+    ALuint *orignames = (ALuint *) IO_PTR();
     ALuint *names = (ALuint *) get_ioblob(sizeof (ALuint) * nb);
     ALsizei i;
 
@@ -1833,23 +1482,16 @@ static void dump_alSourceUnqueueBuffers(void)
         names[i] = IO_UINT32();
     }
 
-    if (dump_calls) {
-        printf("(%u, %u, &names) => {", (uint) name, (uint) nb);
-        for (i = 0; i < nb; i++) {
-            printf("%s %u", i > 0 ? "," : "", (uint) names[i]);
-        }
-        printf("%s})\n", nb > 0 ? " " : "");
-    }
-
-    if (run_log) { REAL_alSourceUnqueueBuffers(get_mapped_source(name), nb, names); }
+    visit_alSourceUnqueueBuffers(&callerinfo, name, nb, orignames, names);
 
     IO_END();
 }
 
-static void dump_alGenBuffers(void)
+static void decode_alGenBuffers(void)
 {
     IO_START(alGenBuffers);
     const ALsizei n = IO_ALSIZEI();
+    ALuint *orignames = (ALuint *) IO_PTR();
     ALuint *names = (ALuint *) get_ioblob(sizeof (ALuint) * n);
     ALsizei i;
 
@@ -1857,35 +1499,16 @@ static void dump_alGenBuffers(void)
         names[i] = IO_UINT32();
     }
 
-    if (dump_calls) {
-        printf("(%u) => {", (uint) n);
-        for (i = 0; i < n; i++) {
-            printf("%s %u", i > 0 ? "," : "", (uint) names[i]);
-        }
-        printf("%s}\n", n > 0 ? " " : "");
-    }
-
-    if (run_log) {
-        ALuint *realnames = (ALuint *) get_ioblob(sizeof (ALuint) * n);
-        memset(realnames, '\0', sizeof (ALuint) * n);
-        REAL_alGenBuffers(n, realnames);
-        for (i = 0; i < n; i++) {
-            if (!realnames[i] && names[i]) {
-                fprintf(stderr, "Uhoh, we didn't generate enough buffers!\n");
-                fprintf(stderr, "This is probably going to cause playback problems.\n");
-            } else {
-                add_buffer_to_map(names[i], realnames[i]);
-            }
-        }
-    }
+    visit_alGenBuffers(&callerinfo, n, orignames, names);
 
     IO_END();
 }
 
-static void dump_alDeleteBuffers(void)
+static void decode_alDeleteBuffers(void)
 {
     IO_START(alDeleteBuffers);
     const ALsizei n = IO_ALSIZEI();
+    ALuint *orignames = (ALuint *) IO_PTR();
     ALuint *names = (ALuint *) get_ioblob(sizeof (ALuint) * n);
     ALsizei i;
 
@@ -1893,53 +1516,39 @@ static void dump_alDeleteBuffers(void)
         names[i] = IO_UINT32();
     }
 
-    if (dump_calls) {
-        printf("(%u, {", (uint) n);
-        for (i = 0; i < n; i++) {
-            printf("%s %u", i > 0 ? "," : "", (uint) names[i]);
-        }
-        printf("%s})\n", n > 0 ? " " : "");
-    }
-
-    if (run_log) {
-        ALuint *realnames = (ALuint *) get_ioblob(sizeof (ALuint) * n);
-        for (i = 0; i < n; i++) {
-            realnames[i] = get_mapped_buffer(names[i]);
-        }
-        REAL_alDeleteBuffers(n, realnames);
-    }
+    visit_alDeleteBuffers(&callerinfo, n, orignames, names);
 
     IO_END();
 }
 
-static void dump_alIsBuffer(void)
+static void decode_alIsBuffer(void)
 {
     IO_START(alIsBuffer);
     const ALuint name = IO_UINT32();
     const ALboolean retval = IO_BOOLEAN();
-    if (dump_calls) { printf("(%u) => %s\n", (uint) name, alboolString(retval)); }
-    if (run_log) { REAL_alIsBuffer(get_mapped_buffer(name)); }
+    visit_alIsBuffer(&callerinfo, retval, name);
     IO_END();
 }
 
-static void dump_alBufferData(void)
+static void decode_alBufferData(void)
 {
     IO_START(alBufferData);
     uint64 size = 0;
     const ALuint name = IO_UINT32();
     const ALenum alfmt = IO_ENUM();
     const ALsizei freq = IO_ALSIZEI();
-    const ALvoid *data = (const ALvoid *) IO_BLOB(&size); (void) data;
-    if (dump_calls) { printf("(%u, %s, &data, %u, %u)\n", (uint) name, alenumString(alfmt), (uint) size, (uint) freq); }
-    if (run_log) { REAL_alBufferData(get_mapped_buffer(name), alfmt, data, (ALsizei) size, freq); }
+    const ALvoid *origdata = (const ALvoid *) IO_PTR();
+    const ALvoid *data = (const ALvoid *) IO_BLOB(&size);
+    visit_alBufferData(&callerinfo, name, alfmt, origdata, data, (ALsizei) size, freq);
     IO_END();
 }
 
-static void dump_alBufferfv(void)
+static void decode_alBufferfv(void)
 {
     IO_START(alBufferfv);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
+    const ALfloat *origvalues = (ALfloat *) IO_PTR();
     const uint32 numvals = IO_UINT32();
     ALfloat *values = (ALfloat *) get_ioblob(sizeof (ALfloat) * numvals);
     uint32 i;
@@ -1948,31 +1557,22 @@ static void dump_alBufferfv(void)
         values[i] = IO_INT32();
     }
 
-    if (dump_calls) {
-        printf("(%u, %s, {", (uint) name, alenumString(param));
-        for (i = 0; i < numvals; i++) {
-            printf("%s %d", i > 0 ? "," : "", (int) values[i]);
-        }
-        printf("%s})\n", numvals > 0 ? " " : "");
-    }
-
-    if (run_log) { REAL_alBufferfv(get_mapped_buffer(name), param, values); }
+    visit_alBufferfv(&callerinfo, name, param, origvalues, numvals, values);
 
     IO_END();
 }
 
-static void dump_alBufferf(void)
+static void decode_alBufferf(void)
 {
     IO_START(alBufferf);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
     const ALfloat value = IO_FLOAT();
-    if (dump_calls) { printf("(%u, %s, %f)\n", (uint) name, alenumString(param), value); }
-    if (run_log) { REAL_alBufferf(get_mapped_buffer(name), param, value); }
+    visit_alBufferf(&callerinfo, name, param, value);
     IO_END();
 }
 
-static void dump_alBuffer3f(void)
+static void decode_alBuffer3f(void)
 {
     IO_START(alBuffer3f);
     const ALuint name = IO_UINT32();
@@ -1980,16 +1580,16 @@ static void dump_alBuffer3f(void)
     const ALfloat value1 = IO_FLOAT();
     const ALfloat value2 = IO_FLOAT();
     const ALfloat value3 = IO_FLOAT();
-    if (dump_calls) { printf("(%u, %s, %f, %f, %f)\n", (uint) name, alenumString(param), value1, value2, value3); }
-    if (run_log) { REAL_alBuffer3f(get_mapped_buffer(name), param, value1, value2, value3); }
+    visit_alSource3f(&callerinfo, name, param, value1, value2, value3);
     IO_END();
 }
 
-static void dump_alBufferiv(void)
+static void decode_alBufferiv(void)
 {
     IO_START(alBufferiv);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
+    const ALint *origvalues = (ALint *) IO_PTR();
     const uint32 numvals = IO_UINT32();
     ALint *values = (ALint *) get_ioblob(sizeof (ALint) * numvals);
     uint32 i;
@@ -1998,31 +1598,22 @@ static void dump_alBufferiv(void)
         values[i] = IO_INT32();
     }
 
-    if (dump_calls) {
-        printf("(%u, %s, {", (uint) name, alenumString(param));
-        for (i = 0; i < numvals; i++) {
-            printf("%s %d", i > 0 ? "," : "", (int) values[i]);
-        }
-        printf("%s})\n", numvals > 0 ? " " : "");
-    }
-
-    if (run_log) { REAL_alBufferiv(get_mapped_buffer(name), param, values); }
+    visit_alBufferiv(&callerinfo, name, param, origvalues, numvals, values);
 
     IO_END();
 }
 
-static void dump_alBufferi(void)
+static void decode_alBufferi(void)
 {
     IO_START(alBufferi);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
     const ALint value = IO_INT32();
-    if (dump_calls) { printf("(%u, %s, %d)\n", (uint) name, alenumString(param), (int) value); }
-    if (run_log) { REAL_alBufferi(get_mapped_buffer(name), param, value); }
+    visit_alBufferi(&callerinfo, name, param, value);
     IO_END();
 }
 
-static void dump_alBuffer3i(void)
+static void decode_alBuffer3i(void)
 {
     IO_START(alBuffer3i);
     const ALuint name = IO_UINT32();
@@ -2030,12 +1621,11 @@ static void dump_alBuffer3i(void)
     const ALint value1 = IO_INT32();
     const ALint value2 = IO_INT32();
     const ALint value3 = IO_INT32();
-    if (dump_calls) { printf("(%u, %s, %d, %d, %d)\n", (uint) name, alenumString(param), (int) value1, (int) value2, (int) value3); }
-    if (run_log) { REAL_alBuffer3i(get_mapped_buffer(name), param, value1, value2, value3); }
+    visit_alBuffer3i(&callerinfo, name, param, value1, value2, value3);
     IO_END();
 }
 
-static void dump_alGetBufferfv(void)
+static void decode_alGetBufferfv(void)
 {
     IO_START(alGetBufferfv);
     const ALuint name = IO_UINT32();
@@ -2049,36 +1639,23 @@ static void dump_alGetBufferfv(void)
         values[i] = IO_FLOAT();
     }
 
-    if (dump_calls) {
-        printf("(%u, %s, %p)", (uint) name, alenumString(param), origvalues);
-        if (origvalues) {
-            printf(" => {");
-            for (i = 0; i < numvals; i++) {
-                printf("%s %f", i > 0 ? "," : "", values[i]);
-            }
-            printf("%s}", numvals > 0 ? " " : "");
-        }
-        printf("\n");
-    }
-
-    if (run_log) { REAL_alGetBufferfv(get_mapped_buffer(name), param, values); }
+    visit_alGetBufferfv(&callerinfo, name, param, origvalues, numvals, values);
 
     IO_END();
 }
 
-static void dump_alGetBufferf(void)
+static void decode_alGetBufferf(void)
 {
     IO_START(alGetBufferf);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
     ALfloat *origvalue = (ALfloat *) IO_PTR();
     const ALfloat value = IO_FLOAT();
-    if (dump_calls) { printf("(%u, %s, %p) => { %f }\n", (uint) name, alenumString(param), origvalue, value); }
-    if (run_log) { ALfloat f; REAL_alGetBufferf(get_mapped_buffer(name), param, &f); }
+    visit_alGetBufferf(&callerinfo, name, param, origvalue, value);
     IO_END();
 }
 
-static void dump_alGetBuffer3f(void)
+static void decode_alGetBuffer3f(void)
 {
     IO_START(alGetBuffer3f);
     const ALuint name = IO_UINT32();
@@ -2089,24 +1666,22 @@ static void dump_alGetBuffer3f(void)
     const ALfloat value1 = IO_FLOAT();
     const ALfloat value2 = IO_FLOAT();
     const ALfloat value3 = IO_FLOAT();
-    if (dump_calls) { printf("(%u, %s, %p, %p, %p) => { %f, %f, %f }\n", (uint) name, alenumString(param), origvalue1, origvalue2, origvalue3, value1, value2, value3); }
-    if (run_log) { ALfloat f1, f2, f3; REAL_alGetBuffer3f(get_mapped_buffer(name), param, &f1, &f2, &f3); }
+    visit_alGetBuffer3f(&callerinfo, name, param, origvalue1, origvalue2, origvalue3, value1, value2, value3);
     IO_END();
 }
 
-static void dump_alGetBufferi(void)
+static void decode_alGetBufferi(void)
 {
     IO_START(alGetBufferi);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
     ALint *origvalue = (ALint *) IO_PTR();
     const ALint value = IO_INT32();
-    if (dump_calls) { printf("(%u, %s, %p) => { %d }\n", (uint) name, alenumString(param), origvalue, (int) value); }
-    if (run_log) { ALint i; REAL_alGetBufferi(get_mapped_buffer(name), param, &i); }
+    visit_alGetBufferi(&callerinfo, name, param, origvalue, value);
     IO_END();
 }
 
-static void dump_alGetBuffer3i(void)
+static void decode_alGetBuffer3i(void)
 {
     IO_START(alGetBuffer3i);
     const ALuint name = IO_UINT32();
@@ -2117,12 +1692,11 @@ static void dump_alGetBuffer3i(void)
     const ALint value1 = IO_INT32();
     const ALint value2 = IO_INT32();
     const ALint value3 = IO_INT32();
-    if (dump_calls) { printf("(%u, %s, %p, %p, %p) => { %d, %d, %d }\n", (uint) name, alenumString(param), origvalue1, origvalue2, origvalue3, (int) value1, (int) value2, (int) value3); }
-    if (run_log) { ALint i1, i2, i3; REAL_alGetBuffer3i(get_mapped_buffer(name), param, &i1, &i2, &i3); }
+    visit_alGetBuffer3i(&callerinfo, name, param, origvalue1, origvalue2, origvalue3, value1, value2, value3);
     IO_END();
 }
 
-static void dump_alGetBufferiv(void)
+static void decode_alGetBufferiv(void)
 {
     IO_START(alGetBufferiv);
     const ALuint name = IO_UINT32();
@@ -2136,93 +1710,77 @@ static void dump_alGetBufferiv(void)
         values[i] = IO_INT32();
     }
 
-    if (dump_calls) {
-        printf("(%u, %s, %p)", (uint) name, alenumString(param), origvalues);
-        if (origvalues) {
-            printf(" => {");
-            for (i = 0; i < numvals; i++) {
-                printf("%s %d", i > 0 ? "," : "", (int) values[i]);
-            }
-            printf("%s}", numvals > 0 ? " " : "");
-        }
-        printf("\n");
-    }
-
-    if (run_log) { REAL_alGetBufferiv(get_mapped_buffer(name), param, values); }
+    visit_alGetBufferiv(&callerinfo, name, param, origvalues, numvals, values);
 
     IO_END();
 }
 
-static void dump_alTracePushScope(void)
+static void decode_alTracePushScope(void)
 {
     IO_START(alTracePushScope);
     const ALchar *str = IO_STRING();
-    if (dump_calls) { printf("(%s)\n", litString(str)); }
+    callerinfo.trace_scope++;
     trace_scope++;
-    if (run_log) { if (REAL_alTracePushScope) REAL_alTracePushScope(str); }
+    visit_alTracePushScope(&callerinfo, str);
     IO_END();
 }
 
-static void dump_alTracePopScope(void)
+static void decode_alTracePopScope(void)
 {
-    trace_scope--;
     IO_START(alTracePopScope);
-    if (run_log) { if (REAL_alTracePopScope) REAL_alTracePopScope(); }
+    callerinfo.trace_scope--;
+    trace_scope--;
+    visit_alTracePopScope(&callerinfo);
     IO_END();
 }
 
-static void dump_alTraceMessage(void)
+static void decode_alTraceMessage(void)
 {
     IO_START(alTraceMessage);
     const ALchar *str = IO_STRING();
-    if (dump_calls) { printf("(%s)\n", litString(str)); }
-    if (run_log) { if (REAL_alTraceMessage) REAL_alTraceMessage(str); }
+    visit_alTraceMessage(&callerinfo, str);
     IO_END();
 }
 
-static void dump_alTraceBufferLabel(void)
+static void decode_alTraceBufferLabel(void)
 {
     IO_START(alTraceBufferLabel);
     const ALuint name = IO_UINT32();
     const ALchar *str = IO_STRING();
-    if (dump_calls) { printf("(%u, %s)\n", (uint) name, litString(str)); }
-    if (run_log) { if (REAL_alTraceBufferLabel) REAL_alTraceBufferLabel(get_mapped_buffer(name), str); }
+    visit_alTraceBufferLabel(&callerinfo, name, str);
     IO_END();
 }
 
-static void dump_alTraceSourceLabel(void)
+static void decode_alTraceSourceLabel(void)
 {
     IO_START(alTraceSourceLabel);
     const ALuint name = IO_UINT32();
     const ALchar *str = IO_STRING();
-    if (dump_calls) { printf("(%u, %s)\n", (uint) name, litString(str)); }
-    if (run_log) { if (REAL_alTraceSourceLabel) REAL_alTraceSourceLabel(get_mapped_source(name), str); }
+    visit_alTraceSourceLabel(&callerinfo, name, str);
     IO_END();
 }
 
-static void dump_alcTraceDeviceLabel(void)
+static void decode_alcTraceDeviceLabel(void)
 {
     IO_START(alcTraceDeviceLabel);
     ALCdevice *device = (ALCdevice *) IO_PTR();
     const ALchar *str = IO_STRING();
-    if (dump_calls) { printf("(%p, %s)\n", device, litString(str)); }
-    if (run_log) { if (REAL_alcTraceDeviceLabel) REAL_alcTraceDeviceLabel(get_mapped_device(device), str); }
+    visit_alcTraceDeviceLabel(&callerinfo, device, str);
     IO_END();
 }
 
-static void dump_alcTraceContextLabel(void)
+static void decode_alcTraceContextLabel(void)
 {
     IO_START(alcTraceContextLabel);
     ALCcontext *ctx = (ALCcontext *) IO_PTR();
     const ALchar *str = IO_STRING();
-    if (dump_calls) { printf("(%p, %s)\n", ctx, litString(str)); }
-    if (run_log) { if (REAL_alcTraceContextLabel) REAL_alcTraceContextLabel(get_mapped_context(ctx), str); }
+    visit_alcTraceContextLabel(&callerinfo, ctx, str);
     IO_END();
 }
 
 
 
-static void dump_al_error_event(void)
+static void decode_al_error_event(void)
 {
     const ALenum err = IO_ENUM();
     if (dump_errors) {
@@ -2230,7 +1788,7 @@ static void dump_al_error_event(void)
     }
 }
 
-static void dump_alc_error_event(void)
+static void decode_alc_error_event(void)
 {
     ALCdevice *device = (ALCdevice *) IO_PTR();
     const ALCenum err = IO_ALCENUM();
@@ -2239,7 +1797,7 @@ static void dump_alc_error_event(void)
     }
 }
 
-static void dump_callstack_syms_event(void)
+static void decode_callstack_syms_event(void)
 {
     const uint32 num_new_strings = IO_UINT32();
     uint32 i;
@@ -2255,7 +1813,7 @@ static void dump_callstack_syms_event(void)
     }
 }
 
-static void dump_context_state_changed_enum(void)
+static void decode_context_state_changed_enum(void)
 {
     void *ctx = IO_PTR();
     const ALenum param = IO_ENUM();
@@ -2265,7 +1823,7 @@ static void dump_context_state_changed_enum(void)
     }
 }
 
-static void dump_context_state_changed_float(void)
+static void decode_context_state_changed_float(void)
 {
     void *ctx = IO_PTR();
     const ALenum param = IO_ENUM();
@@ -2275,7 +1833,7 @@ static void dump_context_state_changed_float(void)
     }
 }
 
-static void dump_listener_state_changed_floatv(void)
+static void decode_listener_state_changed_floatv(void)
 {
     void *ctx = IO_PTR();
     const ALenum param = IO_ENUM();
@@ -2298,7 +1856,7 @@ static void dump_listener_state_changed_floatv(void)
     }
 }
 
-static void dump_source_state_changed_bool(void)
+static void decode_source_state_changed_bool(void)
 {
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
@@ -2308,7 +1866,7 @@ static void dump_source_state_changed_bool(void)
     }
 }
 
-static void dump_source_state_changed_enum(void)
+static void decode_source_state_changed_enum(void)
 {
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
@@ -2318,7 +1876,7 @@ static void dump_source_state_changed_enum(void)
     }
 }
 
-static void dump_source_state_changed_int(void)
+static void decode_source_state_changed_int(void)
 {
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
@@ -2328,7 +1886,7 @@ static void dump_source_state_changed_int(void)
     }
 }
 
-static void dump_source_state_changed_uint(void)
+static void decode_source_state_changed_uint(void)
 {
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
@@ -2338,7 +1896,7 @@ static void dump_source_state_changed_uint(void)
     }
 }
 
-static void dump_source_state_changed_float(void)
+static void decode_source_state_changed_float(void)
 {
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
@@ -2348,7 +1906,7 @@ static void dump_source_state_changed_float(void)
     }
 }
 
-static void dump_source_state_changed_float3(void)
+static void decode_source_state_changed_float3(void)
 {
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
@@ -2360,7 +1918,7 @@ static void dump_source_state_changed_float3(void)
     }
 }
 
-static void dump_buffer_state_changed_int(void)
+static void decode_buffer_state_changed_int(void)
 {
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
@@ -2376,70 +1934,71 @@ static void process_log(void)
     int eos = 0;
     while (!eos) {
         const uint32 wait_until = IO_UINT32();
-        if (run_log) {
+#warning fixme
+        //if (run_calls) {
             while (NOW() < wait_until) {
                 usleep(1000);  /* keep the pace of the original run */
             }
-        }
+        //}
 
         switch (IO_EVENTENUM()) {
-            #define ENTRYPOINT(ret,name,params,args) case ALEE_##name: dump_##name(); break;
+            #define ENTRYPOINT(ret,name,params,args,visitparams,visitargs) case ALEE_##name: decode_##name(); break;
             #include "altrace_entrypoints.h"
 
             case ALEE_NEW_CALLSTACK_SYMS:
-                dump_callstack_syms_event();
+                decode_callstack_syms_event();
                 break;
 
             case ALEE_ALERROR_TRIGGERED:
-                dump_al_error_event();
+                decode_al_error_event();
                 break;
 
             case ALEE_ALCERROR_TRIGGERED:
-                dump_alc_error_event();
+                decode_alc_error_event();
                 break;
 
             case ALEE_CONTEXT_STATE_CHANGED_ENUM:
-                dump_context_state_changed_enum();
+                decode_context_state_changed_enum();
                 break;
 
             case ALEE_CONTEXT_STATE_CHANGED_FLOAT:
-                dump_context_state_changed_float();
+                decode_context_state_changed_float();
                 break;
 
             case ALEE_LISTENER_STATE_CHANGED_FLOATV:
-                dump_listener_state_changed_floatv();
+                decode_listener_state_changed_floatv();
                 break;
 
             case ALEE_SOURCE_STATE_CHANGED_BOOL:
-                dump_source_state_changed_bool();
+                decode_source_state_changed_bool();
                 break;
 
             case ALEE_SOURCE_STATE_CHANGED_ENUM:
-                dump_source_state_changed_enum();
+                decode_source_state_changed_enum();
                 break;
 
             case ALEE_SOURCE_STATE_CHANGED_INT:
-                dump_source_state_changed_int();
+                decode_source_state_changed_int();
                 break;
 
             case ALEE_SOURCE_STATE_CHANGED_UINT:
-                dump_source_state_changed_uint();
+                decode_source_state_changed_uint();
                 break;
 
             case ALEE_SOURCE_STATE_CHANGED_FLOAT:
-                dump_source_state_changed_float();
+                decode_source_state_changed_float();
                 break;
 
             case ALEE_SOURCE_STATE_CHANGED_FLOAT3:
-                dump_source_state_changed_float3();
+                decode_source_state_changed_float3();
                 break;
 
             case ALEE_BUFFER_STATE_CHANGED_INT:
-                dump_buffer_state_changed_int();
+                decode_buffer_state_changed_int();
                 break;
 
             case ALEE_EOS:
-                if (dump_calls) { printf("\n<<< END OF LOG FILE >>>\n"); }
+                if (dumping) { printf("\n<<< END OF LOG FILE >>>\n"); }
                 eos = 1;
                 break;
 
@@ -2449,72 +2008,6 @@ static void process_log(void)
                 break;
         }
     }
-}
-
-int main(int argc, char **argv)
-{
-    const char *fname = NULL;
-    int usage = 0;
-    int i;
-
-    for (i = 1; i < argc; i++) {
-        const char *arg = argv[i];
-        if (strcmp(arg, "--dump-calls") == 0) {
-            dump_calls = 1;
-        } else if (strcmp(arg, "--no-dump-calls") == 0) {
-            dump_calls = 0;
-        } else if (strcmp(arg, "--dump-callers") == 0) {
-            dump_callers = 1;
-        } else if (strcmp(arg, "--no-dump-callers") == 0) {
-            dump_callers = 0;
-        } else if (strcmp(arg, "--dump-errors") == 0) {
-            dump_errors = 1;
-        } else if (strcmp(arg, "--no-dump-errors") == 0) {
-            dump_errors = 0;
-        } else if (strcmp(arg, "--dump-state-changes") == 0) {
-            dump_state_changes = 1;
-        } else if (strcmp(arg, "--no-dump-state-changes") == 0) {
-            dump_state_changes = 0;
-        } else if (strcmp(arg, "--dump-all") == 0) {
-            dump_calls = dump_callers = dump_errors = dump_state_changes = 1;
-        } else if (strcmp(arg, "--no-dump-all") == 0) {
-            dump_calls = dump_callers = dump_errors = dump_state_changes = 0;
-        } else if (strcmp(arg, "--run") == 0) {
-            run_log = 1;
-        } else if (strcmp(arg, "--no-run") == 0) {
-            run_log = 0;
-        } else if (strcmp(arg, "--help") == 0) {
-            usage = 1;
-        } else if (fname == NULL) {
-            fname = arg;
-        } else {
-            usage = 1;
-        }
-    }
-
-    if (fname == NULL) {
-        usage = 1;
-    }
-
-    if (usage) {
-        fprintf(stderr, "USAGE: %s [args] <altrace.trace>\n", argv[0]);
-        fprintf(stderr, "  args:\n");
-        fprintf(stderr, "   --[no-]dump-calls\n");
-        fprintf(stderr, "   --[no-]dump-callers\n");
-        fprintf(stderr, "   --[no-]dump-errors\n");
-        fprintf(stderr, "   --[no-]dump-state-changes\n");
-        fprintf(stderr, "   --[no-]dump-all\n");
-        fprintf(stderr, "   --[no-]run\n");
-        fprintf(stderr, "\n");
-        return 1;
-    }
-
-    dumping = dump_calls || dump_callers || dump_errors || dump_state_changes;
-
-    init_altrace_playback(fname);
-    process_log();
-    quit_altrace_playback();
-    return 0;
 }
 
 // end of altrace_playback.c ...

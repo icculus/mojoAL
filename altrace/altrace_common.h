@@ -1,5 +1,5 @@
 /**
- * MojoAL; a simple drop-in OpenAL implementation.
+ * alTrace; a debugging tool for OpenAL.
  *
  * Please see the file LICENSE.txt in the source's root directory.
  *
@@ -89,6 +89,8 @@ static uint64 swap64(uint64 x)
 #define swap64(x) (x)
 #endif
 
+#define MAX_CALLSTACKS 32
+
 typedef enum
 {
     ALEE_EOS,
@@ -107,13 +109,13 @@ typedef enum
     ALEE_SOURCE_STATE_CHANGED_FLOAT,
     ALEE_SOURCE_STATE_CHANGED_FLOAT3,
     ALEE_BUFFER_STATE_CHANGED_INT,
-    #define ENTRYPOINT(ret,name,params,args) ALEE_##name,
+    #define ENTRYPOINT(ret,name,params,args,visitparams,visitargs) ALEE_##name,
     #include "altrace_entrypoints.h"
     ALEE_MAX
 } EventEnum;
 
 
-#define ENTRYPOINT(ret,name,params,args) static ret (*REAL_##name) params = NULL;
+#define ENTRYPOINT(ret,name,params,args,visitparams,visitargs) static ret (*REAL_##name) params = NULL;
 #include "altrace_entrypoints.h"
 
 static struct timespec starttime;
@@ -175,7 +177,7 @@ static int load_real_openal(void)
     }
 
     #define ENTRYPOINT_EXTENSIONS_BEGIN() extensions = 1;
-    #define ENTRYPOINT(ret,name,params,args) REAL_##name = (ret (*)params) loadEntryPoint(realdll, #name, extensions, &okay);
+    #define ENTRYPOINT(ret,name,params,args,visitparams,visitargs) REAL_##name = (ret (*)params) loadEntryPoint(realdll, #name, extensions, &okay);
     #include "altrace_entrypoints.h"
     return okay;
 }
@@ -186,7 +188,7 @@ static void close_real_openal(void)
 
     realdll = NULL;
 
-    #define ENTRYPOINT(ret,name,params,args) REAL_##name = NULL;
+    #define ENTRYPOINT(ret,name,params,args,visitparams,visitargs) REAL_##name = NULL;
     #include "altrace_entrypoints.h"
 
     if (dll) {
