@@ -250,8 +250,20 @@ static void IO_ENTRYINFO(CallerInfo *callerinfo)
 
 #define ENTRYPOINT(ret,name,params,args,visitparams,visitargs) static void visit_##name visitparams;
 #include "altrace_entrypoints.h"
+static void visit_al_error_event(const ALenum err);
+static void visit_alc_error_event(ALCdevice *device, const ALCenum err);
+static void visit_context_state_changed_enum(ALCcontext *ctx, const ALenum param, const ALenum newval);
+static void visit_context_state_changed_float(ALCcontext *ctx, const ALenum param, const ALfloat newval);
+static void visit_listener_state_changed_floatv(ALCcontext *ctx, const ALenum param, const uint32 numfloats, const ALfloat *values);
+static void visit_source_state_changed_bool(const ALuint name, const ALenum param, const ALboolean newval);
+static void visit_source_state_changed_enum(const ALuint name, const ALenum param, const ALenum newval);
+static void visit_source_state_changed_int(const ALuint name, const ALenum param, const ALint newval);
+static void visit_source_state_changed_uint(const ALuint name, const ALenum param, const ALuint newval);
+static void visit_source_state_changed_float(const ALuint name, const ALenum param, const ALfloat newval);
+static void visit_source_state_changed_float3(const ALuint name, const ALenum param, const ALfloat newval1, const ALfloat newval2, const ALfloat newval3);
+static void visit_buffer_state_changed_int(const ALuint name, const ALenum param, const ALint newval);
+static void visit_eos(const ALboolean okay, const uint32 wait_until);
 
-static int dump_state_changes;
 
 static void init_altrace_playback(const char *filename, const int run_calls)
 {
@@ -578,20 +590,11 @@ static void decode_alcCaptureOpenDevice(void)
     const ALCenum format = IO_ALCENUM();
     const ALCsizei buffersize = IO_ALSIZEI();
     ALCdevice *retval = (ALCdevice *) IO_PTR();
-
-
     const ALint major_version = retval ? IO_INT32() : 0;
     const ALint minor_version = retval ? IO_INT32() : 0;
     const ALCchar *devspec = (const ALCchar *) (retval ? IO_STRING() : NULL);
     const ALCchar *extensions = (const ALCchar *) (retval ? IO_STRING() : NULL);
-
-#warning move this to an event
-    if (dump_state_changes) {
-        printf("<<< CAPTURE DEVICE STATE: alc_version=%d.%d device_specifier=%s extensions=%s >>>\n", (int) major_version, (int) minor_version, litString(devspec), litString(extensions));
-    }
-
-    visit_alcCaptureOpenDevice(&callerinfo, retval, devicename, frequency, format, buffersize);
-
+    visit_alcCaptureOpenDevice(&callerinfo, retval, devicename, frequency, format, buffersize, major_version, minor_version, devspec, extensions);
     IO_END();
 }
 
@@ -609,20 +612,11 @@ static void decode_alcOpenDevice(void)
     IO_START(alcOpenDevice);
     const ALCchar *devicename = IO_STRING();
     ALCdevice *retval = (ALCdevice *) IO_PTR();
-
-
     const ALint major_version = retval ? IO_INT32() : 0;
     const ALint minor_version = retval ? IO_INT32() : 0;
     const ALCchar *devspec = (const ALCchar *) (retval ? IO_STRING() : NULL);
     const ALCchar *extensions = (const ALCchar *) (retval ? IO_STRING() : NULL);
-
-#warning move this to an event
-    if (dump_state_changes) {
-        printf("<<< PLAYBACK DEVICE STATE: alc_version=%d.%d device_specifier=%s extensions=%s >>>\n", (int) major_version, (int) minor_version, litString(devspec), litString(extensions));
-    }
-
-    visit_alcOpenDevice(&callerinfo, retval, devicename);
-
+    visit_alcOpenDevice(&callerinfo, retval, devicename, major_version, minor_version, devspec, extensions);
     IO_END();
 }
 
@@ -1230,6 +1224,7 @@ static void decode_alSourceiv(void)
 
 static void decode_alSourcei(void)
 {
+#pragma warning AL_LOOPING is bool, others might be enum
     IO_START(alSourcei);
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
@@ -1583,7 +1578,7 @@ static void decode_alBuffer3f(void)
     const ALfloat value1 = IO_FLOAT();
     const ALfloat value2 = IO_FLOAT();
     const ALfloat value3 = IO_FLOAT();
-    visit_alSource3f(&callerinfo, name, param, value1, value2, value3);
+    visit_alBuffer3f(&callerinfo, name, param, value1, value2, value3);
     IO_END();
 }
 
@@ -1782,24 +1777,7 @@ static void decode_alcTraceContextLabel(void)
 }
 
 
-
-static void decode_al_error_event(void)
-{
-    const ALenum err = IO_ENUM();
-    if (dump_errors) {
-        printf("<<< AL ERROR SET HERE: %s >>>\n", alenumString(err));
-    }
-}
-
-static void decode_alc_error_event(void)
-{
-    ALCdevice *device = (ALCdevice *) IO_PTR();
-    const ALCenum err = IO_ALCENUM();
-    if (dump_errors) {
-        printf("<<< ALC ERROR SET HERE: device=%p %s >>>\n", device, alcenumString(err));
-    }
-}
-
+// this one doesn't have a visitor; we handle compiling the symbol map here.
 static void decode_callstack_syms_event(void)
 {
     const uint32 num_new_strings = IO_UINT32();
@@ -1816,47 +1794,49 @@ static void decode_callstack_syms_event(void)
     }
 }
 
+
+static void decode_al_error_event(void)
+{
+    const ALenum err = IO_ENUM();
+    visit_al_error_event(err);
+}
+
+static void decode_alc_error_event(void)
+{
+    ALCdevice *device = (ALCdevice *) IO_PTR();
+    const ALCenum err = IO_ALCENUM();
+    visit_alc_error_event(device, err);
+}
+
 static void decode_context_state_changed_enum(void)
 {
-    void *ctx = IO_PTR();
+    ALCcontext *ctx = (ALCcontext *) IO_PTR();
     const ALenum param = IO_ENUM();
     const ALenum newval = IO_ENUM();
-    if (dump_state_changes) {
-        printf("<<< CONTEXT STATE CHANGE: ctx=%p param=%s value=%s >>>\n", ctx, alenumString(param), alenumString(newval));
-    }
+    visit_context_state_changed_enum(ctx, param, newval);
 }
 
 static void decode_context_state_changed_float(void)
 {
-    void *ctx = IO_PTR();
+    ALCcontext *ctx = (ALCcontext *) IO_PTR();
     const ALenum param = IO_ENUM();
     const ALfloat newval = IO_FLOAT();
-    if (dump_state_changes) {
-        printf("<<< CONTEXT STATE CHANGE: ctx=%p param=%s value=%f >>>\n", ctx, alenumString(param), newval);
-    }
+    visit_context_state_changed_float(ctx, param, newval);
 }
 
 static void decode_listener_state_changed_floatv(void)
 {
-    void *ctx = IO_PTR();
+    ALCcontext *ctx = (ALCcontext *) IO_PTR();
     const ALenum param = IO_ENUM();
-    const int32 numfloats = IO_INT32();
-    int32 i;
-
-    if (dump_state_changes) {
-        printf("<<< LISTENER STATE CHANGE: ctx=%p param=%s values={", ctx, alenumString(param));
-    }
+    const uint32 numfloats = IO_UINT32();
+    ALfloat *values = (ALfloat *) get_ioblob(numfloats * sizeof (ALfloat));
+    uint32 i;
 
     for (i = 0; i < numfloats; i++) {
-        const ALfloat newval = IO_FLOAT();
-        if (dump_state_changes) {
-            printf("%s %f", i > 0 ? "," : "", newval);
-        }
+        values[i] = IO_FLOAT();
     }
 
-    if (dump_state_changes) {
-        printf("%s} >>>\n", numfloats > 0 ? " " : "");
-    }
+    visit_listener_state_changed_floatv(ctx, param, numfloats, values);
 }
 
 static void decode_source_state_changed_bool(void)
@@ -1864,9 +1844,7 @@ static void decode_source_state_changed_bool(void)
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
     const ALboolean newval = IO_BOOLEAN();
-    if (dump_state_changes) {
-        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value=%s >>>\n", (uint) name, alenumString(param), alboolString(newval));
-    }
+    visit_source_state_changed_bool(name, param, newval);
 }
 
 static void decode_source_state_changed_enum(void)
@@ -1874,9 +1852,7 @@ static void decode_source_state_changed_enum(void)
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
     const ALenum newval = IO_ENUM();
-    if (dump_state_changes) {
-        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value=%s >>>\n", (uint) name, alenumString(param), alenumString(newval));
-    }
+    visit_source_state_changed_enum(name, param, newval);
 }
 
 static void decode_source_state_changed_int(void)
@@ -1884,9 +1860,7 @@ static void decode_source_state_changed_int(void)
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
     const ALint newval = IO_INT32();
-    if (dump_state_changes) {
-        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value=%d >>>\n", (uint) name, alenumString(param), (int) newval);
-    }
+    visit_source_state_changed_int(name, param, newval);
 }
 
 static void decode_source_state_changed_uint(void)
@@ -1894,9 +1868,7 @@ static void decode_source_state_changed_uint(void)
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
     const ALuint newval = IO_UINT32();
-    if (dump_state_changes) {
-        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value=%u >>>\n", (uint) name, alenumString(param), (uint) newval);
-    }
+    visit_source_state_changed_uint(name, param, newval);
 }
 
 static void decode_source_state_changed_float(void)
@@ -1904,9 +1876,7 @@ static void decode_source_state_changed_float(void)
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
     const ALfloat newval = IO_FLOAT();
-    if (dump_state_changes) {
-        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value=%f >>>\n", (uint) name, alenumString(param), newval);
-    }
+    visit_source_state_changed_float(name, param, newval);
 }
 
 static void decode_source_state_changed_float3(void)
@@ -1916,9 +1886,7 @@ static void decode_source_state_changed_float3(void)
     const ALfloat newval1 = IO_FLOAT();
     const ALfloat newval2 = IO_FLOAT();
     const ALfloat newval3 = IO_FLOAT();
-    if (dump_state_changes) {
-        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value={ %f, %f, %f } >>>\n", (uint) name, alenumString(param), newval1, newval2, newval3);
-    }
+    visit_source_state_changed_float3(name, param, newval1, newval2, newval3);
 }
 
 static void decode_buffer_state_changed_int(void)
@@ -1926,15 +1894,19 @@ static void decode_buffer_state_changed_int(void)
     const ALuint name = IO_UINT32();
     const ALenum param = IO_ENUM();
     const ALint newval = IO_INT32();
-    if (dump_state_changes) {
-        printf("<<< BUFFER STATE CHANGE: name=%u param=%s value=%d >>>\n", (uint) name, alenumString(param), (int) newval);
-    }
+    visit_buffer_state_changed_int(name, param, newval);
+}
+
+static void decode_eos(void)
+{
+    const uint32 ticks = IO_UINT32();
+    visit_eos(AL_TRUE, ticks);
 }
 
 
-static void process_log(void)
+static void process_tracelog(void)
 {
-    int eos = 0;
+    ALboolean eos = AL_FALSE;
     while (!eos) {
         switch (IO_EVENTENUM()) {
             #define ENTRYPOINT(ret,name,params,args,visitparams,visitargs) case ALEE_##name: decode_##name(); break;
@@ -1993,13 +1965,13 @@ static void process_log(void)
                 break;
 
             case ALEE_EOS:
-                if (dumping) { printf("\n<<< END OF LOG FILE >>>\n"); }
-                eos = 1;
+                decode_eos();
+                eos = AL_TRUE;
                 break;
 
             default:
-                printf("\n<<< UNEXPECTED LOG ENTRY. BUG? NEW LOG VERSION? CORRUPT FILE? >>>\n");
-                eos = 1;
+                visit_eos(AL_FALSE, 0);
+                eos = AL_TRUE;
                 break;
         }
     }

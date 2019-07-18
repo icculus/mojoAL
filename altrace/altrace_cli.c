@@ -16,6 +16,121 @@ static int dumping = 1;
 static int run_calls = 0;
 
 
+static void wait_until(const uint32 ticks)
+{
+    while (NOW() < ticks) {
+        usleep(1000);  /* keep the pace of the original run */
+    }
+}
+
+
+// Some metadata visitor things...
+
+static void visit_al_error_event(const ALenum err)
+{
+    if (dump_errors) {
+        printf("<<< AL ERROR SET HERE: %s >>>\n", alenumString(err));
+    }
+}
+
+static void visit_alc_error_event(ALCdevice *device, const ALCenum err)
+{
+    if (dump_errors) {
+        printf("<<< ALC ERROR SET HERE: device=%s %s >>>\n", ptrString(device), alcenumString(err));
+    }
+}
+
+static void visit_context_state_changed_enum(ALCcontext *ctx, const ALenum param, const ALenum newval)
+{
+    if (dump_state_changes) {
+        printf("<<< CONTEXT STATE CHANGE: ctx=%s param=%s value=%s >>>\n", ptrString(ctx), alenumString(param), alenumString(newval));
+    }
+}
+
+static void visit_context_state_changed_float(ALCcontext *ctx, const ALenum param, const ALfloat newval)
+{
+    if (dump_state_changes) {
+        printf("<<< CONTEXT STATE CHANGE: ctx=%s param=%s value=%f >>>\n", ptrString(ctx), alenumString(param), newval);
+    }
+}
+
+static void visit_listener_state_changed_floatv(ALCcontext *ctx, const ALenum param, const uint32 numfloats, const ALfloat *values)
+{
+    if (dump_state_changes) {
+        uint32 i;
+        printf("<<< LISTENER STATE CHANGE: ctx=%s param=%s values={", ptrString(ctx), alenumString(param));
+        for (i = 0; i < numfloats; i++) {
+            printf("%s %f", i > 0 ? "," : "", values[i]);
+        }
+        printf("%s} >>>\n", numfloats > 0 ? " " : "");
+    }
+}
+
+static void visit_source_state_changed_bool(const ALuint name, const ALenum param, const ALboolean newval)
+{
+    if (dump_state_changes) {
+        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value=%s >>>\n", (uint) name, alenumString(param), alboolString(newval));
+    }
+}
+
+static void visit_source_state_changed_enum(const ALuint name, const ALenum param, const ALenum newval)
+{
+    if (dump_state_changes) {
+        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value=%s >>>\n", (uint) name, alenumString(param), alenumString(newval));
+    }
+}
+
+static void visit_source_state_changed_int(const ALuint name, const ALenum param, const ALint newval)
+{
+    if (dump_state_changes) {
+        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value=%d >>>\n", (uint) name, alenumString(param), (int) newval);
+    }
+}
+
+static void visit_source_state_changed_uint(const ALuint name, const ALenum param, const ALuint newval)
+{
+    if (dump_state_changes) {
+        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value=%u >>>\n", (uint) name, alenumString(param), (uint) newval);
+    }
+}
+
+static void visit_source_state_changed_float(const ALuint name, const ALenum param, const ALfloat newval)
+{
+    if (dump_state_changes) {
+        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value=%f >>>\n", (uint) name, alenumString(param), newval);
+    }
+}
+
+static void visit_source_state_changed_float3(const ALuint name, const ALenum param, const ALfloat newval1, const ALfloat newval2, const ALfloat newval3)
+{
+    if (dump_state_changes) {
+        printf("<<< SOURCE STATE CHANGE: name=%u param=%s value={ %f, %f, %f } >>>\n", (uint) name, alenumString(param), newval1, newval2, newval3);
+    }
+}
+
+static void visit_buffer_state_changed_int(const ALuint name, const ALenum param, const ALint newval)
+{
+    if (dump_state_changes) {
+        printf("<<< BUFFER STATE CHANGE: name=%u param=%s value=%d >>>\n", (uint) name, alenumString(param), (int) newval);
+    }
+}
+
+static void visit_eos(const ALboolean okay, const uint32 ticks)
+{
+    if (run_calls) {
+        wait_until(ticks);
+    }
+
+    if (!okay) {
+        fprintf(stderr, "\n<<< UNEXPECTED LOG ENTRY. BUG? NEW LOG VERSION? CORRUPT FILE? >>>\n");
+        fflush(stderr);
+    } else if (dumping) {
+        printf("\n<<< END OF TRACE FILE >>>\n");
+        fflush(stdout);
+    }
+}
+
+
 // Visitors for logging OpenAL calls to stdout...
 
 static void dump_alcGetCurrentContext(const CallerInfo *callerinfo, ALCcontext *retval)
@@ -48,9 +163,12 @@ static void dump_alcGetString(const CallerInfo *callerinfo, const ALCchar *retva
     printf("(%s, %s) => %s\n", ptrString(device), alcenumString(param), litString(retval));
 }
 
-static void dump_alcCaptureOpenDevice(const CallerInfo *callerinfo, ALCdevice *retval, const ALCchar *devicename, ALCuint frequency, ALCenum format, ALCsizei buffersize)
+static void dump_alcCaptureOpenDevice(const CallerInfo *callerinfo, ALCdevice *retval, const ALCchar *devicename, ALCuint frequency, ALCenum format, ALCsizei buffersize, ALint major_version, ALint minor_version, const ALCchar *devspec, const ALCchar *extensions)
 {
     printf("(%s, %u, %s, %u) => %s\n", litString(devicename), (uint) frequency, alcenumString(format), (uint) buffersize, ptrString(retval));
+    if (retval && dump_state_changes) {
+        printf("<<< CAPTURE DEVICE STATE: alc_version=%d.%d device_specifier=%s extensions=%s >>>\n", (int) major_version, (int) minor_version, litString(devspec), litString(extensions));
+    }
 }
 
 static void dump_alcCaptureCloseDevice(const CallerInfo *callerinfo, ALCboolean retval, ALCdevice *device)
@@ -58,9 +176,12 @@ static void dump_alcCaptureCloseDevice(const CallerInfo *callerinfo, ALCboolean 
     printf("(%s) => %s\n", ptrString(device), alcboolString(retval));
 }
 
-static void dump_alcOpenDevice(const CallerInfo *callerinfo, ALCdevice *retval, const ALCchar *devicename)
+static void dump_alcOpenDevice(const CallerInfo *callerinfo, ALCdevice *retval, const ALCchar *devicename, ALint major_version, ALint minor_version, const ALCchar *devspec, const ALCchar *extensions)
 {
     printf("(%s) => %s\n", litString(devicename), ptrString(retval));
+    if (retval && dump_state_changes) {
+        printf("<<< PLAYBACK DEVICE STATE: alc_version=%d.%d device_specifier=%s extensions=%s >>>\n", (int) major_version, (int) minor_version, litString(devspec), litString(extensions));
+    }
 }
 
 static void dump_alcCloseDevice(const CallerInfo *callerinfo, ALCboolean retval, ALCdevice *device)
@@ -791,7 +912,7 @@ static void run_alcGetString(const CallerInfo *callerinfo, const ALCchar *retval
     REAL_alcGetString(get_mapped_device(device), param);
 }
 
-static void run_alcCaptureOpenDevice(const CallerInfo *callerinfo, ALCdevice *retval, const ALCchar *devicename, ALCuint frequency, ALCenum format, ALCsizei buffersize)
+static void run_alcCaptureOpenDevice(const CallerInfo *callerinfo, ALCdevice *retval, const ALCchar *devicename, ALCuint frequency, ALCenum format, ALCsizei buffersize, ALint major_version, ALint minor_version, const ALCchar *devspec, const ALCchar *extensions)
 {
     ALCdevice *dev = REAL_alcCaptureOpenDevice(devicename, frequency, format, buffersize);
     if (!dev && retval) {
@@ -816,7 +937,7 @@ static void run_alcCaptureCloseDevice(const CallerInfo *callerinfo, ALCboolean r
     REAL_alcCaptureCloseDevice(get_mapped_device(device));
 }
 
-static void run_alcOpenDevice(const CallerInfo *callerinfo, ALCdevice *retval, const ALCchar *devicename)
+static void run_alcOpenDevice(const CallerInfo *callerinfo, ALCdevice *retval, const ALCchar *devicename, ALint major_version, ALint minor_version, const ALCchar *devspec, const ALCchar *extensions)
 {
     ALCdevice *dev = REAL_alcOpenDevice(devicename);
     if (!dev && retval) {
@@ -1405,13 +1526,6 @@ static void dump_callerinfo(const CallerInfo *callerinfo, const char *fn)
     }
 }
 
-static void wait_until(const uint32 ticks)
-{
-    while (NOW() < ticks) {
-        usleep(1000);  /* keep the pace of the original run */
-    }
-}
-
 #define ENTRYPOINT(ret,name,params,args,visitparams,visitargs) \
     static void visit_##name visitparams { \
         dump_callerinfo(callerinfo, #name); \
@@ -1422,7 +1536,6 @@ static void wait_until(const uint32 ticks)
         } \
         if (dumping) { fflush(stdout); } \
     }
-
 
 #include "altrace_entrypoints.h"
 
@@ -1488,8 +1601,9 @@ int main(int argc, char **argv)
     dumping = dump_calls || dump_callers || dump_errors || dump_state_changes;
 
     init_altrace_playback(fname, run_calls);
-    process_log();
+    process_tracelog();
     quit_altrace_playback();
+
     return 0;
 }
 

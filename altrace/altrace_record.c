@@ -765,7 +765,7 @@ static void check_listener_state_floatv(const ALenum param, const int numfloats,
             IO_EVENTENUM(ALEE_LISTENER_STATE_CHANGED_FLOATV);
             IO_PTR(current_context);
             IO_ENUM(param);
-            IO_INT32(numfloats);
+            IO_UINT32((uint32) numfloats);
             for (i = 0; i < numfloats; i++) {
                 IO_FLOAT(fval[i]);
             }
@@ -2836,6 +2836,7 @@ static void check_al_async_states(void)
         if (device->iscapture) {
             check_device_state_int(device, ALC_CAPTURE_SAMPLES, &device->capture_samples);
         } else {
+            #pragma warning FIXME have to make these contexts current
             ContextWrapper *ctx;
             for (ctx = device->contexts; ctx != NULL; ctx = ctx->next) {
                 SourceWrapper *src;
