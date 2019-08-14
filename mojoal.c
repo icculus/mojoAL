@@ -2346,7 +2346,6 @@ ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, AL
     desired.freq = frequency;
     desired.samples = 1024;  FIXME("is this a reasonable value?");
     desired.callback = capture_device_callback;
-    desired.userdata = device;
 
     if (SDL_strcmp(devicename, DEFAULT_CAPTURE_DEVICE) != 0) {
         sdldevname = devicename;  /* we want NULL for the best SDL default unless app is explicit. */
@@ -2373,6 +2372,8 @@ ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, AL
     }
 
     device->capture.ring.buffer = ringbuf;
+
+    desired.userdata = device;
 
     device->sdldevice = SDL_OpenAudioDevice(sdldevname, 1, &desired, NULL, 0);
     if (!device->sdldevice) {
