@@ -3688,6 +3688,7 @@ static void _alGetSourceiv(const ALuint name, const ALenum param, ALint *values)
         case AL_SOURCE_STATE: *values = (ALint) SDL_AtomicGet(&src->state); break;
         case AL_SOURCE_TYPE: *values = (ALint) src->type; break;
         case AL_BUFFER: *values = (ALint) (src->buffer ? src->buffer->name : 0); break;
+        // !!! FIXME: AL_BUFFERS_QUEUED is the total number of buffers pending, playing, and processed, so this is wrong. It might also have to be 1 if there's a static buffer, but I'm not sure.
         case AL_BUFFERS_QUEUED: *values = (ALint) SDL_AtomicGet(&src->buffer_queue.num_items); break;
         case AL_BUFFERS_PROCESSED: *values = (ALint) SDL_AtomicGet(&src->buffer_queue_processed.num_items); break;
         case AL_SOURCE_RELATIVE: *values = (ALint) src->source_relative; break;
