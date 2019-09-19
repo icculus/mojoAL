@@ -1761,9 +1761,10 @@ static void mix_context(ALCcontext *ctx, float *stream, int len)
                 SDL_assert(prev != NULL);
                 prev->playlist_next = next;
             }
+        } else {
+            prev = i;
         }
         SDL_AtomicSet(&i->mixer_accessible, 0);
-        prev = i;
     }
 }
 
