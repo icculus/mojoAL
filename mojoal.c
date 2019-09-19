@@ -3503,9 +3503,8 @@ static void set_source_static_buffer(ALCcontext *ctx, ALsource *src, const ALuin
                 FIXME("need a way to prealloc space in the stream, so the mixer doesn't have to malloc");
             }
 
-            /* this can happen if you alSourceStop() and change the buffer while the exact source is in the middle of mixing */
-            /*wait_if_source_is_mixing(ctx, src);*/
-            /* NOTE: the above wait is commented out because alSourceStop() currently waits too, so you can't end up in a race condition here. The assert is here to verify that. */
+            /* this can happen if you alSource(AL_BUFFER) while the exact source is in the middle of mixing */
+            wait_if_source_is_mixing(ctx, src);
             SDL_assert(SDL_AtomicGet(&src->mixer_accessible) == 0);
 
             if (src->buffer != buffer) {
