@@ -18,6 +18,15 @@
 #include <emscripten.h>
 #endif
 
+
+static LPALCTRACEDEVICELABEL palcTraceDeviceLabel;
+static LPALCTRACECONTEXTLABEL palcTraceContextLabel;
+static LPALTRACEPUSHSCOPE palTracePushScope;
+static LPALTRACEPOPSCOPE palTracePopScope;
+static LPALTRACEMESSAGE palTraceMessage;
+static LPALTRACEBUFFERLABEL palTraceBufferLabel;
+static LPALTRACESOURCELABEL palTraceSourceLabel;
+
 static int check_openal_error(const char *where)
 {
     const ALenum err = alGetError();
@@ -91,8 +100,10 @@ static int mainloop(SDL_Renderer *renderer)
             case SDL_MOUSEBUTTONDOWN:
                 if (e.button.button == 1) {
                     if (e.button.state == SDL_RELEASED) {
+                        if (palTraceMessage) palTraceMessage("Mouse button released");
                         draggingobj = -1;
                     } else {
+                        if (palTraceMessage) palTraceMessage("Mouse button pressed");
                         draggingobj = obj_under_mouse(e.button.x, e.button.y);
                     }
                 }
@@ -170,11 +181,15 @@ static void spatialize(SDL_Renderer *renderer, const char *fname)
 
     printf("Now queueing '%s'...\n", fname);
 
+    if (palTracePushScope) palTracePushScope("Initial setup");
+
     alGenSources(1, &sid);
     if (check_openal_error("alGenSources")) {
         SDL_FreeWAV(buf);
         return;
     }
+
+    if (palTraceSourceLabel) palTraceSourceLabel(sid, "Moving source");
 
     alGenBuffers(1, &bid);
     if (check_openal_error("alGenBuffers")) {
@@ -183,6 +198,8 @@ static void spatialize(SDL_Renderer *renderer, const char *fname)
         SDL_FreeWAV(buf);
         return;
     }
+
+    if (palTraceBufferLabel) palTraceBufferLabel(bid, "Sound effect");
 
     alBufferData(bid, alfmt, buf, buflen, spec.freq);
     SDL_FreeWAV(buf);
@@ -207,11 +224,14 @@ static void spatialize(SDL_Renderer *renderer, const char *fname)
     alSource3f(o->sid, AL_POSITION, ((o->x / 400.0f) - 1.0f) * 10.0f, 0.0f, ((o->y / 300.0f) - 1.0f) * 10.0f);
     o++;
 
+    if (palTracePopScope) palTracePopScope();
+
     #ifdef __EMSCRIPTEN__
     emscripten_set_main_loop_arg(emscriptenMainloop, renderer, 0, 1);
     #else
     while (mainloop(renderer)) { /* go again */ }
     #endif
+
 
     //alSourcei(sid, AL_BUFFER, 0);  /* force unqueueing */
     alDeleteSources(1, &sid);
@@ -270,6 +290,11 @@ int main(int argc, char **argv)
         return 5;
     }
 
+    if (alcIsExtensionPresent(device, "ALC_EXT_trace_info")) {
+        palcTraceDeviceLabel = (LPALCTRACEDEVICELABEL) alcGetProcAddress(device, "alcTraceDeviceLabel");
+        palcTraceContextLabel = (LPALCTRACECONTEXTLABEL) alcGetProcAddress(device, "alcTraceContextLabel");
+    }
+
     context = alcCreateContext(device, NULL);
     if (!context) {
         printf("Couldn't create OpenAL context.\n");
@@ -279,8 +304,19 @@ int main(int argc, char **argv)
         SDL_Quit();
         return 6;
     }
-        
+
+    if (palcTraceDeviceLabel) palcTraceDeviceLabel(device, "The playback device");
+    if (palcTraceContextLabel) palcTraceContextLabel(context, "Main context");
+
     alcMakeContextCurrent(context);
+
+    if (alIsExtensionPresent("AL_EXT_trace_info")) {
+        palTracePushScope = (LPALTRACEPUSHSCOPE) alGetProcAddress("alTracePushScope");
+        palTracePopScope = (LPALTRACEPOPSCOPE) alGetProcAddress("alTracePopScope");
+        palTraceMessage = (LPALTRACEMESSAGE) alGetProcAddress("alTraceMessage");
+        palTraceBufferLabel = (LPALTRACEBUFFERLABEL) alGetProcAddress("alTraceBufferLabel");
+        palTraceSourceLabel = (LPALTRACESOURCELABEL) alGetProcAddress("alTraceSourceLabel");
+    }
 
     spatialize(renderer, argv[1]);
 
