@@ -521,6 +521,9 @@ struct ALCcontext_struct
     ALCcontext *next;
 };
 
+/* forward declarations */
+static int source_get_offset(ALsource *src, ALenum param);
+static void source_set_offset(ALsource *src, ALenum param, ALfloat value);
 
 /* the just_queued list is backwards. Add it to the queue in the correct order. */
 static void queue_new_buffer_items_recursive(BufferQueue *queue, BufferQueueItem *items)
@@ -3426,7 +3429,7 @@ static void _alSourcefv(const ALuint name, const ALenum param, const ALfloat *va
         case AL_SEC_OFFSET:
         case AL_SAMPLE_OFFSET:
         case AL_BYTE_OFFSET:
-            FIXME("offsets");
+            source_set_offset(src, param, *values);
             break;
 
         default: set_al_error(ctx, AL_INVALID_ENUM); return;
@@ -3557,7 +3560,7 @@ static void _alSourceiv(const ALuint name, const ALenum param, const ALint *valu
         case AL_SEC_OFFSET:
         case AL_SAMPLE_OFFSET:
         case AL_BYTE_OFFSET:
-            FIXME("offsets");
+            source_set_offset(src, param, (ALfloat)*values);
             break;
 
         default: set_al_error(ctx, AL_INVALID_ENUM); return;
@@ -3625,7 +3628,7 @@ static void _alGetSourcefv(const ALuint name, const ALenum param, ALfloat *value
         case AL_SEC_OFFSET:
         case AL_SAMPLE_OFFSET:
         case AL_BYTE_OFFSET:
-            FIXME("offsets");
+            *values = source_get_offset(src, param);
             break;
 
         default: set_al_error(ctx, AL_INVALID_ENUM); break;
@@ -3702,7 +3705,7 @@ static void _alGetSourceiv(const ALuint name, const ALenum param, ALint *values)
         case AL_SEC_OFFSET:
         case AL_SAMPLE_OFFSET:
         case AL_BYTE_OFFSET:
-            FIXME("offsets");
+            *values = (ALint) source_get_offset(src, param);
             break;
 
         default: set_al_error(ctx, AL_INVALID_ENUM); break;
@@ -3885,6 +3888,79 @@ static void source_pause(ALCcontext *ctx, const ALuint name)
     ALsource *src = get_source(ctx, name, NULL);
     if (src) {
         SDL_AtomicCAS(&src->state, AL_PLAYING, AL_PAUSED);
+    }
+}
+
+static int source_get_offset(ALsource *src, ALenum param)
+{
+    int offset = 0;
+    int framesize = sizeof(float);
+    int freq = 1;
+    if (src->type == AL_STREAMING) {
+        /* streaming: the offset counts from the first processed buffer in the queue. */
+        BufferQueueItem *item = src->buffer_queue.head;
+        if (item) {
+            framesize = (int)(item->buffer->channels * sizeof(float));
+            freq = (int)(item->buffer->frequency);
+            int proc_buf = SDL_AtomicGet(&src->buffer_queue_processed.num_items);
+            offset = (proc_buf * item->buffer->len + src->offset);
+        }
+    } else {
+        framesize = (int)(src->buffer->channels * sizeof(float));
+        freq = (int)src->buffer->frequency;
+        offset = src->offset;
+    }
+    switch(param) {
+        case AL_SAMPLE_OFFSET: return offset / framesize; break;
+        case AL_SEC_OFFSET: return (offset / framesize) / freq; break;
+        case AL_BYTE_OFFSET: return offset; break;
+        default: return 0; break;
+    }
+}
+
+static void source_set_offset(ALsource *src, ALenum param, ALfloat value)
+{
+    ALCcontext *ctx = get_current_context();
+    if (!ctx) {
+        set_al_error(ctx, AL_INVALID_OPERATION);
+        return;
+    }
+
+    int bufflen = 0;
+    int framesize = sizeof(float);
+    int freq = 1;
+
+    if (src->type == AL_STREAMING) {
+        FIXME("set_offset for streaming sources not implemented");
+        return;
+    } else {
+        bufflen = (int)src->buffer->len;
+        framesize = (int)(src->buffer->channels * sizeof(float));
+        freq = (int)src->buffer->frequency;
+    }
+
+    int offset = -1;
+    switch(param) {
+        case AL_SAMPLE_OFFSET:
+            offset = value * framesize;
+            break;
+        case AL_SEC_OFFSET:
+            offset = value * freq * framesize;
+            break;
+        case AL_BYTE_OFFSET:
+            offset = ((int)value / framesize) * framesize;
+            break;
+    }
+    if (offset < 0 || offset > bufflen) {
+        set_al_error(ctx, AL_INVALID_VALUE);
+        return;
+    }
+
+    ALboolean was_playing = SDL_AtomicCAS(&src->state, AL_PLAYING, AL_PAUSED);
+    wait_if_source_is_mixing(ctx, src);
+    src->offset = offset;
+    if (was_playing) {
+        SDL_AtomicSet(&src->state, AL_PLAYING);
     }
 }
 
