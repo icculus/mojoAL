@@ -520,6 +520,7 @@ struct ALCcontext_struct
 
     void *playlist_todo;  /* void* so we can AtomicCASPtr it. Transmits new play commands from api thread to mixer thread */
     ALsource *playlist;  /* linked list of currently-playing sources. Mixer thread only! */
+    ALsource *playlist_tail;  /* end of playlist so we know if last item is being readded. Mixer thread only! */
 
     ALCcontext *prev;  /* contexts are in a double-linked list */
     ALCcontext *next;
@@ -1727,8 +1728,11 @@ static void migrate_playlist_requests(ALCcontext *ctx)
        by the mixer thread, and source pointers live until context destruction. */
     for (i = todo; i != NULL; i = i->next) {
         todoend = i;
-        if (i->source->playlist_next == NULL) {
+        if ((i->source != ctx->playlist_tail) && (!i->source->playlist_next)) {
             i->source->playlist_next = ctx->playlist;
+            if (!ctx->playlist) {
+                ctx->playlist_tail = i->source;
+            }
             ctx->playlist = i->source;
         }
     }
@@ -1759,11 +1763,15 @@ static void mix_context(ALCcontext *ctx, float *stream, int len)
         if (!mix_source(ctx, i, stream, len, force_recalc)) {
             /* take it out of the playlist. It wasn't actually playing or it just finished. */
             i->playlist_next = NULL;
-            if (i == ctx->playlist) {
-                ctx->playlist = next;
-            } else {
-                SDL_assert(prev != NULL);
+            if (next == NULL) {
+                SDL_assert(i == ctx->playlist_tail);
+                ctx->playlist_tail = prev;
+            }
+            if (prev) {
                 prev->playlist_next = next;
+            } else {
+                SDL_assert(i == ctx->playlist);
+                ctx->playlist = next;
             }
         } else {
             prev = i;
@@ -1795,6 +1803,7 @@ static void mix_disconnected_context(ALCcontext *ctx)
         SDL_AtomicSet(&i->mixer_accessible, 0);
     }
     ctx->playlist = NULL;
+    ctx->playlist_tail = NULL;
 }
 
 /* We process all unsuspended ALC contexts during this call, mixing their
