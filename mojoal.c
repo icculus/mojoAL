@@ -93,8 +93,7 @@ The locking strategy for this OpenAL implementation:
 
 - The initial work on this implementation attempted to be completely
   lock free, and it lead to fragile, overly-clever, and complicated code.
-  Attempt #2 is making more reasonable tradeoffs: namely, keeping the
-  mixer thread lock free and minimizing locks in the API entry points.
+  Attempt #2 is making more reasonable tradeoffs.
 
 - All API entry points are protected by a global mutex, which means that
   calls into the API are serialized, but we expect this to not be a
@@ -104,14 +103,13 @@ The locking strategy for this OpenAL implementation:
   an innocent "fast" call into the AL will block because of the bad luck
   of a high mixing load and the wrong moment.
 
-- There are rare cases we'll lock the mixer thread; as a playing source
-  is mixed, it is atomically flagged as in-use. In a few cases, if we
-  happen to need to change a source in unsafe ways _while it's mixing_,
-  we will lock the mixer thread and immediately unlock, so we know
-  the mixer thread is no longer touching the source. The likelihood of
-  hitting this case is extremely small, even on a playing source, as
-  the mixer needs to be running and mixing a specific source at the time.
-  Things that might do this, only on currently-playing sources:
+- In rare cases we'll lock the mixer thread for a brief time; when a playing
+  source is accessible to the mixer, it is flagged as such. The mixer has a
+  mutex that it holds when mixing a source, and if we need to touch a source
+  that is flagged as accessible, we'll grab that lock to make sure there isn't
+  a conflict. Not all source changes need to do this. The likelihood of
+  hitting this case is extremely small, and the lock hold time is pretty
+  short. Things that might do this, only on currently-playing sources:
   alDeleteSources, alSourceStop, alSourceRewind. alSourcePlay and
   alSourcePause never need to lock.
 
@@ -121,9 +119,10 @@ The locking strategy for this OpenAL implementation:
   know if you've deleted it, making the pointer invalid. Device open and
   close are not meant to be "fast" calls.
 
-- Creating or destroying a context will lock the mixer thread, so we can
-  add/remove the context on the device's list without racing. So don't do
-  this in time-critical code.
+- Creating or destroying a context will lock the mixer thread completely
+  (so it isn't running _at all_ during the lock), so we can add/remove the
+  context on the device's list without racing. So don't do this in
+  time-critical code.
 
 - Generating an object (source, buffer, etc) might need to allocate
   memory, which can always take longer than you would expect. We allocate in
@@ -131,12 +130,15 @@ The locking strategy for this OpenAL implementation:
   does not lock the mixer thread.
 
 - Deleting a buffer does not lock the mixer thread (in-use buffers can
-  not be deleted per API spec). Deleting a source will lock the mixer
-  if the source is still visible to the mixer (if it is literally mixing
-  at the very moment). We don't believe this will be a serious issue in
-  normal use cases. Deleted objects' memory is marked for reuse, but no
-  memory is free'd by deleting sources or buffers until the context or
-  device, respectively, are destroyed.
+  not be deleted per API spec). Deleting a source will lock the mixer briefly
+  if the source is still visible to the mixer. We don't believe this will be
+  a serious issue in normal use cases. Deleted objects' memory is marked for
+  reuse, but no memory is free'd by deleting sources or buffers until the
+  context or device, respectively, are destroyed. A deleted source that's
+  still visible to the mixer will not be available for reallocation until
+  the mixer runs another iteration, where it will mark it as no longer
+  visible. If you call alGenSources() during this time, a different source
+  will be allocated.
 
 - alBufferData needs to allocate memory to copy new audio data. Often,
   you can avoid doing these things in time-critical code. You can't set
@@ -517,6 +519,8 @@ struct ALCcontext_struct
     ALfloat doppler_factor;
     ALfloat doppler_velocity;
     ALfloat speed_of_sound;
+
+    SDL_mutex *source_lock;
 
     void *playlist_todo;  /* void* so we can AtomicCASPtr it. Transmits new play commands from api thread to mixer thread */
     ALsource *playlist;  /* linked list of currently-playing sources. Mixer thread only! */
@@ -1761,7 +1765,8 @@ static void mix_context(ALCcontext *ctx, float *stream, int len)
 
     for (i = ctx->playlist; i != NULL; i = next) {
         next = i->playlist_next;  /* save this to a local in case we leave the list. */
-        SDL_AtomicSet(&i->mixer_accessible, 1);
+
+        SDL_LockMutex(ctx->source_lock);
         if (!mix_source(ctx, i, stream, len, force_recalc)) {
             /* take it out of the playlist. It wasn't actually playing or it just finished. */
             i->playlist_next = NULL;
@@ -1775,10 +1780,11 @@ static void mix_context(ALCcontext *ctx, float *stream, int len)
                 SDL_assert(i == ctx->playlist);
                 ctx->playlist = next;
             }
+            SDL_AtomicSet(&i->mixer_accessible, 0);
         } else {
             prev = i;
         }
-        SDL_AtomicSet(&i->mixer_accessible, 0);
+        SDL_UnlockMutex(ctx->source_lock);
     }
 }
 
@@ -1793,8 +1799,8 @@ static void mix_disconnected_context(ALCcontext *ctx)
     for (i = ctx->playlist; i != NULL; i = next) {
         next = i->playlist_next;
 
+        SDL_LockMutex(ctx->source_lock);
         /* remove from playlist; all playing things got stopped, paused/initial/stopped shouldn't be listed. */
-        SDL_AtomicSet(&i->mixer_accessible, 1);
         if (SDL_AtomicGet(&i->state) == AL_PLAYING) {
             SDL_assert(i->allocated);
             SDL_AtomicSet(&i->state, AL_STOPPED);
@@ -1803,6 +1809,7 @@ static void mix_disconnected_context(ALCcontext *ctx)
 
         i->playlist_next = NULL;
         SDL_AtomicSet(&i->mixer_accessible, 0);
+        SDL_UnlockMutex(ctx->source_lock);
     }
     ctx->playlist = NULL;
     ctx->playlist_tail = NULL;
@@ -1881,9 +1888,17 @@ static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
     SDL_assert( (((size_t) &retval->listener.orientation[0]) % 16) == 0 );
     SDL_assert( (((size_t) &retval->listener.velocity[0]) % 16) == 0 );
 
+    retval->source_lock = SDL_CreateMutex();
+    if (!retval->source_lock) {
+        set_alc_error(device, ALC_OUT_OF_MEMORY);
+        free_simd_aligned(retval);
+        return NULL;
+    }
+
     retval->attributes = (ALCint *) SDL_malloc(attrcount * sizeof (ALCint));
     if (!retval->attributes) {
         set_alc_error(device, ALC_OUT_OF_MEMORY);
+        SDL_DestroyMutex(retval->source_lock);
         free_simd_aligned(retval);
         return NULL;
     }
@@ -1909,6 +1924,7 @@ static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
         desired.userdata = device;
         device->sdldevice = SDL_OpenAudioDevice(devicename, 0, &desired, NULL, 0);
         if (!device->sdldevice) {
+            SDL_DestroyMutex(retval->source_lock);
             SDL_free(retval->attributes);
             free_simd_aligned(retval);
             FIXME("What error do you set for this?");
@@ -2029,6 +2045,7 @@ static void _alcDestroyContext(ALCcontext *ctx)
         free_simd_aligned(sb);
     }
 
+    SDL_DestroyMutex(ctx->source_lock);
     SDL_free(ctx->source_blocks);
     SDL_free(ctx->attributes);
     free_simd_aligned(ctx);
@@ -2480,20 +2497,6 @@ static void set_al_error(ALCcontext *ctx, const ALenum error)
     /* can't set a new error when the previous hasn't been cleared yet. */
     if (*perr == AL_NO_ERROR) {
         *perr = error;
-    }
-}
-
-/* Before calling this, you must make sure the source is marked in some way that the mixer will reject it.
-   For example, you can mark it as AL_STOPPED. This makes sure the mixer will remove it from its playlist
-   on its next iteration so it doesn't retain any reference to it. */
-static void wait_if_source_is_mixing(ALCcontext *ctx, ALsource *source)
-{
-    /* in case the mixer thread was literally in the middle of mixing this exact source */
-    if (SDL_AtomicGet(&source->mixer_accessible)) {
-        /* literally being mixed right now. Block until the mixer finishes this iteration, in which case it won't touch this source again. */
-        SDL_LockAudioDevice(ctx->device->sdldevice);
-        SDL_UnlockAudioDevice(ctx->device->sdldevice);  /* mixer thread no longer touches this source. */
-        SDL_assert(!SDL_AtomicGet(&source->mixer_accessible));
     }
 }
 
@@ -3256,7 +3259,10 @@ static void _alGenSources(const ALsizei n, ALuint *names)
         block->tmp = 0;
         if (block->used < SDL_arraysize(block->sources)) {  /* skip if full */
             for (i = 0; i < SDL_arraysize(block->sources); i++) {
-                if (!block->sources[i].allocated) {
+                /* if a playing source was deleted, it will still be marked mixer_accessible
+                    until the mixer thread shuffles it out. Until then, the source isn't
+                    available for reuse. */
+                if (!block->sources[i].allocated && !SDL_AtomicGet(&block->sources[i].mixer_accessible)) {
                     block->tmp++;
                     objects[found] = &block->sources[i];
                     names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
@@ -3395,8 +3401,13 @@ static void _alDeleteSources(const ALsizei n, const ALuint *names)
             SDL_assert(source != NULL);
 
             /* "A playing source can be deleted--the source will be stopped automatically and then deleted." */
-            SDL_AtomicSet(&source->state, AL_STOPPED);  /* will make mixer reject it if currently playing. */
-            wait_if_source_is_mixing(ctx, source);
+            if (!SDL_AtomicGet(&source->mixer_accessible)) {
+                SDL_AtomicSet(&source->state, AL_STOPPED);
+            } else {
+                SDL_LockMutex(ctx->source_lock);
+                SDL_AtomicSet(&source->state, AL_STOPPED);  /* mixer will drop from playlist next time it sees this. */
+                SDL_UnlockMutex(ctx->source_lock);
+            }
             source->allocated = AL_FALSE;
             source_release_buffer_queue(ctx, source);
             if (source->buffer) {
@@ -3505,6 +3516,7 @@ static void set_source_static_buffer(ALCcontext *ctx, ALsource *src, const ALuin
         if (bufname && ((buffer = get_buffer(ctx, bufname, NULL)) == NULL)) {
             set_al_error(ctx, AL_INVALID_VALUE);
         } else {
+            const ALboolean must_lock = SDL_AtomicGet(&src->mixer_accessible) ? AL_TRUE : AL_FALSE;
             SDL_AudioStream *stream = NULL;
             SDL_AudioStream *freestream = NULL;
             /* We only use the stream for resampling, not for channel conversion. */
@@ -3519,8 +3531,10 @@ static void set_source_static_buffer(ALCcontext *ctx, ALsource *src, const ALuin
             }
 
             /* this can happen if you alSource(AL_BUFFER) while the exact source is in the middle of mixing */
-            wait_if_source_is_mixing(ctx, src);
-            SDL_assert(SDL_AtomicGet(&src->mixer_accessible) == 0);
+            FIXME("Double-check this lock; we shouldn't be able to reach this if the source is playing.");
+            if (must_lock) {
+                SDL_LockMutex(ctx->source_lock);
+            }
 
             if (src->buffer != buffer) {
                 if (src->buffer) {
@@ -3541,6 +3555,10 @@ static void set_source_static_buffer(ALCcontext *ctx, ALsource *src, const ALuin
             if (src->stream != stream) {
                 freestream = src->stream;  /* free this after unlocking. */
                 src->stream = stream;
+            }
+
+            if (must_lock) {
+                SDL_UnlockMutex(ctx->source_lock);
             }
 
             if (freestream) {
@@ -3702,7 +3720,7 @@ static void _alGetSourceiv(const ALuint name, const ALenum param, ALint *values)
         case AL_SOURCE_STATE: *values = (ALint) SDL_AtomicGet(&src->state); break;
         case AL_SOURCE_TYPE: *values = (ALint) src->type; break;
         case AL_BUFFER: *values = (ALint) (src->buffer ? src->buffer->name : 0); break;
-        // !!! FIXME: AL_BUFFERS_QUEUED is the total number of buffers pending, playing, and processed, so this is wrong. It might also have to be 1 if there's a static buffer, but I'm not sure.
+        /* !!! FIXME: AL_BUFFERS_QUEUED is the total number of buffers pending, playing, and processed, so this is wrong. It might also have to be 1 if there's a static buffer, but I'm not sure. */
         case AL_BUFFERS_QUEUED: *values = (ALint) SDL_AtomicGet(&src->buffer_queue.num_items); break;
         case AL_BUFFERS_PROCESSED: *values = (ALint) SDL_AtomicGet(&src->buffer_queue_processed.num_items); break;
         case AL_SOURCE_RELATIVE: *values = (ALint) src->source_relative; break;
@@ -3848,6 +3866,9 @@ static void source_play(ALCcontext *ctx, const ALsizei n, const ALuint *names)
                hang there forever). */
             SDL_AtomicSet(&src->state, AL_PLAYING);
 
+            /* Mark this as visible to the mixer. This will be set back to zero by the mixer thread when it is done with the source. */
+            SDL_AtomicSet(&src->mixer_accessible, 1);
+
             todoptr->source = src;
             todoptr = todoptr->next;
         }
@@ -3882,9 +3903,15 @@ static void source_stop(ALCcontext *ctx, const ALuint name)
     ALsource *src = get_source(ctx, name, NULL);
     if (src) {
         if (SDL_AtomicGet(&src->state) != AL_INITIAL) {
+            const ALboolean must_lock = SDL_AtomicGet(&src->mixer_accessible) ? AL_TRUE : AL_FALSE;
+            if (must_lock) {
+                SDL_LockMutex(ctx->source_lock);
+            }
             SDL_AtomicSet(&src->state, AL_STOPPED);
-            wait_if_source_is_mixing(ctx, src);
             source_mark_all_buffers_processed(src);
+            if (must_lock) {
+                SDL_UnlockMutex(ctx->source_lock);
+            }
         }
     }
 }
@@ -3893,9 +3920,15 @@ static void source_rewind(ALCcontext *ctx, const ALuint name)
 {
     ALsource *src = get_source(ctx, name, NULL);
     if (src) {
+        const ALboolean must_lock = SDL_AtomicGet(&src->mixer_accessible) ? AL_TRUE : AL_FALSE;
+        if (must_lock) {
+            SDL_LockMutex(ctx->source_lock);
+        }
         SDL_AtomicSet(&src->state, AL_INITIAL);
-        wait_if_source_is_mixing(ctx, src);
         src->offset = 0;
+        if (must_lock) {
+            SDL_UnlockMutex(ctx->source_lock);
+        }
     }
 }
 
@@ -3972,11 +4005,12 @@ static void source_set_offset(ALsource *src, ALenum param, ALfloat value)
         return;
     }
 
-    ALboolean was_playing = SDL_AtomicCAS(&src->state, AL_PLAYING, AL_PAUSED);
-    wait_if_source_is_mixing(ctx, src);
-    src->offset = offset;
-    if (was_playing) {
-        SDL_AtomicSet(&src->state, AL_PLAYING);
+    if (!SDL_AtomicGet(&src->mixer_accessible)) {
+        src->offset = offset;
+    } else {
+        SDL_LockMutex(ctx->source_lock);
+        src->offset = offset;
+        SDL_UnlockMutex(ctx->source_lock);
     }
 }
 
