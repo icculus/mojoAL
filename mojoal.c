@@ -1699,6 +1699,8 @@ static ALCboolean mix_source(ALCcontext *ctx, ALsource *src, float *stream, int 
         } else if (src->type == AL_STREAMING) {
             obtain_newly_queued_buffers(&src->buffer_queue);
             keep = mix_source_buffer_queue(ctx, src, src->buffer_queue.head, stream, len);
+        } else if (src->type == AL_UNDETERMINED) {
+            keep = ALC_FALSE;  /* this has AL_BUFFER set to 0; just dump it. */
         } else {
             SDL_assert(!"unknown source type");
         }
