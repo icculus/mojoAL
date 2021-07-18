@@ -532,7 +532,7 @@ struct ALCcontext_struct
 };
 
 /* forward declarations */
-static int source_get_offset(ALsource *src, ALenum param);
+static float source_get_offset(ALsource *src, ALenum param);
 static void source_set_offset(ALsource *src, ALenum param, ALfloat value);
 
 /* the just_queued list is backwards. Add it to the queue in the correct order. */
@@ -3941,31 +3941,33 @@ static void source_pause(ALCcontext *ctx, const ALuint name)
     }
 }
 
-static int source_get_offset(ALsource *src, ALenum param)
+static float source_get_offset(ALsource *src, ALenum param)
 {
     int offset = 0;
-    int framesize = sizeof(float);
+    int framesize = sizeof (float);
     int freq = 1;
     if (src->type == AL_STREAMING) {
         /* streaming: the offset counts from the first processed buffer in the queue. */
         BufferQueueItem *item = src->buffer_queue.head;
         if (item) {
-            framesize = (int)(item->buffer->channels * sizeof(float));
-            freq = (int)(item->buffer->frequency);
+            framesize = (int) (item->buffer->channels * sizeof (float));
+            freq = (int) (item->buffer->frequency);
             int proc_buf = SDL_AtomicGet(&src->buffer_queue_processed.num_items);
             offset = (proc_buf * item->buffer->len + src->offset);
         }
     } else {
-        framesize = (int)(src->buffer->channels * sizeof(float));
-        freq = (int)src->buffer->frequency;
+        framesize = (int) (src->buffer->channels * sizeof (float));
+        freq = (int) src->buffer->frequency;
         offset = src->offset;
     }
     switch(param) {
-        case AL_SAMPLE_OFFSET: return offset / framesize; break;
-        case AL_SEC_OFFSET: return (offset / framesize) / freq; break;
-        case AL_BYTE_OFFSET: return offset; break;
-        default: return 0; break;
+        case AL_SAMPLE_OFFSET: return (float) (offset / framesize); break;
+        case AL_SEC_OFFSET: return ((float) (offset / framesize)) / ((float) freq); break;
+        case AL_BYTE_OFFSET: return (float) offset; break;
+        default: break;
     }
+
+    return 0.0f;
 }
 
 static void source_set_offset(ALsource *src, ALenum param, ALfloat value)
