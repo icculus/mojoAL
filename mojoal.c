@@ -7,6 +7,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>  /* needed for alloca */
 #include <math.h>
 #include <float.h>
 
