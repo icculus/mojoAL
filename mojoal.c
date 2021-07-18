@@ -3978,21 +3978,17 @@ static void source_set_offset(ALsource *src, ALenum param, ALfloat value)
         return;
     }
 
-    int bufflen = 0;
-    int framesize = sizeof(float);
-    int freq = 1;
-
     if (src->type == AL_STREAMING) {
         FIXME("set_offset for streaming sources not implemented");
         return;
-    } else {
-        bufflen = (int)src->buffer->len;
-        framesize = (int)(src->buffer->channels * sizeof(float));
-        freq = (int)src->buffer->frequency;
     }
 
+    const int bufflen = (int) src->buffer->len;
+    const int framesize = (int) (src->buffer->channels * sizeof (float));
+    const int freq = (int) src->buffer->frequency;
     int offset = -1;
-    switch(param) {
+
+    switch (param) {
         case AL_SAMPLE_OFFSET:
             offset = value * framesize;
             break;
@@ -4003,10 +3999,14 @@ static void source_set_offset(ALsource *src, ALenum param, ALfloat value)
             offset = ((int)value / framesize) * framesize;
             break;
     }
-    if (offset < 0 || offset > bufflen) {
+
+    if ((offset < 0) || (offset > bufflen)) {
         set_al_error(ctx, AL_INVALID_VALUE);
         return;
     }
+
+    /* make sure the offset lands on a sample frame boundary. */
+    offset -= offset % framesize;
 
     if (!SDL_AtomicGet(&src->mixer_accessible)) {
         src->offset = offset;
