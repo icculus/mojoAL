@@ -11,7 +11,7 @@
 #include <math.h>
 #include <float.h>
 
-#ifdef _MSC_VER
+#ifdef _WIN32
   #define AL_API __declspec(dllexport)
   #define ALC_API __declspec(dllexport)
 #endif
