@@ -230,6 +230,12 @@ static int has_neon = 0;
 #endif
 #endif
 
+/* no threads in Emscripten (at the moment...!) */
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+#define init_api_lock() 1
+#define grab_api_lock()
+#define ungrab_api_lock()
+#else
 static SDL_mutex *api_lock = NULL;
 
 static int init_api_lock(void)
@@ -264,6 +270,7 @@ static void ungrab_api_lock(void)
     const int rc = SDL_UnlockMutex(api_lock);
     SDL_assert(rc == 0);
 }
+#endif
 
 #define ENTRYPOINT(rettype,fn,params,args) \
     rettype fn params { rettype retval; grab_api_lock(); retval = _##fn args ; ungrab_api_lock(); return retval; }
