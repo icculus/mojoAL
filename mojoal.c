@@ -4207,7 +4207,7 @@ static float source_get_offset(ALsource *src, ALenum param)
             int proc_buf = SDL_AtomicGet(&src->buffer_queue_processed.num_items);
             offset = (proc_buf * item->buffer->len + src->offset);
         }
-    } else {
+    } else if (src->buffer) {
         framesize = (int) (src->buffer->channels * sizeof (float));
         freq = (int) src->buffer->frequency;
         offset = src->offset;
