@@ -567,7 +567,7 @@ static void queue_new_buffer_items_recursive(BufferQueue *queue, BufferQueueItem
         return;
     }
 
-    queue_new_buffer_items_recursive(queue, items->next);
+    queue_new_buffer_items_recursive(queue, (BufferQueueItem*)items->next);
     items->next = NULL;
     if (queue->tail) {
         queue->tail->next = items;
@@ -599,7 +599,7 @@ static void source_mark_all_buffers_processed(ALsource *src)
     while (src->buffer_queue.head) {
         void *ptr;
         BufferQueueItem *item = src->buffer_queue.head;
-        src->buffer_queue.head = item->next;
+        src->buffer_queue.head = (BufferQueueItem*)item->next;
         SDL_AtomicAdd(&src->buffer_queue.num_items, -1);
 
         /* Move it to the processed queue for alSourceUnqueueBuffers() to pick up. */
@@ -619,7 +619,7 @@ static void source_release_buffer_queue(ALCcontext *ctx, ALsource *src)
     obtain_newly_queued_buffers(&src->buffer_queue);
     if (src->buffer_queue.tail != NULL) {
         BufferQueueItem *i;
-        for (i = src->buffer_queue.head; i; i = i->next) {
+        for (i = src->buffer_queue.head; i; i = (BufferQueueItem*)i->next) {
             (void) SDL_AtomicDecRef(&i->buffer->refcount);
         }
         src->buffer_queue.tail->next = ctx->device->playback.buffer_queue_pool;
@@ -631,7 +631,7 @@ static void source_release_buffer_queue(ALCcontext *ctx, ALsource *src)
     obtain_newly_queued_buffers(&src->buffer_queue_processed);
     if (src->buffer_queue_processed.tail != NULL) {
         BufferQueueItem *i;
-        for (i = src->buffer_queue_processed.head; i; i = i->next) {
+        for (i = src->buffer_queue_processed.head; i; i = (BufferQueueItem*)i->next) {
             (void) SDL_AtomicDecRef(&i->buffer->refcount);
         }
         src->buffer_queue_processed.tail->next = ctx->device->playback.buffer_queue_pool;
@@ -764,7 +764,7 @@ ALCboolean alcCloseDevice(ALCdevice *device)
 
     item = device->playback.buffer_queue_pool;
     while (item) {
-        BufferQueueItem *next = item->next;
+        BufferQueueItem *next = (BufferQueueItem*)item->next;
         SDL_free(item);
         item = next;
     }
@@ -1466,7 +1466,7 @@ static ALCboolean mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, Buffer
     while ((len > 0) && (mix_source_buffer(ctx, src, queue, &stream, &len))) {
         /* Finished this buffer! */
         BufferQueueItem *item = queue;
-        BufferQueueItem *next = queue ? queue->next : NULL;
+        BufferQueueItem *next = queue ? (BufferQueueItem*)queue->next : NULL;
         void *ptr;
 
         if (queue) {
@@ -4134,7 +4134,7 @@ static void source_play(ALCcontext *ctx, const ALsizei n, const ALuint *names)
        with it, as nothing else owns the pointers in that list. */
     do {
         ptr = SDL_AtomicGetPtr(&ctx->playlist_todo);
-        todoend->next = ptr;
+        todoend->next = (SourcePlayTodo*)ptr;
     } while (!SDL_AtomicCASPtr(&ctx->playlist_todo, ptr, todo.next));
 }
 
@@ -4347,7 +4347,7 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
 
         item = ctx->device->playback.buffer_queue_pool;
         if (item) {
-            ctx->device->playback.buffer_queue_pool = item->next;
+            ctx->device->playback.buffer_queue_pool = (BufferQueueItem*)item->next;
         } else {  /* allocate a new item */
             item = (BufferQueueItem *) SDL_calloc(1, sizeof (BufferQueueItem));
             if (!item) {
@@ -4400,7 +4400,7 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
         if (queue) {
             /* Drop our claim on any buffers we planned to queue. */
             BufferQueueItem *item;
-            for (item = queue; item != NULL; item = item->next) {
+            for (item = queue; item != NULL; item = (BufferQueueItem*)item->next) {
                 if (item->buffer) {
                     (void) SDL_AtomicDecRef(&item->buffer->refcount);
                 }
@@ -4484,7 +4484,7 @@ static void _alSourceUnqueueBuffers(const ALuint name, const ALsizei nb, ALuint 
     for (i = 0; i < nb; i++) {
         /* buffer_queue_processed.num_items said list was long enough. */
         SDL_assert(item != NULL);
-        item = item->next;
+        item = (BufferQueueItem*)item->next;
     }
     src->buffer_queue_processed.head = item;
     if (!item) {
@@ -4498,7 +4498,7 @@ static void _alSourceUnqueueBuffers(const ALuint name, const ALsizei nb, ALuint 
         }
         bufnames[i] = item->buffer ? item->buffer->name : 0;
         queueend = item;
-        item = item->next;
+        item = (BufferQueueItem*)item->next;
     }
 
     /* put the whole new queue back in the pool for reuse later. */
