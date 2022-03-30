@@ -20,8 +20,8 @@
   #define M_PI (3.14159265358979323846264338327950288)
 #endif
 
-#include "AL/al.h"
-#include "AL/alc.h"
+#include "al.h"
+#include "alc.h"
 #include "SDL.h"
 
 #ifdef __SSE__  /* if you are on x86 or x86-64, we assume you have SSE1 by now. */
