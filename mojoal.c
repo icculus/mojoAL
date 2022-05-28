@@ -470,6 +470,7 @@ SIMDALIGNEDSTRUCT ALsource
     ALfloat cone_outer_gain;
     ALbuffer *buffer;
     SDL_AudioStream *stream;  /* for resampling. */
+    SDL_atomic_t total_queued_buffers;   /* everything queued, playing and processed. AL_BUFFERS_QUEUED value. */
     BufferQueue buffer_queue;
     BufferQueue buffer_queue_processed;
     ALsizei offset;  /* offset in bytes for converted stream! */
@@ -3589,6 +3590,7 @@ static void _alGenSources(const ALsizei n, ALuint *names)
 
         SDL_zerop(src);
         SDL_AtomicSet(&src->state, AL_INITIAL);
+        SDL_AtomicSet(&src->total_queued_buffers, 0);
         src->name = names[i];
         src->type = AL_UNDETERMINED;
         src->recalc = AL_TRUE;
@@ -3973,8 +3975,7 @@ static void _alGetSourceiv(const ALuint name, const ALenum param, ALint *values)
         case AL_SOURCE_STATE: *values = (ALint) SDL_AtomicGet(&src->state); break;
         case AL_SOURCE_TYPE: *values = (ALint) src->type; break;
         case AL_BUFFER: *values = (ALint) (src->buffer ? src->buffer->name : 0); break;
-        /* !!! FIXME: AL_BUFFERS_QUEUED is the total number of buffers pending, playing, and processed, so this is wrong. It might also have to be 1 if there's a static buffer, but I'm not sure. */
-        case AL_BUFFERS_QUEUED: *values = (ALint) SDL_AtomicGet(&src->buffer_queue.num_items); break;
+        case AL_BUFFERS_QUEUED: *values = (ALint) SDL_AtomicGet(&src->total_queued_buffers); break;
         case AL_BUFFERS_PROCESSED: *values = (ALint) SDL_AtomicGet(&src->buffer_queue_processed.num_items); break;
         case AL_SOURCE_RELATIVE: *values = (ALint) src->source_relative; break;
         case AL_LOOPING: *values = (ALint) src->looping; break;
@@ -4449,6 +4450,7 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
         SDL_AtomicSetPtr(&queueend->next, ptr);
     } while (!SDL_AtomicCASPtr(&src->buffer_queue.just_queued, ptr, queue));
 
+    SDL_AtomicAdd(&src->total_queued_buffers, (int) nb);
     SDL_AtomicAdd(&src->buffer_queue.num_items, (int) nb);
 }
 ENTRYPOINTVOID(alSourceQueueBuffers,(ALuint name, ALsizei nb, const ALuint *bufnames),(name,nb,bufnames))
@@ -4480,6 +4482,7 @@ static void _alSourceUnqueueBuffers(const ALuint name, const ALsizei nb, ALuint 
     }
 
     SDL_AtomicAdd(&src->buffer_queue_processed.num_items, -((int) nb));
+    SDL_AtomicAdd(&src->total_queued_buffers, -((int) nb));
 
     obtain_newly_queued_buffers(&src->buffer_queue_processed);
 
