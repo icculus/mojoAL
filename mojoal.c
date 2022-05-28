@@ -4232,9 +4232,10 @@ static void source_set_offset(ALsource *src, ALenum param, ALfloat value)
     if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
         return;
-    }
-
-    if (src->type == AL_STREAMING) {
+    } else if (src->type == AL_UNDETERMINED) {  /* no buffer to seek in */
+        set_al_error(ctx, AL_INVALID_OPERATION);
+        return;
+    } else if (src->type == AL_STREAMING) {
         FIXME("set_offset for streaming sources not implemented");
         return;
     }
