@@ -4162,6 +4162,9 @@ static void source_stop(ALCcontext *ctx, const ALuint name)
             }
             SDL_AtomicSet(&src->state, AL_STOPPED);
             source_mark_all_buffers_processed(src);
+            if (src->stream) {
+                SDL_AudioStreamClear(src->stream);
+            }
             if (must_lock) {
                 SDL_UnlockMutex(ctx->source_lock);
             }
