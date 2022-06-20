@@ -3908,7 +3908,7 @@ static void _alGetSourcefv(const ALuint name, const ALenum param, ALfloat *value
         case AL_REFERENCE_DISTANCE: *values = src->reference_distance; break;
         case AL_ROLLOFF_FACTOR: *values = src->rolloff_factor; break;
         case AL_MAX_DISTANCE: *values = src->max_distance; break;
-        case AL_PITCH: source_set_pitch(ctx, src, *values); break;
+        case AL_PITCH: *values = src->pitch; break;
         case AL_CONE_INNER_ANGLE: *values = src->cone_inner_angle; break;
         case AL_CONE_OUTER_ANGLE: *values = src->cone_outer_angle; break;
         case AL_CONE_OUTER_GAIN:  *values = src->cone_outer_gain; break;
