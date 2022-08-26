@@ -2570,6 +2570,16 @@ static void _alcGetIntegerv(ALCdevice *device, const ALCenum param, const ALCsiz
             *values = OPENAL_VERSION_MINOR;
             return;
 
+        case ALC_FREQUENCY:
+            if (!device) {
+                *values = 0;
+                set_alc_error(device, ALC_INVALID_DEVICE);
+                return;
+            }
+
+            *values = device->frequency;
+            return;
+
         default: break;
     }
 
