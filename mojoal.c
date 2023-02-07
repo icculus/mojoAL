@@ -4265,6 +4265,10 @@ static void source_set_offset(ALsource *src, ALenum param, ALfloat value)
         case AL_BYTE_OFFSET:
             offset = ((int)value / framesize) * framesize;
             break;
+        default:
+            SDL_assert(!"Unexpected source offset type!");
+            set_al_error(ctx, AL_INVALID_ENUM);  /* this is a MojoAL bug, not an app bug, but we'll try to recover. */
+            return;
     }
 
     if ((offset < 0) || (offset > bufflen)) {
@@ -4281,6 +4285,10 @@ static void source_set_offset(ALsource *src, ALenum param, ALfloat value)
         SDL_LockMutex(ctx->source_lock);
         src->offset = offset;
         SDL_UnlockMutex(ctx->source_lock);
+    }
+
+    if (SDL_AtomicGet(&src->state) != AL_PLAYING) {
+        src->offset_latched = SDL_TRUE;
     }
 }
 
