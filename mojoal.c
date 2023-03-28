@@ -1198,11 +1198,11 @@ static void pitch_fft(float *fftBuffer, int fftFrameSize, int sign)
     for (k = 0, le = 2; k < endval; k++) {
         le <<= 1;
         le2 = le>>1;
-        ur = 1.0;
-        ui = 0.0;
-        arg = M_PI / (le2>>1);
-        wr = SDL_cos(arg);
-        wi = sign*SDL_sin(arg);
+        ur = 1.0f;
+        ui = 0.0f;
+        arg = (float) (M_PI / (le2>>1));
+        wr = SDL_cosf(arg);
+        wi = sign*SDL_sinf(arg);
         for (j = 0; j < le2; j += 2) {
             p1r = fftBuffer+j; p1i = p1r+1;
             p2r = p1r+le2; p2i = p2r+1;
@@ -1254,8 +1254,8 @@ static void pitch_shift(ALsource *src, const ALbuffer *buffer, int numSampsToPro
             /* do windowing and re,im interleave */
             for (k = 0; k < pitch_framesize;k++) {
                 window = -.5*SDL_cos(2.*M_PI*(double)k/(double)pitch_framesize)+.5;
-                state->workspace[2*k] = state->infifo[k] * window;
-                state->workspace[2*k+1] = 0.;
+                state->workspace[2*k] = (ALfloat) state->infifo[k] * window;
+                state->workspace[2*k+1] = 0.0f;
             }
 
 
@@ -1276,13 +1276,13 @@ static void pitch_shift(ALsource *src, const ALbuffer *buffer, int numSampsToPro
 
                 /* compute phase difference */
                 tmp = phase - state->lastphase[k];
-                state->lastphase[k] = phase;
+                state->lastphase[k] = (ALfloat) phase;
 
                 /* subtract expected phase difference */
                 tmp -= (double)k*expct;
 
                 /* map delta phase into +/- Pi interval */
-                qpd = tmp/M_PI;
+                qpd = (int) (tmp/M_PI);
                 if (qpd >= 0) qpd += qpd&1;
                 else qpd -= qpd&1;
                 tmp -= M_PI*(double)qpd;
@@ -1294,8 +1294,8 @@ static void pitch_shift(ALsource *src, const ALbuffer *buffer, int numSampsToPro
                 tmp = (double)k*freqPerBin + tmp*freqPerBin;
 
                 /* store magnitude and true frequency in analysis arrays */
-                state->workspace[2*k] = magn;
-                state->workspace[2*k+1] = tmp;
+                state->workspace[2*k] = (ALfloat) magn;
+                state->workspace[2*k+1] = (ALfloat) tmp;
 
             }
 
@@ -1303,7 +1303,7 @@ static void pitch_shift(ALsource *src, const ALbuffer *buffer, int numSampsToPro
             /* this does the actual pitch shifting */
             SDL_memset(state->synmagn, '\0', sizeof (state->synmagn));
             for (k = 0; k <= pitch_framesize2; k++) {
-                index = k*pitchShift;
+                index = (int) (k*pitchShift);
                 if (index <= pitch_framesize2) { 
                     state->synmagn[index] += state->workspace[2*k];
                     state->synfreq[index] = state->workspace[2*k+1] * pitchShift;
@@ -1331,12 +1331,12 @@ static void pitch_shift(ALsource *src, const ALbuffer *buffer, int numSampsToPro
                 tmp += (double)k*expct;
 
                 /* accumulate delta phase to get bin phase */
-                state->sumphase[k] += tmp;
+                state->sumphase[k] += (ALfloat) tmp;
                 phase = state->sumphase[k];
 
                 /* get real and imag part and re-interleave */
-                state->workspace[2*k] = magn*SDL_cos(phase);
-                state->workspace[2*k+1] = magn*SDL_sin(phase);
+                state->workspace[2*k] = (ALfloat) (magn*SDL_cos(phase));
+                state->workspace[2*k+1] = (ALfloat) (magn*SDL_sin(phase));
             } 
 
             /* zero negative frequencies */
@@ -1348,7 +1348,7 @@ static void pitch_shift(ALsource *src, const ALbuffer *buffer, int numSampsToPro
             /* do windowing and add to output accumulator */ 
             for(k=0; k < pitch_framesize; k++) {
                 window = -.5*SDL_cos(2.*M_PI*(double)k/(double)pitch_framesize)+.5;
-                state->outputaccum[k] += 2.*window*state->workspace[2*k]/(pitch_framesize2*osamp);
+                state->outputaccum[k] += (ALfloat) (2.*window*state->workspace[2*k]/(pitch_framesize2*osamp));
             }
             for (k = 0; k < stepSize; k++) state->outfifo[k] = state->outputaccum[k];
 
@@ -2935,7 +2935,7 @@ static const ALchar *_alGetString(const ALenum param)
 
     return NULL;
 }
-ENTRYPOINT(const ALchar *,alGetString,(const ALenum param),(param))
+ENTRYPOINT(const ALchar *,alGetString,(ALenum param),(param))
 
 static void _alGetBooleanv(const ALenum param, ALboolean *values)
 {
@@ -4260,13 +4260,13 @@ static void source_set_offset(ALsource *src, ALenum param, ALfloat value)
 
     switch (param) {
         case AL_SAMPLE_OFFSET:
-            offset = value * framesize;
+            offset = ((int) value) * framesize;
             break;
         case AL_SEC_OFFSET:
-            offset = value * freq * framesize;
+            offset = ((int) value) * freq * framesize;
             break;
         case AL_BYTE_OFFSET:
-            offset = ((int)value / framesize) * framesize;
+            offset = (((int) value) / framesize) * framesize;
             break;
         default:
             SDL_assert(!"Unexpected source offset type!");
