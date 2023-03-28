@@ -11,7 +11,10 @@
 #include <math.h>
 #include <float.h>
 
-#ifdef _WIN32
+/* Unless compiling statically into another app, we want the public API
+   to export on Windows. Define these before including al.h, so we override
+   its attempt to mark these as `dllimport`. */
+#if defined(_WIN32) && !defined(AL_LIBTYPE_STATIC)
   #define AL_API __declspec(dllexport)
   #define ALC_API __declspec(dllexport)
 #endif
