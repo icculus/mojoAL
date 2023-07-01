@@ -1,8 +1,8 @@
 # YOU PROBABLY DON'T HAVE TO USE THIS CMAKE PROJECT, IT'S JUST A SINGLE
 #  C FILE. COPY IT INTO YOUR PROJECT INSTEAD.
 
+cmake_minimum_required(VERSION 3.12.0)
 project(mojoAL)
-cmake_minimum_required(VERSION 3.0.0)
 
 find_package(SDL2 REQUIRED)
 
