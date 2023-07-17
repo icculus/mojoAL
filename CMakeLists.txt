@@ -22,5 +22,6 @@ add_test_executable(testopenalinfo)
 add_test_executable(testqueueing)
 add_test_executable(testcapture)
 add_test_executable(testposition)
+add_test_executable(testpanning)
 
 

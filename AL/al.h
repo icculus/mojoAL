@@ -297,6 +297,17 @@ typedef void ALvoid;
 #define AL_CONE_OUTER_GAIN                       0x1022
 
 /**
+ * Balance extension.
+ * Type:    ALfloat
+ * Range:   [-1.0 - 1.0]
+ * Default: 0.0
+ *
+ * Extension for balance applied to the source to enable direct panning even
+ * with stereo sounds.
+ */
+#define AL_EXT_BALANCE                           0xF001
+
+/**
  * Source maximum distance.
  * Type:    ALfloat
  * Range:   [0.0 - ]
