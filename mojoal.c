@@ -2768,7 +2768,7 @@ static ALsource *get_source(ALCcontext *ctx, const ALuint name, SourceBlock **_b
         set_al_error(ctx, AL_INVALID_OPERATION);
         if (_block) *_block = NULL;
         return NULL;
-    } else if ((name == 0) || (blockidx >= ctx->num_source_blocks)) {
+    } else if ((name == 0) || (blockidx < 0) || (blockidx >= ctx->num_source_blocks)) {
         set_al_error(ctx, AL_INVALID_NAME);
         if (_block) *_block = NULL;
         return NULL;
@@ -2800,7 +2800,7 @@ static ALbuffer *get_buffer(ALCcontext *ctx, const ALuint name, BufferBlock **_b
         set_al_error(ctx, AL_INVALID_OPERATION);
         if (_block) *_block = NULL;
         return NULL;
-    } else if ((name == 0) || (blockidx >= ctx->device->playback.num_buffer_blocks)) {
+    } else if ((name == 0) || (blockidx < 0) || (blockidx >= ctx->device->playback.num_buffer_blocks)) {
         set_al_error(ctx, AL_INVALID_NAME);
         if (_block) *_block = NULL;
         return NULL;
@@ -3492,9 +3492,14 @@ static void _alGenSources(const ALsizei n, ALuint *names)
     ALsizei blocki;
     ALsizei i;
 
-    if (!ctx) {
+    if (n < 0) {
+        set_al_error(ctx, AL_INVALID_VALUE);
+        return;
+    } else if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
         return;
+    } else if (n == 0) {
+        return;  /* not an error, but nothing to do. */
     }
 
     if (n <= SDL_arraysize(stackobjs)) {
@@ -3629,7 +3634,10 @@ static void _alDeleteSources(const ALsizei n, const ALuint *names)
     ALCcontext *ctx = get_current_context();
     ALsizei i;
 
-    if (!ctx) {
+    if (n < 0) {
+        set_al_error(ctx, AL_INVALID_VALUE);
+        return;
+    } else if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
         return;
     }
@@ -4064,7 +4072,7 @@ static void source_play(ALCcontext *ctx, const ALsizei n, const ALuint *names)
     void *ptr;
     ALsizei i;
 
-    if (n == 0) {
+    if (n <= 0) {
         return;
     } else if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
@@ -4300,7 +4308,9 @@ static void source_set_offset(ALsource *src, ALenum param, ALfloat value)
     void alSource##alfn(ALuint name) { source_##fn(get_current_context(), name); } \
     void alSource##alfn##v(ALsizei n, const ALuint *sources) { \
         ALCcontext *ctx = get_current_context(); \
-        if (!ctx) { \
+        if (n < 0) { \
+            set_al_error(ctx, AL_INVALID_VALUE); \
+        } else if (!ctx) { \
             set_al_error(ctx, AL_INVALID_OPERATION); \
         } else { \
             ALsizei i; \
@@ -4344,8 +4354,11 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
         return;
     }
 
-    if (nb == 0) {
-        return;  /* nothing to do. */
+    if (nb < 0) {
+        set_al_error(ctx, AL_INVALID_VALUE);
+        return;
+    } else if (nb == 0) {
+        return;  /* not an error, but nothing to do. */
     }
 
     for (i = nb; i > 0; i--) {  /* build list in reverse */
@@ -4494,8 +4507,11 @@ static void _alSourceUnqueueBuffers(const ALuint name, const ALsizei nb, ALuint 
         return;
     }
 
-    if (nb == 0) {
-        return;  /* nothing to do. */
+    if (nb < 0) {
+        set_al_error(ctx, AL_INVALID_VALUE);
+        return;
+    } else if (nb == 0) {
+        return;  /* not an error, but nothing to do. */
     }
 
     if (((ALsizei) SDL_AtomicGet(&src->buffer_queue_processed.num_items)) < nb) {
@@ -4549,9 +4565,14 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
     ALsizei blocki;
     ALsizei i;
 
-    if (!ctx) {
+    if (n < 0) {
+        set_al_error(ctx, AL_INVALID_VALUE);
+        return;
+    } else if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
         return;
+    } else if (n == 0) {
+        return;  /* not an error, but nothing to do. */
     }
 
     if (n <= SDL_arraysize(stackobjs)) {
@@ -4663,9 +4684,14 @@ static void _alDeleteBuffers(const ALsizei n, const ALuint *names)
     ALCcontext *ctx = get_current_context();
     ALsizei i;
 
-    if (!ctx) {
+    if (n < 0) {
+        set_al_error(ctx, AL_INVALID_VALUE);
+        return;
+    } else if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
         return;
+    } else if (n == 0) {
+        return;  /* not an error, but nothing to do. */
     }
 
     for (i = 0; i < n; i++) {
@@ -4721,6 +4747,13 @@ static void _alBufferData(const ALuint name, const ALenum alfmt, const ALvoid *d
     int prevrefcount;
 
     if (!buffer) return;
+
+    if (size < 0) {
+        set_al_error(ctx, AL_INVALID_VALUE);
+        return;
+    } else if (freq < 0) {
+        return;  /* not an error, but nothing to do. */
+    }
 
     if (!alcfmt_to_sdlfmt(alfmt, &sdlfmt, &channels, &framesize)) {
         set_al_error(ctx, AL_INVALID_VALUE);
