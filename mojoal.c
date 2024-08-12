@@ -1748,12 +1748,13 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
 
     {
     #if NEED_SCALAR_FALLBACK
-    SDL_memcpy(position, src->position, sizeof (position));
     /* if values aren't source-relative, then convert it to be so. */
     if (!src->source_relative) {
-        position[0] -= ctx->listener.position[0];
-        position[1] -= ctx->listener.position[1];
-        position[2] -= ctx->listener.position[2];
+        SDL_memcpy(position, src->position, sizeof (position));
+    } else {
+        position[0] = src->position[0] - ctx->listener.position[0];
+        position[1] = src->position[1] - ctx->listener.position[1];
+        position[2] = src->position[2] - ctx->listener.position[2];
     }
     distance = magnitude(position);
     #endif
@@ -1794,39 +1795,30 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
 
        https://dsp.stackexchange.com/questions/21691/algorithm-to-pan-audio
 
-       Naturally, we'll need to know the angle between where our listener
-       is facing and where the source is to make that work...
-
-       https://www.youtube.com/watch?v=S_568VZWFJo
-
-       ...but to do that, we need to rotate so we have the correct side of
-       the listener, which isn't just a point in space, but has a definite
-       direction it is facing. More or less, this is what gluLookAt deals
-       with...
-
-       http://www.songho.ca/opengl/gl_camera.html
-
-       ...although I messed with the algorithm until it did what I wanted.
-
        XYZZY!! https://en.wikipedia.org/wiki/Cross_product#Mnemonic
     */
 
     #ifdef __SSE__ /* (the math is explained in the scalar version.) */
     if (has_sse) {
         const __m128 at_sse = _mm_load_ps(at);
-        const __m128 U_sse = normalize_sse(xyzzy_sse(at_sse, _mm_load_ps(up)));
-        const __m128 V_sse = xyzzy_sse(at_sse, U_sse);
-        const __m128 N_sse = normalize_sse(at_sse);
-        const __m128 rotated_sse = {
-            dotproduct_sse(position_sse, U_sse),
-            -dotproduct_sse(position_sse, V_sse),
-            -dotproduct_sse(position_sse, N_sse),
-            0.0f
-        };
+        const __m128 up_sse = _mm_load_ps(up);
+        __m128 V_sse;
+        __m128 R_sse;
+        ALfloat cosangle;
+        ALfloat mags;
+        ALfloat a;
 
-        const ALfloat mags = magnitude_sse(at_sse) * magnitude_sse(rotated_sse);
-        radians = (mags == 0.0f) ? 0.0f : SDL_acosf(dotproduct_sse(at_sse, rotated_sse) / mags);
-        if (_mm_comilt_ss(rotated_sse, _mm_setzero_ps())) {
+        a = dotproduct_sse(position_sse, up_sse);
+        V_sse = _mm_sub_ps(position_sse, _mm_mul_ps(_mm_set1_ps(a), up_sse));
+
+        mags = magnitude_sse(at_sse) * magnitude_sse(V_sse);
+        cosangle = (mags == 0.0f) ? 0.0f : (dotproduct_sse(at_sse, V_sse) / mags);
+        cosangle = SDL_clamp(cosangle, -1.0f, 1.0f);
+        radians = SDL_acosf(cosangle);
+
+        R_sse = xyzzy_sse(at_sse, up_sse);
+
+        if (dotproduct_sse(R_sse, V_sse) < 0.0f) {
             radians = -radians;
         }
     } else
@@ -1835,64 +1827,55 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
     #ifdef __ARM_NEON__  /* (the math is explained in the scalar version.) */
     if (has_neon) {
         const float32x4_t at_neon = vld1q_f32(at);
-        const float32x4_t U_neon = normalize_neon(xyzzy_neon(at_neon, vld1q_f32(up)));
-        const float32x4_t V_neon = xyzzy_neon(at_neon, U_neon);
-        const float32x4_t N_neon = normalize_neon(at_neon);
-        const float32x4_t rotated_neon = {
-            dotproduct_neon(position_neon, U_neon),
-            -dotproduct_neon(position_neon, V_neon),
-            -dotproduct_neon(position_neon, N_neon),
-            0.0f
-        };
+        const float32x4_t up_neon = vld1q_f32(up);
+        float32x4_t V_neon;
+        float32x4_t R_neon;
+        ALfloat cosangle;
+        ALfloat mags;
+        ALfloat a;
 
-        const ALfloat mags = magnitude_neon(at_neon) * magnitude_neon(rotated_neon);
-        radians = (mags == 0.0f) ? 0.0f : SDL_acosf(dotproduct_neon(at_neon, rotated_neon) / mags);
-        if (rotated_neon[0] < 0.0f) {
+        a = dotproduct_neon(position_neon, up_neon);
+        V_neon = vsubq_f32(position_neon, vmulq_f32(vdupq_n_f32(a), up_neon));
+
+        mags = magnitude_neon(at_neon) * magnitude_neon(V_neon);
+        cosangle = (mags == 0.0f) ? 0.0f : (dotproduct_neon(at_neon, V_neon) / mags);
+        cosangle = SDL_clamp(cosangle, -1.0f, 1.0f);
+        radians = SDL_acosf(cosangle);
+
+        R_neon = xyzzy_neon(at_neon, up_neon);
+
+        if (dotproduct_neon(R_neon, V_neon) < 0.0f) {
             radians = -radians;
         }
+
     } else
     #endif
 
     {
     #if NEED_SCALAR_FALLBACK
-        ALfloat U[3];
         ALfloat V[3];
-        ALfloat N[3];
-        ALfloat rotated[3];
+        ALfloat R[3];
         ALfloat mags;
+        ALfloat cosangle;
+        ALfloat a;
 
-        xyzzy(U, at, up);
-        normalize(U);
-        xyzzy(V, at, U);
-        SDL_memcpy(N, at, sizeof (N));
-        normalize(N);
+        /* Remove upwards component so it lies completely within the horizontal plane. */
+        a = dotproduct(position, up);
+        V[0] = position[0] - (a * up[0]);
+        V[1] = position[1] - (a * up[1]);
+        V[2] = position[2] - (a * up[2]);
 
-        /* we don't need the bottom row of the gluLookAt matrix, since we don't
-           translate. (Matrix * Vector) is just filling in each element of the
-           output vector with the dot product of a row of the matrix and the
-           vector. I made some of these negative to make it work for my purposes,
-           but that's not what GLU does here.
+        /* Calculate angle */
+        mags = magnitude(at) * magnitude(V);
+        cosangle = (mags == 0.0f) ? 0.0f : (dotproduct(at, V) / mags);
+        cosangle = SDL_clamp(cosangle, -1.0f, 1.0f);
+        radians = SDL_acosf(cosangle);
 
-           (This says gluLookAt is left-handed, so maybe that's part of it?)
-            https://stackoverflow.com/questions/25933581/how-u-v-n-camera-coordinate-system-explained-with-opengl
-         */
-        rotated[0] = dotproduct(position, U);
-        rotated[1] = -dotproduct(position, V);
-        rotated[2] = -dotproduct(position, N);
-
-        /* At this point, we have rotated vector and we can calculate the angle
-           from 0 (directly in front of where the listener is facing) to 180
-           degrees (directly behind) ... */
-
-        mags = magnitude(at) * magnitude(rotated);
-        radians = (mags == 0.0f) ? 0.0f : SDL_acosf(dotproduct(at, rotated) / mags);
-        /* and we already have what we need to decide if those degrees are on the
-           listener's left or right...
-           https://gamedev.stackexchange.com/questions/43897/determining-if-something-is-on-the-right-or-left-side-of-an-object
-           ...we already did this dot product: it's in rotated[0]. */
+        /* Get "right" vector */
+        xyzzy(R, at, up);
 
         /* make it negative to the left, positive to the right. */
-        if (rotated[0] < 0.0f) {
+        if (dotproduct(R, V) < 0.0f) {
             radians = -radians;
         }
     #endif
