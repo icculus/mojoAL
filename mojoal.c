@@ -27,7 +27,18 @@
 #include "alc.h"
 #include "SDL.h"
 
-#ifdef __SSE__  /* if you are on x86 or x86-64, we assume you have SSE1 by now. */
+/* This is for debugging and/or pulling the fire alarm. */
+#define FORCE_SCALAR_FALLBACK 0
+#if FORCE_SCALAR_FALLBACK
+#  ifdef __SSE__
+#    undef __SSE__
+#  endif
+#  ifdef __ARM_NEON__
+#    undef __ARM_NEON__
+#  endif
+#endif
+
+#if defined(__SSE__)  /* if you are on x86 or x86-64, we assume you have SSE1 by now. */
 #define NEED_SCALAR_FALLBACK 0
 #elif (defined(__ARM_ARCH) && (__ARM_ARCH >= 8))  /* ARMv8 always has NEON. */
 #define NEED_SCALAR_FALLBACK 0
@@ -41,7 +52,7 @@
 
 /* Some platforms fail to define __ARM_NEON__, others need it or arm_neon.h will fail. */
 #if (defined(__ARM_ARCH) || defined(_M_ARM))
-#  if !NEED_SCALAR_FALLBACK && !defined(__ARM_NEON__)
+#  if !NEED_SCALAR_FALLBACK && !FORCE_SCALAR_FALLBACK && !defined(__ARM_NEON__)
 #    define __ARM_NEON__ 1
 #  endif
 #endif
