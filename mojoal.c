@@ -1812,9 +1812,13 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
         V_sse = _mm_sub_ps(position_sse, _mm_mul_ps(_mm_set1_ps(a), up_sse));
 
         mags = magnitude_sse(at_sse) * magnitude_sse(V_sse);
-        cosangle = (mags == 0.0f) ? 0.0f : (dotproduct_sse(at_sse, V_sse) / mags);
-        cosangle = SDL_clamp(cosangle, -1.0f, 1.0f);
-        radians = SDL_acosf(cosangle);
+        if (mags == 0.0f) {
+            radians = 0.0f;
+        } else {
+            cosangle = dotproduct_sse(at_sse, V_sse) / mags;
+            cosangle = SDL_clamp(cosangle, -1.0f, 1.0f);
+            radians = SDL_acosf(cosangle);   
+        }
 
         R_sse = xyzzy_sse(at_sse, up_sse);
 
@@ -1838,9 +1842,13 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
         V_neon = vsubq_f32(position_neon, vmulq_f32(vdupq_n_f32(a), up_neon));
 
         mags = magnitude_neon(at_neon) * magnitude_neon(V_neon);
-        cosangle = (mags == 0.0f) ? 0.0f : (dotproduct_neon(at_neon, V_neon) / mags);
-        cosangle = SDL_clamp(cosangle, -1.0f, 1.0f);
-        radians = SDL_acosf(cosangle);
+        if (mags == 0.0f) {
+            radians = 0.0f;
+        } else {
+            cosangle = dotproduct_neon(at_neon, V_neon) / mags;
+            cosangle = SDL_clamp(cosangle, -1.0f, 1.0f);
+            radians = SDL_acosf(cosangle);
+        }
 
         R_neon = xyzzy_neon(at_neon, up_neon);
 
@@ -1867,9 +1875,13 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
 
         /* Calculate angle */
         mags = magnitude(at) * magnitude(V);
-        cosangle = (mags == 0.0f) ? 0.0f : (dotproduct(at, V) / mags);
-        cosangle = SDL_clamp(cosangle, -1.0f, 1.0f);
-        radians = SDL_acosf(cosangle);
+        if (mags == 0.0f) {
+            radians = 0.0f;
+        } else {
+            cosangle = dotproduct(at, V) / mags;
+            cosangle = SDL_clamp(cosangle, -1.0f, 1.0f);
+            radians = SDL_acosf(cosangle);
+        }
 
         /* Get "right" vector */
         xyzzy(R, at, up);
