@@ -12,7 +12,8 @@
 
 #include "AL/al.h"
 #include "AL/alc.h"
-#include "SDL.h"
+
+#include <SDL3/SDL.h>
 
 static int check_openal_error(const char *where)
 {

@@ -12,7 +12,8 @@
 
 #include "AL/al.h"
 #include "AL/alc.h"
-#include "SDL.h"
+
+#include <SDL3/SDL.h>
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -39,17 +40,17 @@ static int check_openal_error(const char *where)
 
 static ALenum get_openal_format(const SDL_AudioSpec *spec)
 {
-    if ((spec->channels == 1) && (spec->format == AUDIO_U8)) {
+    if ((spec->channels == 1) && (spec->format == SDL_AUDIO_U8)) {
         return AL_FORMAT_MONO8;
-    } else if ((spec->channels == 1) && (spec->format == AUDIO_S16SYS)) {
+    } else if ((spec->channels == 1) && (spec->format == SDL_AUDIO_S16)) {
         return AL_FORMAT_MONO16;
-    } else if ((spec->channels == 2) && (spec->format == AUDIO_U8)) {
+    } else if ((spec->channels == 2) && (spec->format == SDL_AUDIO_U8)) {
         return AL_FORMAT_STEREO8;
-    } else if ((spec->channels == 2) && (spec->format == AUDIO_S16SYS)) {
+    } else if ((spec->channels == 2) && (spec->format == SDL_AUDIO_S16)) {
         return AL_FORMAT_STEREO16;
-    } else if ((spec->channels == 1) && (spec->format == AUDIO_F32SYS)) {
+    } else if ((spec->channels == 1) && (spec->format == SDL_AUDIO_F32)) {
         return alIsExtensionPresent("AL_EXT_FLOAT32") ? alGetEnumValue("AL_FORMAT_MONO_FLOAT32") : AL_NONE;
-    } else if ((spec->channels == 2) && (spec->format == AUDIO_F32SYS)) {
+    } else if ((spec->channels == 2) && (spec->format == SDL_AUDIO_F32)) {
         return alIsExtensionPresent("AL_EXT_FLOAT32") ? alGetEnumValue("AL_FORMAT_STEREO_FLOAT32") : AL_NONE;
     }
     return AL_NONE;
@@ -87,19 +88,19 @@ static int mainloop(SDL_Renderer *renderer)
 
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
-            case SDL_QUIT:
+            case SDL_EVENT_QUIT:
                 return 0;
 
-            case SDL_KEYDOWN:
-                if (e.key.keysym.sym == SDLK_ESCAPE) {
+            case SDL_EVENT_KEY_DOWN:
+                if (e.key.key == SDLK_ESCAPE) {
                     return 0;
                 }
                 break;
 
-            case SDL_MOUSEBUTTONUP:
-            case SDL_MOUSEBUTTONDOWN:
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 if (e.button.button == 1) {
-                    if (e.button.state == SDL_RELEASED) {
+                    if (!e.button.down) {
                         if (palTraceMessage) palTraceMessage("Mouse button released");
                         draggingobj = -1;
                     } else {
@@ -109,7 +110,7 @@ static int mainloop(SDL_Renderer *renderer)
                 }
                 break;
 
-            case SDL_MOUSEMOTION:
+            case SDL_EVENT_MOUSE_MOTION:
                 if (draggingobj != -1) {
                     obj *o = &objects[draggingobj];
                     o->x = SDL_min(800, SDL_max(0, e.motion.x));
@@ -135,7 +136,7 @@ static int mainloop(SDL_Renderer *renderer)
 
     for (i = 0; i < SDL_arraysize(objects); i++) {
         const obj *o = &objects[i];
-        const SDL_Rect r = { o->x - 25, o->y - 25, 50, 50 };
+        const SDL_FRect r = { o->x - 25, o->y - 25, 50, 50 };
         if (o->sid == 0) {
             SDL_SetRenderDrawColor(renderer, 0x00, 0xFF, 0x00, 0xFF);
         } else {
@@ -173,7 +174,7 @@ static void spatialize(SDL_Renderer *renderer, const char *fname)
         return;
     } else if ((alfmt = get_openal_format(&spec)) == AL_NONE) {
         printf("Can't queue '%s', format not supported by the AL.\n", fname);
-        SDL_FreeWAV(buf);
+        SDL_free(buf);
         return;
     }
 
@@ -185,7 +186,7 @@ static void spatialize(SDL_Renderer *renderer, const char *fname)
 
     alGenSources(1, &sid);
     if (check_openal_error("alGenSources")) {
-        SDL_FreeWAV(buf);
+        SDL_free(buf);
         return;
     }
 
@@ -195,14 +196,14 @@ static void spatialize(SDL_Renderer *renderer, const char *fname)
     if (check_openal_error("alGenBuffers")) {
         alDeleteSources(1, &sid);
         check_openal_error("alDeleteSources");
-        SDL_FreeWAV(buf);
+        SDL_free(buf);
         return;
     }
 
     if (palTraceBufferLabel) palTraceBufferLabel(bid, "Sound effect");
 
     alBufferData(bid, alfmt, buf, buflen, spec.freq);
-    SDL_FreeWAV(buf);
+    SDL_free(buf);
     check_openal_error("alBufferData");
     alSourcei(sid, AL_BUFFER, bid);
     check_openal_error("alSourcei");
@@ -258,9 +259,7 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    window = SDL_CreateWindow(argv[0], SDL_WINDOWPOS_UNDEFINED,
-                              SDL_WINDOWPOS_UNDEFINED, 800, 600,
-                              SDL_WINDOW_RESIZABLE);
+    window = SDL_CreateWindow(argv[0], 800, 600, SDL_WINDOW_RESIZABLE);
 
     if (!window) {
         fprintf(stderr, "SDL_CreateWindow() failed: %s\n", SDL_GetError());
@@ -268,14 +267,15 @@ int main(int argc, char **argv)
         return 3;
     }
 
-    renderer = SDL_CreateRenderer(window, -1, 0);
+    renderer = SDL_CreateRenderer(window, NULL);
     if (!renderer) {
         fprintf(stderr, "SDL_CreateRenderer() failed: %s\n", SDL_GetError());
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 4;
     }
-    SDL_RenderSetLogicalSize(renderer, 800, 600);
+    SDL_SetRenderLogicalPresentation(renderer, 800, 600,
+                                     SDL_LOGICAL_PRESENTATION_LETTERBOX);
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0xFF);
     SDL_RenderClear(renderer);
     SDL_RenderPresent(renderer);

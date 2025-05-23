@@ -12,7 +12,8 @@
 
 #include "AL/al.h"
 #include "AL/alc.h"
-#include "SDL.h"
+
+#include <SDL3/SDL.h>
 
 static int check_openal_error(const char *where)
 {
@@ -26,17 +27,17 @@ static int check_openal_error(const char *where)
 
 static ALenum get_openal_format(const SDL_AudioSpec *spec)
 {
-    if ((spec->channels == 1) && (spec->format == AUDIO_U8)) {
+    if ((spec->channels == 1) && (spec->format == SDL_AUDIO_U8)) {
         return AL_FORMAT_MONO8;
-    } else if ((spec->channels == 1) && (spec->format == AUDIO_S16SYS)) {
+    } else if ((spec->channels == 1) && (spec->format == SDL_AUDIO_S16)) {
         return AL_FORMAT_MONO16;
-    } else if ((spec->channels == 2) && (spec->format == AUDIO_U8)) {
+    } else if ((spec->channels == 2) && (spec->format == SDL_AUDIO_U8)) {
         return AL_FORMAT_STEREO8;
-    } else if ((spec->channels == 2) && (spec->format == AUDIO_S16SYS)) {
+    } else if ((spec->channels == 2) && (spec->format == SDL_AUDIO_S16)) {
         return AL_FORMAT_STEREO16;
-    } else if ((spec->channels == 1) && (spec->format == AUDIO_F32SYS)) {
+    } else if ((spec->channels == 1) && (spec->format == SDL_AUDIO_F32)) {
         return alIsExtensionPresent("AL_EXT_FLOAT32") ? alGetEnumValue("AL_FORMAT_MONO_FLOAT32") : AL_NONE;
-    } else if ((spec->channels == 2) && (spec->format == AUDIO_F32SYS)) {
+    } else if ((spec->channels == 2) && (spec->format == SDL_AUDIO_F32)) {
         return alIsExtensionPresent("AL_EXT_FLOAT32") ? alGetEnumValue("AL_FORMAT_STEREO_FLOAT32") : AL_NONE;
     }
     return AL_NONE;
@@ -82,7 +83,7 @@ static void queuewav(ALCdevice *device, const char *fname)
         return;
     } else if ((alfmt = get_openal_format(&spec)) == AL_NONE) {
         printf("Can't queue '%s', format not supported by the AL.\n", fname);
-        SDL_FreeWAV(buf);
+        SDL_free(buf);
         return;
     }
 
@@ -96,7 +97,7 @@ static void queuewav(ALCdevice *device, const char *fname)
 
     alGenSources(1, &sid);
     if (check_openal_error("alGenSources")) {
-        SDL_FreeWAV(buf);
+        SDL_free(buf);
         return;
     }
 
@@ -104,7 +105,7 @@ static void queuewav(ALCdevice *device, const char *fname)
     if (check_openal_error("alGenBuffers")) {
         alDeleteSources(1, &sid);
         check_openal_error("alDeleteSources");
-        SDL_FreeWAV(buf);
+        SDL_free(buf);
         return;
     }
 
@@ -117,7 +118,7 @@ static void queuewav(ALCdevice *device, const char *fname)
             check_openal_error("alDeleteSources");
             alDeleteBuffers(SDL_arraysize(buffers), buffers);
             check_openal_error("alDeleteBuffers");
-            SDL_FreeWAV(buf);
+            SDL_free(buf);
             return;
         }
     }
@@ -128,7 +129,7 @@ static void queuewav(ALCdevice *device, const char *fname)
         check_openal_error("alDeleteSources");
         alDeleteBuffers(SDL_arraysize(buffers), buffers);
         check_openal_error("alDeleteBuffers");
-        SDL_FreeWAV(buf);
+        SDL_free(buf);
         return;
     }
 
@@ -195,7 +196,7 @@ static void queuewav(ALCdevice *device, const char *fname)
     check_openal_error("alDeleteSources");
     alDeleteBuffers(SDL_arraysize(buffers), buffers);
     check_openal_error("alDeleteBuffers");
-    SDL_FreeWAV(buf);
+    SDL_free(buf);
 }
 
 

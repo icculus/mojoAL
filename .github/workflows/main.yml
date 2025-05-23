@@ -10,14 +10,14 @@ jobs:
       matrix:
         platform:
         - { name: Linux,   os: ubuntu-latest }
-        - { name: Windows, os: windows-latest }
+        - { name: Windows, os: windows-2025 }
         - { name: MacOS,   os: macos-latest }
     steps:
     - name: Set up SDL
       id: sdl
       uses: libsdl-org/setup-sdl@main
       with:
-        version: sdl2-latest
+        version: sdl3-latest
     - name: Get MojoAL sources
       uses: actions/checkout@v3
     - name: Configure CMake

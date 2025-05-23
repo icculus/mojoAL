@@ -12,7 +12,8 @@
 
 #include "AL/al.h"
 #include "AL/alc.h"
-#include "SDL.h"
+
+#include <SDL3/SDL.h>
 
 static LPALCTRACEDEVICELABEL palcTraceDeviceLabel;
 static LPALCTRACECONTEXTLABEL palcTraceContextLabel;
