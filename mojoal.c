@@ -30,6 +30,7 @@
 #include "alc.h"
 
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_intrin.h>
 
 #if defined(SDL_SSE_INTRINSICS)  /* if you are on x86 or x86-64, we assume you have SSE1 by now. */
 #define NEED_SCALAR_FALLBACK 0
