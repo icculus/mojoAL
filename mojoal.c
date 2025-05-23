@@ -6,10 +6,8 @@
  *  This file written by Ryan C. Gordon.
  */
 
-#include <stdio.h>
 #include <stdlib.h>  /* needed for alloca */
-#include <math.h>
-#include <float.h>
+#include <float.h>   /* needed for FLT_MAX */
 
 /* Unless compiling statically into another app, we want the public API
    to export on Windows. Define these before including al.h, so we override
@@ -19,8 +17,13 @@
   #define ALC_API __declspec(dllexport)
 #endif
 
-#ifndef M_PI
-  #define M_PI (3.14159265358979323846264338327950288)
+/* This is for debugging and/or pulling the fire alarm. */
+#ifndef MOJOAL_FORCE_SCALAR_FALLBACK
+#  define MOJOAL_FORCE_SCALAR_FALLBACK 0
+#endif
+#if MOJOAL_FORCE_SCALAR_FALLBACK
+#  define SDL_DISABLE_SSE
+#  define SDL_DISABLE_NEON
 #endif
 
 #include "al.h"
@@ -28,42 +31,16 @@
 
 #include <SDL3/SDL.h>
 
-/* This is for debugging and/or pulling the fire alarm. */
-#define FORCE_SCALAR_FALLBACK 0
-#if FORCE_SCALAR_FALLBACK
-#  ifdef __SSE__
-#    undef __SSE__
-#  endif
-#  ifdef __ARM_NEON__
-#    undef __ARM_NEON__
-#  endif
-#endif
-
-#if defined(__SSE__)  /* if you are on x86 or x86-64, we assume you have SSE1 by now. */
+#if defined(SDL_SSE_INTRINSICS)  /* if you are on x86 or x86-64, we assume you have SSE1 by now. */
 #define NEED_SCALAR_FALLBACK 0
-#elif (defined(__ARM_ARCH) && (__ARM_ARCH >= 8))  /* ARMv8 always has NEON. */
+#elif defined(SDL_NEON_INTRINSICS) && (defined(__ARM_ARCH) && (__ARM_ARCH >= 8))  /* ARMv8 always has NEON. */
 #define NEED_SCALAR_FALLBACK 0
-#elif (defined(__APPLE__) && defined(__ARM_ARCH) && (__ARM_ARCH >= 7))   /* All ARMv7 chips from Apple have NEON. */
+#elif defined(SDL_NEON_INTRINSICS) && (defined(__APPLE__) && defined(__ARM_ARCH) && (__ARM_ARCH >= 7))   /* All ARMv7 chips from Apple have NEON. */
 #define NEED_SCALAR_FALLBACK 0
-#elif (defined(__WINDOWS__) || defined(__WINRT__)) && defined(_M_ARM)  /* all WinRT-level Microsoft devices have NEON */
+#elif defined(SDL_NEON_INTRINSICS) && (defined(__WINDOWS__) || defined(__WINRT__)) && defined(_M_ARM)  /* all WinRT-level Microsoft devices have NEON */
 #define NEED_SCALAR_FALLBACK 0
 #else
 #define NEED_SCALAR_FALLBACK 1
-#endif
-
-/* Some platforms fail to define __ARM_NEON__, others need it or arm_neon.h will fail. */
-#if (defined(__ARM_ARCH) || defined(_M_ARM))
-#  if !NEED_SCALAR_FALLBACK && !FORCE_SCALAR_FALLBACK && !defined(__ARM_NEON__)
-#    define __ARM_NEON__ 1
-#  endif
-#endif
-
-#ifdef __SSE__
-#include <xmmintrin.h>
-#endif
-
-#ifdef __ARM_NEON__
-#include <arm_neon.h>
 #endif
 
 #define OPENAL_VERSION_MAJOR 1
@@ -235,11 +212,11 @@ The locking strategy for this OpenAL implementation:
 #define SIMDALIGNEDSTRUCT struct
 #endif
 
-#ifdef __SSE__  /* we assume you always have this on x86/x86-64 chips. SSE1 is 20 years old! */
+#if defined(SDL_SSE_INTRINSICS)   /* we assume you always have this on x86/x86-64 chips. SSE1 is 20+ years old! */
 #define has_sse 1
 #endif
 
-#ifdef __ARM_NEON__
+#if defined(SDL_NEON_INTRINSICS)
 #if NEED_SCALAR_FALLBACK
 static int has_neon = 0;
 #else
@@ -613,19 +590,19 @@ static ALCdevice *prep_alc_device(const char *devicename, const ALCboolean iscap
         return NULL;
     }
 
-    #ifdef __SSE__
+    #if defined(SDL_SSE_INTRINSICS)
     if (!SDL_HasSSE()) {
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return NULL;  /* whoa! Better order a new Pentium III from Gateway 2000! */
     }
     #endif
 
-    #if defined(__ARM_NEON__) && !NEED_SCALAR_FALLBACK
+    #if defined(SDL_NEON_INTRINSICS) && !NEED_SCALAR_FALLBACK
     if (!SDL_HasNEON()) {
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return NULL;  /* :( */
     }
-    #elif defined(__ARM_NEON__) && NEED_SCALAR_FALLBACK
+    #elif defined(SDL_NEON_INTRINSICS) && NEED_SCALAR_FALLBACK
     has_neon = SDL_HasNEON();
     #endif
 
@@ -781,7 +758,7 @@ static ALCboolean alcfmt_to_sdlfmt(const ALCenum alfmt, SDL_AudioFormat *sdlfmt,
     return ALC_TRUE;
 }
 
-static void mix_float32_c1_scalar(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+static void mix_float32_mono_to_stereo_scalar(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
 {
     const ALfloat left = panning[0];
     const ALfloat right = panning[1];
@@ -832,7 +809,7 @@ static void mix_float32_c1_scalar(const ALfloat * restrict panning, const float 
     }
 }
 
-static void mix_float32_c2_scalar(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+static void mix_float32_stereo_to_stereo_scalar(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
 {
     const ALfloat left = panning[0];
     const ALfloat right = panning[1];
@@ -873,8 +850,8 @@ static void mix_float32_c2_scalar(const ALfloat * restrict panning, const float 
     }
 }
 
-#ifdef __SSE__
-static void mix_float32_c1_sse(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+#if defined(SDL_SSE_INTRINSICS)
+static void SDL_TARGETING("sse") mix_float32_mono_to_stereo_sse(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
 {
     const ALfloat left = panning[0];
     const ALfloat right = panning[1];
@@ -888,10 +865,10 @@ static void mix_float32_c1_sse(const ALfloat * restrict panning, const float * r
         stream[1] += data[0] * right;
         stream[2] += data[1] * left;
         stream[3] += data[1] * right;
-        mix_float32_c1_sse(panning, data + 2, stream + 4, mixframes - 2);
+        mix_float32_mono_to_stereo_sse(panning, data + 2, stream + 4, mixframes - 2);
     } else if ( (((size_t)stream) % 16) || (((size_t)data) % 16) ) {
         /* unaligned, do scalar version. */
-        mix_float32_c1_scalar(panning, data, stream, mixframes);
+        mix_float32_mono_to_stereo_scalar(panning, data, stream, mixframes);
     } else if ((left == 1.0f) && (right == 1.0f)) {
         for (i = 0; i < unrolled; i++, data += 8, stream += 16) {
             /* We have 8 SSE registers, load 6 of them, have two for math (unrolled once). */
@@ -936,7 +913,7 @@ static void mix_float32_c1_sse(const ALfloat * restrict panning, const float * r
     }
 }
 
-static void mix_float32_c2_sse(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+static void SDL_TARGETING("sse") mix_float32_stereo_to_stereo_sse(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
 {
     const ALfloat left = panning[0];
     const ALfloat right = panning[1];
@@ -948,10 +925,10 @@ static void mix_float32_c2_sse(const ALfloat * restrict panning, const float * r
     if ( ((((size_t)stream) % 16) == 8) && ((((size_t)data) % 16) == 8) && mixframes ) {
         stream[0] += data[0] * left;
         stream[1] += data[1] * right;
-        mix_float32_c2_sse(panning, data + 2, stream + 2, mixframes - 1);
+        mix_float32_stereo_to_stereo_sse(panning, data + 2, stream + 2, mixframes - 1);
     } else if ( (((size_t)stream) % 16) || (((size_t)data) % 16) ) {
         /* unaligned, do scalar version. */
-        mix_float32_c2_scalar(panning, data, stream, mixframes);
+        mix_float32_stereo_to_stereo_scalar(panning, data, stream, mixframes);
     } else if ((left == 1.0f) && (right == 1.0f)) {
         for (i = 0; i < unrolled; i++, data += 8, stream += 8) {
             const __m128 vdata1 = _mm_load_ps(data);
@@ -983,8 +960,8 @@ static void mix_float32_c2_sse(const ALfloat * restrict panning, const float * r
 }
 #endif
 
-#ifdef __ARM_NEON__
-static void mix_float32_c1_neon(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+#if defined(SDL_NEON_INTRINSICS)
+static void SDL_TARGETING("neon") mix_float32_mono_to_stereo_neon(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
 {
     const ALfloat left = panning[0];
     const ALfloat right = panning[1];
@@ -998,10 +975,10 @@ static void mix_float32_c1_neon(const ALfloat * restrict panning, const float * 
         stream[1] += data[0] * right;
         stream[2] += data[1] * left;
         stream[3] += data[1] * right;
-        mix_float32_c1_neon(panning, data + 2, stream + 4, mixframes - 2);
+        mix_float32_mono_to_stereo_neon(panning, data + 2, stream + 4, mixframes - 2);
     } else if ( (((size_t)stream) % 16) || (((size_t)data) % 16) ) {
         /* unaligned, do scalar version. */
-        mix_float32_c1_scalar(panning, data, stream, mixframes);
+        mix_float32_mono_to_stereo_scalar(panning, data, stream, mixframes);
     } else if ((left == 1.0f) && (right == 1.0f)) {
         for (i = 0; i < unrolled; i++, data += 8, stream += 16) {
             const float32x4_t vdataload1 = vld1q_f32(data);
@@ -1046,7 +1023,7 @@ static void mix_float32_c1_neon(const ALfloat * restrict panning, const float * 
     }
 }
 
-static void mix_float32_c2_neon(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+static void SDL_TARGETING("neon") mix_float32_stereo_to_stereo_neon(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
 {
     const ALfloat left = panning[0];
     const ALfloat right = panning[1];
@@ -1058,10 +1035,10 @@ static void mix_float32_c2_neon(const ALfloat * restrict panning, const float * 
     if ( ((((size_t)stream) % 16) == 8) && ((((size_t)data) % 16) == 8) && mixframes ) {
         stream[0] += data[0] * left;
         stream[1] += data[1] * right;
-        mix_float32_c2_neon(panning, data + 2, stream + 2, mixframes - 1);
+        mix_float32_stereo_to_stereo_neon(panning, data + 2, stream + 2, mixframes - 1);
     } else if ( (((size_t)stream) % 16) || (((size_t)data) % 16) ) {
         /* unaligned, do scalar version. */
-        mix_float32_c2_scalar(panning, data, stream, mixframes);
+        mix_float32_stereo_to_stereo_scalar(panning, data, stream, mixframes);
     } else if ((left == 1.0f) && (right == 1.0f)) {
         for (i = 0; i < unrolled; i++, data += 16, stream += 16) {
             const float32x4_t vdata1 = vld1q_f32(data);
@@ -1153,7 +1130,7 @@ static void pitch_fft(float *fftBuffer, int fftFrameSize, int sign)
         le2 = le>>1;
         ur = 1.0f;
         ui = 0.0f;
-        arg = (float) (M_PI / (le2>>1));
+        arg = (float) (SDL_PI_D / (le2>>1));
         wr = SDL_cosf(arg);
         wi = sign*SDL_sinf(arg);
         for (j = 0; j < le2; j += 2) {
@@ -1182,7 +1159,7 @@ static void pitch_shift(ALsource *src, const ALbuffer *buffer, int numSampsToPro
     const int stepSize = pitch_framesize / osamp;
     const int inFifoLatency = pitch_framesize - stepSize;
     const double freqPerBin = sampleRate / (double)pitch_framesize;
-    const double expct = 2.0 * M_PI * ((double)stepSize / (double)pitch_framesize);
+    const double expct = 2.0 * SDL_PI_D * ((double)stepSize / (double)pitch_framesize);
 
     double magn, phase, tmp, window, real, imag;
     int i,k, qpd, index;
@@ -1206,7 +1183,7 @@ static void pitch_shift(ALsource *src, const ALbuffer *buffer, int numSampsToPro
 
             /* do windowing and re,im interleave */
             for (k = 0; k < pitch_framesize;k++) {
-                window = -.5*SDL_cos(2.*M_PI*(double)k/(double)pitch_framesize)+.5;
+                window = -.5*SDL_cos(2.*SDL_PI_D*(double)k/(double)pitch_framesize)+.5;
                 state->workspace[2*k] = (ALfloat) (state->infifo[k] * window);
                 state->workspace[2*k+1] = 0.0f;
             }
@@ -1235,13 +1212,13 @@ static void pitch_shift(ALsource *src, const ALbuffer *buffer, int numSampsToPro
                 tmp -= (double)k*expct;
 
                 /* map delta phase into +/- Pi interval */
-                qpd = (int) (tmp/M_PI);
+                qpd = (int) (tmp/SDL_PI_D);
                 if (qpd >= 0) qpd += qpd&1;
                 else qpd -= qpd&1;
-                tmp -= M_PI*(double)qpd;
+                tmp -= SDL_PI_D*(double)qpd;
 
                 /* get deviation from bin frequency from the +/- Pi interval */
-                tmp = osamp*tmp/(2.*M_PI);
+                tmp = osamp*tmp/(2.*SDL_PI_D);
 
                 /* compute the k-th partials' true frequency */
                 tmp = (double)k*freqPerBin + tmp*freqPerBin;
@@ -1278,7 +1255,7 @@ static void pitch_shift(ALsource *src, const ALbuffer *buffer, int numSampsToPro
                 tmp /= freqPerBin;
 
                 /* take osamp into account */
-                tmp = 2.*M_PI*tmp/osamp;
+                tmp = 2.*SDL_PI_D*tmp/osamp;
 
                 /* add the overlap phase advance back in */
                 tmp += (double)k*expct;
@@ -1300,7 +1277,7 @@ static void pitch_shift(ALsource *src, const ALbuffer *buffer, int numSampsToPro
 
             /* do windowing and add to output accumulator */ 
             for(k=0; k < pitch_framesize; k++) {
-                window = -.5*SDL_cos(2.*M_PI*(double)k/(double)pitch_framesize)+.5;
+                window = -.5*SDL_cos(2.*SDL_PI_D*(double)k/(double)pitch_framesize)+.5;
                 state->outputaccum[k] += (ALfloat) (2.*window*state->workspace[2*k]/(pitch_framesize2*osamp));
             }
             for (k = 0; k < stepSize; k++) state->outfifo[k] = state->outputaccum[k];
@@ -1327,32 +1304,33 @@ static void mix_buffer(ALsource *src, const ALbuffer *buffer, const ALfloat * re
     FIXME("currently expects output to be stereo");
     if ((left != 0.0f) || (right != 0.0f)) {  /* don't bother mixing in silence. */
         if (buffer->channels == 1) {
-            #ifdef __SSE__
-            if (has_sse) { mix_float32_c1_sse(panning, data, stream, mixframes); } else
-            #elif defined(__ARM_NEON__)
-            if (has_neon) { mix_float32_c1_neon(panning, data, stream, mixframes); } else
+            #if defined(SDL_SSE_INTRINSICS)
+            if (has_sse) { mix_float32_mono_to_stereo_sse(panning, data, stream, mixframes); } else
+            #elif defined(SDL_NEON_INTRINSICS)
+            if (has_neon) { mix_float32_mono_to_stereo_neon(panning, data, stream, mixframes); } else
             #endif
             {
             #if NEED_SCALAR_FALLBACK
-            mix_float32_c1_scalar(panning, data, stream, mixframes);
+            mix_float32_mono_to_stereo_scalar(panning, data, stream, mixframes);
+            #else
+            SDL_assert(!"uhoh, we didn't compile in enough mixers!");
+            #endif
+            }
+        } else if (buffer->channels == 2) {
+            #if defined(SDL_SSE_INTRINSICS)
+            if (has_sse) { mix_float32_stereo_to_stereo_sse(panning, data, stream, mixframes); } else
+            #elif defined(SDL_NEON_INTRINSICS)
+            if (has_neon) { mix_float32_stereo_to_stereo_neon(panning, data, stream, mixframes); } else
+            #endif
+            {
+            #if NEED_SCALAR_FALLBACK
+            mix_float32_stereo_to_stereo_scalar(panning, data, stream, mixframes);
             #else
             SDL_assert(!"uhoh, we didn't compile in enough mixers!");
             #endif
             }
         } else {
-            SDL_assert(buffer->channels == 2);
-            #ifdef __SSE__
-            if (has_sse) { mix_float32_c2_sse(panning, data, stream, mixframes); } else
-            #elif defined(__ARM_NEON__)
-            if (has_neon) { mix_float32_c2_neon(panning, data, stream, mixframes); } else
-            #endif
-            {
-            #if NEED_SCALAR_FALLBACK
-            mix_float32_c2_scalar(panning, data, stream, mixframes);
-            #else
-            SDL_assert(!"uhoh, we didn't compile in enough mixers!");
-            #endif
-            }
+            SDL_assert(!"write me");
         }
     }
 }
@@ -1519,8 +1497,8 @@ static void normalize(ALfloat *v)
 }
 #endif
 
-#ifdef __SSE__
-static __m128 xyzzy_sse(const __m128 a, const __m128 b)
+#if defined(SDL_SSE_INTRINSICS)
+static __m128 SDL_TARGETING("sse") xyzzy_sse(const __m128 a, const __m128 b)
 {
     /* http://fastcpp.blogspot.com/2011/04/vector-cross-product-using-sse-code.html
         this is the "three shuffle" version in the comments, plus the variables swapped around for handedness in the later comment. */
@@ -1531,7 +1509,7 @@ static __m128 xyzzy_sse(const __m128 a, const __m128 b)
     return _mm_shuffle_ps(v, v, _MM_SHUFFLE(3, 0, 2, 1));
 }
 
-static ALfloat dotproduct_sse(const __m128 a, const __m128 b)
+static ALfloat SDL_TARGETING("sse") dotproduct_sse(const __m128 a, const __m128 b)
 {
     const __m128 prod = _mm_mul_ps(a, b);
     const __m128 sum1 = _mm_add_ps(prod, _mm_shuffle_ps(prod, prod, _MM_SHUFFLE(1, 0, 3, 2)));
@@ -1540,12 +1518,12 @@ static ALfloat dotproduct_sse(const __m128 a, const __m128 b)
     return _mm_cvtss_f32(_mm_shuffle_ps(sum2, sum2, _MM_SHUFFLE(3, 3, 3, 3)));
 }
 
-static ALfloat magnitude_sse(const __m128 v)
+static ALfloat SDL_TARGETING("sse") magnitude_sse(const __m128 v)
 {
     return SDL_sqrtf(dotproduct_sse(v, v));
 }
 
-static __m128 normalize_sse(const __m128 v)
+static __m128 SDL_TARGETING("sse") normalize_sse(const __m128 v)
 {
     const ALfloat mag = magnitude_sse(v);
     if (mag == 0.0f) {
@@ -1555,8 +1533,8 @@ static __m128 normalize_sse(const __m128 v)
 }
 #endif
 
-#ifdef __ARM_NEON__
-static float32x4_t xyzzy_neon(const float32x4_t a, const float32x4_t b)
+#if defined(SDL_NEON_INTRINSICS)
+static float32x4_t SDL_TARGETING("neon") xyzzy_neon(const float32x4_t a, const float32x4_t b)
 {
     const float32x4_t shuf_a = { a[1], a[2], a[0], a[3] };
     const float32x4_t shuf_b = { b[1], b[2], b[0], b[3] };
@@ -1566,7 +1544,7 @@ static float32x4_t xyzzy_neon(const float32x4_t a, const float32x4_t b)
     return retval;
 }
 
-static ALfloat dotproduct_neon(const float32x4_t a, const float32x4_t b)
+static ALfloat SDL_TARGETING("neon") dotproduct_neon(const float32x4_t a, const float32x4_t b)
 {
     const float32x4_t prod = vmulq_f32(a, b);
     const float32x4_t sum1 = vaddq_f32(prod, vrev64q_f32(prod));
@@ -1574,12 +1552,12 @@ static ALfloat dotproduct_neon(const float32x4_t a, const float32x4_t b)
     return sum2[3];
 }
 
-static ALfloat magnitude_neon(const float32x4_t v)
+static ALfloat SDL_TARGETING("neon") magnitude_neon(const float32x4_t v)
 {
     return SDL_sqrtf(dotproduct_neon(v, v));
 }
 
-static float32x4_t normalize_neon(const float32x4_t v)
+static float32x4_t SDL_TARGETING("neon") normalize_neon(const float32x4_t v)
 {
     const ALfloat mag = magnitude_neon(v);
     if (mag == 0.0f) {
@@ -1654,9 +1632,10 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
     ALfloat gain;
     ALfloat radians;
 
-    #ifdef __SSE__
+    FIXME("Move simd parts out of this function");
+    #if defined(SDL_SSE_INTRINSICS)
     __m128 position_sse;
-    #elif defined(__ARM_NEON__)
+    #elif defined(SDL_NEON_INTRINSICS)
     float32x4_t position_neon = vdupq_n_f32(0.0f);
     #endif
 
@@ -1673,7 +1652,7 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
         return;
     }
 
-    #ifdef __SSE__
+    #if defined(SDL_SSE_INTRINSICS)
     if (has_sse) {
         position_sse = _mm_load_ps(src->position);
         if (!src->source_relative) {
@@ -1681,7 +1660,7 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
         }
         distance = magnitude_sse(position_sse);
     } else
-    #elif defined(__ARM_NEON__)
+    #elif defined(SDL_NEON_INTRINSICS)
     if (has_neon) {
         position_neon = vld1q_f32(src->position);
         if (!src->source_relative) {
@@ -1743,7 +1722,7 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
        XYZZY!! https://en.wikipedia.org/wiki/Cross_product#Mnemonic
     */
 
-    #ifdef __SSE__ /* (the math is explained in the scalar version.) */
+    #if defined(SDL_SSE_INTRINSICS)  /* (the math is explained in the scalar version.) */
     if (has_sse) {
         const __m128 at_sse = _mm_load_ps(at);
         const __m128 up_sse = _mm_load_ps(up);
@@ -1773,7 +1752,7 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
     } else
     #endif
 
-    #ifdef __ARM_NEON__  /* (the math is explained in the scalar version.) */
+    #if defined(SDL_NEON_INTRINSICS)  /* (the math is explained in the scalar version.) */
     if (has_neon) {
         const float32x4_t at_neon = vld1q_f32(at);
         const float32x4_t up_neon = vld1q_f32(up);
@@ -1864,12 +1843,12 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
         gains[1] = 0.0f;
     } else if (radians < 0.0f) {  /* back left */
         ALfloat sine, cosine;
-        calculate_sincos((ALfloat) -(radians + M_PI), &sine, &cosine);
+        calculate_sincos(-(radians + SDL_PI_F), &sine, &cosine);
         gains[0] = (SQRT2_DIV2 * (cosine - sine));
         gains[1] = (SQRT2_DIV2 * (cosine + sine));
     } else { /* back right */
         ALfloat sine, cosine;
-        calculate_sincos((ALfloat) -(radians - M_PI), &sine, &cosine);
+        calculate_sincos(-(radians - SDL_PI_F), &sine, &cosine);
         gains[0] = (SQRT2_DIV2 * (cosine - sine));
         gains[1] = (SQRT2_DIV2 * (cosine + sine));
     }
