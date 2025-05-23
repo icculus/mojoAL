@@ -27,6 +27,11 @@
 #include "alc.h"
 #include "SDL.h"
 
+/* really old SDL2 headers don't have SDL_clamp. */
+#ifndef SDL_clamp
+#define SDL_clamp(x, a, b) ((x) < (a)) ? (a) : (((x) > (b)) ? (b) : (x))
+#endif
+
 /* This is for debugging and/or pulling the fire alarm. */
 #define FORCE_SCALAR_FALLBACK 0
 #if FORCE_SCALAR_FALLBACK
