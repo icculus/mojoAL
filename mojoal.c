@@ -293,6 +293,176 @@ static void free_simd_aligned(void *ptr)
     SDL_aligned_free(ptr);
 }
 
+/* VBAP code originally from https://github.com/drbafflegab/vbap/ ... CC0 license (public domain). */
+
+#define VBAP2D_MAX_RESOLUTION 3600
+#define VBAP2D_MAX_SPEAKER_COUNT 8   /* original code had 64, assumed you'd use less, but we're hardcoding our current maximum. */
+#define VBAP2D_RESOLUTION 36   /* 10 degrees per division */
+
+static SDL_INLINE float VBAP2D_division_to_angle(int const division)
+{
+    return (float)division * (2.0f * SDL_PI_F) / (float)VBAP2D_RESOLUTION;
+}
+
+static SDL_INLINE int VBAP2D_angle_to_span(float const angle)
+{
+    return (int)SDL_floorf(angle * (float)VBAP2D_RESOLUTION / (2.0f * SDL_PI_F));
+}
+
+static SDL_INLINE bool VBAP2D_contains(int division, int last_division, int next_division)
+{
+    if (last_division < next_division) {
+        return last_division <= division && division < next_division;
+    } else {
+        const bool cond_a = 0 <= division && division < next_division;
+        const bool cond_b = last_division <= division && division < VBAP2D_RESOLUTION;
+        return cond_a || cond_b;
+    }
+}
+
+static SDL_INLINE void VBAP2D_unpack_speaker_pair(int speaker_pair, int speaker_count, int *speakers)
+{
+    speakers[0] = (speaker_pair == 0 ? speaker_count : speaker_pair) - 1;
+    speakers[1] = speaker_pair;
+}
+
+typedef struct VBAP2D_SpeakerPosition
+{
+    const Uint8 division;  /* this is in degrees--positive to the left--divided by the resolution. RESOLUTION MUST BE AT LEAST 2 TO FIT IN UINT8! */
+    const Uint8 sdl_channel;  /* the channel in SDL's layout (in stereo: {left=0, right=1}...etc). */
+} VBAP2D_SpeakerPosition;
+
+typedef struct VBAP2D_SpeakerLayout
+{
+    const VBAP2D_SpeakerPosition *positions;
+    const int lfe_channel;
+} VBAP2D_SpeakerLayout;
+
+/* these have to go from smallest to largest angle, I think... */
+#define P(angle) ( (Uint8) ((angle / 360.0) * VBAP2D_RESOLUTION ) )
+static const VBAP2D_SpeakerPosition VBAP2D_SpeakerPositions_quad[] = { { P(45), 1 }, { P(135), 0 }, { P(225), 2 }, { P(315), 3 } };
+static const VBAP2D_SpeakerPosition VBAP2D_SpeakerPositions_4_1[] = { { P(45), 1 }, { P(135), 0 }, { P(225), 3 }, { P(315), 4 } };
+static const VBAP2D_SpeakerPosition VBAP2D_SpeakerPositions_5_1[] = { { P(60), 1 }, { P(90), 2 }, { P(120), 0 }, { P(240), 4 }, { P(300), 5 } };
+static const VBAP2D_SpeakerPosition VBAP2D_SpeakerPositions_6_1[] = { { P(60), 1 }, { P(90), 2 }, { P(120), 0 }, { P(190), 5 }, { P(270), 4 }, { P(350), 6 } };
+static const VBAP2D_SpeakerPosition VBAP2D_SpeakerPositions_7_1[] = { { P(0), 7 }, { P(60), 1 }, { P(90), 2 }, { P(120), 0 }, { P(200), 6 }, { P(240), 4 }, { P(300), 5 } };
+static const VBAP2D_SpeakerLayout VBAP2D_SpeakerLayouts[VBAP2D_MAX_SPEAKER_COUNT-3] = {  /* -3 to skip mono/stereo/2.1 */
+    { VBAP2D_SpeakerPositions_quad, -1 },
+    { VBAP2D_SpeakerPositions_4_1, 2 },
+    { VBAP2D_SpeakerPositions_5_1, 3 },
+    { VBAP2D_SpeakerPositions_6_1, 3 },
+    { VBAP2D_SpeakerPositions_7_1, 3 }
+};
+#undef P
+
+typedef struct VBAP2D_Bucket { Uint8 speaker_pair; } VBAP2D_Bucket;
+typedef struct VBAP2D_Matrix { float a00, a01, a10, a11; } VBAP2D_Matrix;
+
+typedef struct VBAP2D
+{
+    int speaker_count;
+    VBAP2D_Bucket buckets[VBAP2D_RESOLUTION];
+    VBAP2D_Matrix matrices[VBAP2D_MAX_SPEAKER_COUNT-1];   /* the upper ones all have an LFE channel, which we don't track here, so minus one. */
+} VBAP2D;
+
+static void VBAP2D_Init(VBAP2D *vbap2d, int speaker_count)
+{
+    SDL_assert(speaker_count > 0);
+    SDL_assert(speaker_count <= VBAP2D_MAX_SPEAKER_COUNT);
+    SDL_assert(VBAP2D_RESOLUTION <= VBAP2D_MAX_RESOLUTION);
+
+    if (speaker_count < 4) {
+        return;  /* no VBAP for mono, stereo, or 2.1. */
+    }
+
+    const VBAP2D_SpeakerLayout *speaker_layout = &VBAP2D_SpeakerLayouts[speaker_count - 4];  /* offset to zero, skip mono/stereo/2.1 */
+    const VBAP2D_SpeakerPosition *speaker_positions = speaker_layout->positions;
+
+    vbap2d->speaker_count = speaker_count;
+
+    if (speaker_layout->lfe_channel >= 0) {
+        speaker_count--;  /* for our purposes, collapse out the subwoofer channel */
+    }
+
+    VBAP2D_Bucket *buckets = vbap2d->buckets;
+    for (int division = 0, speaker_pair = 0; division < VBAP2D_RESOLUTION; division++) {
+        int speakers[2];
+        VBAP2D_unpack_speaker_pair(speaker_pair, speaker_count, speakers);
+        const int last_division = speaker_positions[speakers[0]].division;
+        const int next_division = speaker_positions[speakers[1]].division;
+
+        if (!VBAP2D_contains(division, last_division, next_division)) {
+            speaker_pair = (speaker_pair + 1) % speaker_count;
+        }
+
+        buckets[division].speaker_pair = speaker_pair;
+    }
+
+    VBAP2D_Matrix *matrices = vbap2d->matrices;
+    for (int speaker_pair = 0; speaker_pair < speaker_count; speaker_pair++) {
+        int speakers[2];
+        VBAP2D_unpack_speaker_pair(speaker_pair, speaker_count, speakers);
+        const int last_division = speaker_positions[speakers[0]].division;
+        const int next_division = speaker_positions[speakers[1]].division;
+        const float last_angle = VBAP2D_division_to_angle(last_division);
+        const float next_angle = VBAP2D_division_to_angle(next_division);
+        const float a00 = SDL_cosf(last_angle), a01 = SDL_cosf(next_angle);
+        const float a10 = SDL_sinf(last_angle), a11 = SDL_sinf(next_angle);
+        const float det = 1.0f / (a00 * a11 - a01 * a10);
+
+        matrices[speaker_pair].a00 = +a11 * det;
+        matrices[speaker_pair].a01 = -a01 * det;
+        matrices[speaker_pair].a10 = -a10 * det;
+        matrices[speaker_pair].a11 = +a00 * det;
+    }
+}
+
+static void VBAP2D_CalculateGains(const VBAP2D *vbap2d, float source_angle, float *gains, int *speakers)
+{
+    int speaker_count = vbap2d->speaker_count;
+    SDL_assert(speaker_count >= 4);
+
+    const VBAP2D_SpeakerLayout *speaker_layout = &VBAP2D_SpeakerLayouts[speaker_count - 4];  /* offset to zero, skip mono/stereo/2.1 */
+
+    if (speaker_layout->lfe_channel >= 0) {
+        speaker_count--;  /* for our purposes, collapse out the subwoofer channel */
+    }
+
+    /* shift so angle 0 is due east instead of due north, and normalize it to the 0 to 2pi range. */
+    source_angle += SDL_PI_F / 2.0f;
+
+    while (source_angle < 0.0f) {
+        source_angle += 2.0f * SDL_PI_F;
+    }
+    while (source_angle > (2.0f * SDL_PI_F)) {
+        source_angle -= 2.0f * SDL_PI_F;
+    }
+
+    const float source_x = SDL_cosf(source_angle);
+    const float source_y = SDL_sinf(source_angle);
+    const int span = VBAP2D_angle_to_span(source_angle);
+    const int speaker_pair = vbap2d->buckets[span].speaker_pair;
+    int vbap_speakers[2];
+
+    VBAP2D_unpack_speaker_pair(speaker_pair, speaker_count, vbap_speakers);
+
+    const VBAP2D_Matrix *matrix = &vbap2d->matrices[speaker_pair];
+    const float gain_a = source_x * matrix->a00 + source_y * matrix->a01;
+    const float gain_b = source_x * matrix->a10 + source_y * matrix->a11;
+
+    const float scale = 1.0f / SDL_sqrtf(gain_a * gain_a + gain_b * gain_b);
+
+    const float gain_a_normalized = gain_a * scale;
+    const float gain_b_normalized = gain_b * scale;
+
+    speakers[0] = speaker_layout->positions[vbap_speakers[0]].sdl_channel;
+    speakers[1] = speaker_layout->positions[vbap_speakers[1]].sdl_channel;
+    gains[0] = gain_a_normalized;
+    gains[1] = gain_b_normalized;
+}
+
+/* end VBAP code. */
+
+
 
 typedef struct ALbuffer
 {
@@ -353,7 +523,8 @@ SIMDALIGNEDSTRUCT ALsource
     ALfloat position[4];
     ALfloat velocity[4];
     ALfloat direction[4];
-    ALfloat panning[2];  /* we only do stereo for now */
+    int speakers[2];  /* speakers we will play through (at max, currently, it's never more than 2 of them). */
+    ALfloat panning[2];
     SDL_AtomicInt mixer_accessible;
     SDL_AtomicInt state;  /* initial, playing, paused, stopped */
     ALuint name;
@@ -442,6 +613,7 @@ struct ALCcontext_struct
 
     ALCdevice *device;
     SDL_AudioStream *stream;
+    VBAP2D vbap2d;
 
     SDL_AudioSpec spec;
     ALCsizei framesize;
@@ -759,6 +931,66 @@ static ALCboolean alcfmt_to_sdlfmt(const ALCenum alfmt, SDL_AudioFormat *sdlfmt,
     return ALC_TRUE;
 }
 
+static void mix_float32_mono_to_mono_scalar(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+{
+    const ALfloat adjust = panning[0];
+    const int unrolled = mixframes / 4;
+    const int leftover = mixframes % 4;
+    ALsizei i;
+
+    if (adjust == 1.0f) {
+        for (i = 0; i < unrolled; i++, stream += 4, data += 4) {
+            stream[0] += data[0];
+            stream[1] += data[1];
+            stream[2] += data[2];
+            stream[3] += data[3];
+        }
+        for (i = 0; i < leftover; i++, stream++, data++) {
+            *stream += data[0];
+        }
+    } else {
+        for (i = 0; i < unrolled; i++, stream += 4, data += 4) {
+            stream[0] += data[0] * adjust;
+            stream[1] += data[1] * adjust;
+            stream[2] += data[2] * adjust;
+            stream[3] += data[3] * adjust;
+        }
+        for (i = 0; i < leftover; i++, stream++, data++) {
+            *stream += data[0] * adjust;
+        }
+    }
+}
+
+static void mix_float32_stereo_to_mono_scalar(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+{
+    const ALfloat adjust = panning[0];
+    const int unrolled = mixframes / 4;
+    const int leftover = mixframes % 4;
+    ALsizei i;
+
+    if (adjust == 1.0f) {
+        for (i = 0; i < unrolled; i++, stream += 4, data += 8) {
+            stream[0] += (data[0] + data[1]) * 0.5f;
+            stream[1] += (data[2] + data[3]) * 0.5f;
+            stream[2] += (data[4] + data[5]) * 0.5f;
+            stream[3] += (data[6] + data[7]) * 0.5f;
+        }
+        for (i = 0; i < leftover; i++, stream++, data += 2) {
+            *stream += (data[0] + data[1]) * 0.5f;
+        }
+    } else {
+        for (i = 0; i < unrolled; i++, stream += 4, data += 8) {
+            stream[0] += ((data[0] + data[1]) * 0.5f) * adjust;
+            stream[1] += ((data[2] + data[3]) * 0.5f) * adjust;
+            stream[2] += ((data[4] + data[5]) * 0.5f) * adjust;
+            stream[3] += ((data[6] + data[7]) * 0.5f) * adjust;
+        }
+        for (i = 0; i < leftover; i++, stream++, data += 2) {
+            *stream += ((data[0] + data[1]) * 0.5f) * adjust;
+        }
+    }
+}
+
 static void mix_float32_mono_to_stereo_scalar(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
 {
     const ALfloat left = panning[0];
@@ -848,6 +1080,39 @@ static void mix_float32_stereo_to_stereo_scalar(const ALfloat * restrict panning
             stream[0] += data[0] * left;
             stream[1] += data[1] * right;
         }
+    }
+}
+
+/* so the idea is that this mixer is used when rendering for a system with >= 3 speakers. Since this is either an unspatialized stereo source or using VBAP2D, we always mix to exactly 2 speakers,
+   although they might be any 2 arbitary channels. */
+static void mix_float32_mono_to_surround_scalar(const ALfloat * restrict panning, const int output_channels, const int * restrict speakers, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+{
+    const ALfloat panning0 = panning[0];
+    const ALfloat panning1 = panning[1];
+    const int speaker0 = speakers[0];
+    const int speaker1 = speakers[1];
+    int i;
+
+    FIXME("unroll");
+    for (i = 0; i < mixframes; i++, stream += output_channels, data++) {
+        const float sample = *data;
+        stream[speaker0] += sample * panning0;
+        stream[speaker1] += sample * panning1;
+    }
+}
+
+static void mix_float32_stereo_to_surround_scalar(const ALfloat * restrict panning, const int output_channels, const int * restrict speakers, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+{
+    const ALfloat panning0 = panning[0];
+    const ALfloat panning1 = panning[1];
+    const int speaker0 = speakers[0];
+    const int speaker1 = speakers[1];
+    int i;
+
+    FIXME("unroll");
+    for (i = 0; i < mixframes; i++, stream += output_channels, data += 2) {
+        stream[speaker0] += data[0] * panning0;
+        stream[speaker1] += data[1] * panning1;
     }
 }
 
@@ -1292,18 +1557,33 @@ static void pitch_shift(ALsource *src, const ALbuffer *buffer, int numSampsToPro
     }
 }
 
-static void mix_buffer(ALsource *src, const ALbuffer *buffer, const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+static void mix_buffer(ALsource *src, const ALbuffer *buffer, const int output_channels, const float * restrict data, float * restrict stream, const ALsizei mixframes)
 {
+    int i;
+
     if ((src->pitch != 1.0f) && (src->pitchstate != NULL)) {
         float *pitched = (float *) alloca(mixframes * buffer->channels * sizeof (float));
         pitch_shift(src, buffer, mixframes * buffer->channels, data, pitched);
         data = pitched;
     }
 
-    const ALfloat left = panning[0];
-    const ALfloat right = panning[1];
-    FIXME("currently expects output to be stereo");
-    if ((left != 0.0f) || (right != 0.0f)) {  /* don't bother mixing in silence. */
+    const ALfloat *panning = src->panning;
+    if ((panning[0] == 0.0f) && (panning[1] == 0.0f)) {  /* don't bother mixing in silence. */
+        return;
+    }
+
+    /* Currently buffers can only be mono or stereo. These assertions will fail if we add extensions for buffers with more channels. */
+    SDL_assert(buffer->channels > 0);
+    SDL_assert(buffer->channels <= 2);
+
+    if (output_channels == 1) {
+        FIXME("SIMD");  /* not actually sure it's worth the time and code bulk to SIMD this, though. */
+        if (buffer->channels == 1) {
+            mix_float32_mono_to_mono_scalar(panning, data, stream, mixframes);
+        } else if (buffer->channels == 2) {
+            mix_float32_stereo_to_mono_scalar(panning, data, stream, mixframes);
+        }
+    } else if (output_channels == 2) {
         if (buffer->channels == 1) {
             #if defined(SDL_SSE_INTRINSICS)
             if (has_sse) { mix_float32_mono_to_stereo_sse(panning, data, stream, mixframes); } else
@@ -1330,8 +1610,13 @@ static void mix_buffer(ALsource *src, const ALbuffer *buffer, const ALfloat * re
             SDL_assert(!"uhoh, we didn't compile in enough mixers!");
             #endif
             }
-        } else {
-            SDL_assert(!"write me");
+        }
+    } else {
+        FIXME("SIMD");
+        if (buffer->channels == 1) {
+            mix_float32_mono_to_surround_scalar(panning, output_channels, src->speakers, data, stream, mixframes);
+        } else if (buffer->channels == 2) {
+            mix_float32_stereo_to_surround_scalar(panning, output_channels, src->speakers, data, stream, mixframes);
         }
     }
 }
@@ -1372,7 +1657,7 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
                 const int mixbufframes = mixbuflen / bufferframesize;
                 const int getframes = SDL_min(remainingmixframes, mixbufframes);
                 SDL_GetAudioStreamData(src->stream, mixbuf, getframes * bufferframesize);
-                mix_buffer(src, buffer, src->panning, mixbuf, *stream, getframes);
+                mix_buffer(src, buffer, ctx->spec.channels, mixbuf, *stream, getframes);
                 *len -= getframes * ctxframesize;
                 *stream += getframes * ctx->spec.channels;
                 remainingmixframes -= getframes;
@@ -1380,7 +1665,7 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
         } else {
             const int framesavail = (buffer->len - src->offset) / bufferframesize;
             const int mixframes = SDL_min(framesneeded, framesavail);
-            mix_buffer(src, buffer, src->panning, data, *stream, mixframes);
+            mix_buffer(src, buffer, ctx->spec.channels, data, *stream, mixframes);
             src->offset += mixframes * bufferframesize;
             *len -= mixframes * ctxframesize;
             *stream += mixframes * ctx->spec.channels;
@@ -1618,7 +1903,7 @@ static ALfloat calculate_distance_attenuation(const ALCcontext *ctx, const ALsou
     return 1.0f;
 }
 
-static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, float *gains)
+static void calculate_channel_gains(const ALCcontext *ctx, ALsource *src)
 {
     /* rolloff==0.0f makes all distance models result in 1.0f,
        and we never spatialize non-mono sources, per the AL spec. */
@@ -1628,7 +1913,7 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
 
     const ALfloat *at = &ctx->listener.orientation[0];
     const ALfloat *up = &ctx->listener.orientation[4];
-
+    const int output_channels = ctx->spec.channels;
     ALfloat distance;
     ALfloat gain;
     ALfloat radians;
@@ -1649,7 +1934,9 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
     if (!spatialize) {
         /* simpler path through the same AL spec details if not spatializing. */
         gain = SDL_min(SDL_max(src->gain, src->min_gain), src->max_gain) * ctx->listener.gain;
-        gains[0] = gains[1] = gain;  /* no spatialization, but AL_GAIN (etc) is still applied. */
+        src->panning[0] = src->panning[1] = gain;  /* no spatialization, but AL_GAIN (etc) is still applied. */
+        src->speakers[0] = 0;
+        src->speakers[1] = 1;
         return;
     }
 
@@ -1714,149 +2001,162 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
        constraints." */
     gain *= ctx->listener.gain;
 
-    /* now figure out positioning. Since we're aiming for stereo, we just
-       need a simple panning effect. We're going to do what's called
-       "constant power panning," as explained...
+    if (output_channels == 1) {  /* no positioning for mono output, just distance attenuation. */
+        src->speakers[0] = src->speakers[1] = 0;
+        src->panning[0] = src->panning[1] = gain;
+    } else {
+        /* now figure out positioning. Since we're aiming for stereo, we just
+           need a simple panning effect. We're going to do what's called
+           "constant power panning," as explained...
 
-       https://dsp.stackexchange.com/questions/21691/algorithm-to-pan-audio
+           https://dsp.stackexchange.com/questions/21691/algorithm-to-pan-audio
 
-       XYZZY!! https://en.wikipedia.org/wiki/Cross_product#Mnemonic
-    */
+           XYZZY!! https://en.wikipedia.org/wiki/Cross_product#Mnemonic
+        */
 
-    #if defined(SDL_SSE_INTRINSICS)  /* (the math is explained in the scalar version.) */
-    if (has_sse) {
-        const __m128 at_sse = _mm_load_ps(at);
-        const __m128 up_sse = _mm_load_ps(up);
-        __m128 V_sse;
-        __m128 R_sse;
-        ALfloat cosangle;
-        ALfloat mags;
-        ALfloat a;
+        #if defined(SDL_SSE_INTRINSICS)   /* (the math is explained in the scalar version.) */
+        if (has_sse) {
+            const __m128 at_sse = _mm_load_ps(at);
+            const __m128 up_sse = _mm_load_ps(up);
+            __m128 V_sse;
+            __m128 R_sse;
+            ALfloat cosangle;
+            ALfloat mags;
+            ALfloat a;
 
-        a = dotproduct_sse(position_sse, up_sse);
-        V_sse = _mm_sub_ps(position_sse, _mm_mul_ps(_mm_set1_ps(a), up_sse));
+            a = dotproduct_sse(position_sse, up_sse);
+            V_sse = _mm_sub_ps(position_sse, _mm_mul_ps(_mm_set1_ps(a), up_sse));
 
-        mags = magnitude_sse(at_sse) * magnitude_sse(V_sse);
-        if (mags == 0.0f) {
-            radians = 0.0f;
+            mags = magnitude_sse(at_sse) * magnitude_sse(V_sse);
+            if (mags == 0.0f) {
+                radians = 0.0f;
+            } else {
+                cosangle = dotproduct_sse(at_sse, V_sse) / mags;
+                cosangle = SDL_clamp(cosangle, -1.0f, 1.0f);
+                radians = SDL_acosf(cosangle);   
+            }
+
+            R_sse = xyzzy_sse(at_sse, up_sse);
+
+            if (dotproduct_sse(R_sse, V_sse) < 0.0f) {
+                radians = -radians;
+            }
+        } else
+        #endif
+
+        #if defined(SDL_NEON_INTRINSICS)   /* (the math is explained in the scalar version.) */
+        if (has_neon) {
+            const float32x4_t at_neon = vld1q_f32(at);
+            const float32x4_t up_neon = vld1q_f32(up);
+            float32x4_t V_neon;
+            float32x4_t R_neon;
+            ALfloat cosangle;
+            ALfloat mags;
+            ALfloat a;
+
+            a = dotproduct_neon(position_neon, up_neon);
+            V_neon = vsubq_f32(position_neon, vmulq_f32(vdupq_n_f32(a), up_neon));
+
+            mags = magnitude_neon(at_neon) * magnitude_neon(V_neon);
+            if (mags == 0.0f) {
+                radians = 0.0f;
+            } else {
+                cosangle = dotproduct_neon(at_neon, V_neon) / mags;
+                cosangle = SDL_clamp(cosangle, -1.0f, 1.0f);
+                radians = SDL_acosf(cosangle);
+            }
+
+            R_neon = xyzzy_neon(at_neon, up_neon);
+
+            if (dotproduct_neon(R_neon, V_neon) < 0.0f) {
+                radians = -radians;
+            }
+
+        } else
+        #endif
+
+        {
+        #if NEED_SCALAR_FALLBACK
+            ALfloat V[3];
+            ALfloat R[3];
+            ALfloat mags;
+            ALfloat cosangle;
+            ALfloat a;
+
+            /* Remove upwards component so it lies completely within the horizontal plane. */
+            a = dotproduct(position, up);
+            V[0] = position[0] - (a * up[0]);
+            V[1] = position[1] - (a * up[1]);
+            V[2] = position[2] - (a * up[2]);
+
+            /* Calculate angle */
+            mags = magnitude(at) * magnitude(V);
+            if (mags == 0.0f) {
+                radians = 0.0f;
+            } else {
+                cosangle = dotproduct(at, V) / mags;
+                cosangle = SDL_clamp(cosangle, -1.0f, 1.0f);
+                radians = SDL_acosf(cosangle);
+            }
+
+            /* Get "right" vector */
+            xyzzy(R, at, up);
+
+            /* make it negative to the left, positive to the right. */
+            if (dotproduct(R, V) < 0.0f) {
+                radians = -radians;
+            }
+        #endif
+        }
+
+        if ((output_channels == 2) || (output_channels == 3)) {  /* stereo (and 2.1) output uses Constant Power Panning. */
+            src->speakers[0] = 0;
+            src->speakers[1] = 1;
+
+            /* here comes the Constant Power Panning magic... */
+            #define SQRT2_DIV2 0.7071067812f  /* sqrt(2.0) / 2.0 ... */
+
+            /* this might be a terrible idea, which is totally my own doing here,
+              but here you go: Constant Power Panning only works from -45 to 45
+              degrees in front of the listener. So we split this into 4 quadrants.
+              - from -45 to 45: standard panning.
+              - from 45 to 135: pan full right.
+              - from 135 to 225: flip angle so it works like standard panning.
+              - from 225 to -45: pan full left. */
+
+            #define RADIANS_45_DEGREES 0.7853981634f
+            #define RADIANS_135_DEGREES 2.3561944902f
+            if ((radians >= -RADIANS_45_DEGREES) && (radians <= RADIANS_45_DEGREES)) {
+                ALfloat sine, cosine;
+                calculate_sincos(radians, &sine, &cosine);
+                src->panning[0] = (SQRT2_DIV2 * (cosine - sine));
+                src->panning[1] = (SQRT2_DIV2 * (cosine + sine));
+            } else if ((radians >= RADIANS_45_DEGREES) && (radians <= RADIANS_135_DEGREES)) {
+                src->panning[0] = 0.0f;
+                src->panning[1] = 1.0f;
+            } else if ((radians >= -RADIANS_135_DEGREES) && (radians <= -RADIANS_45_DEGREES)) {
+                src->panning[0] = 1.0f;
+                src->panning[1] = 0.0f;
+            } else if (radians < 0.0f) {  /* back left */
+                ALfloat sine, cosine;
+                calculate_sincos(-(radians + SDL_PI_F), &sine, &cosine);
+                src->panning[0] = (SQRT2_DIV2 * (cosine - sine));
+                src->panning[1] = (SQRT2_DIV2 * (cosine + sine));
+            } else { /* back right */
+                ALfloat sine, cosine;
+                calculate_sincos(-(radians - SDL_PI_F), &sine, &cosine);
+                src->panning[0] = (SQRT2_DIV2 * (cosine - sine));
+                src->panning[1] = (SQRT2_DIV2 * (cosine + sine));
+            }
         } else {
-            cosangle = dotproduct_sse(at_sse, V_sse) / mags;
-            cosangle = SDL_clamp(cosangle, -1.0f, 1.0f);
-            radians = SDL_acosf(cosangle);   
+            /* we're going negative to the _right_ here, at the moment, so negative radians. */
+            VBAP2D_CalculateGains(&ctx->vbap2d, -radians, src->panning, src->speakers);
         }
 
-        R_sse = xyzzy_sse(at_sse, up_sse);
-
-        if (dotproduct_sse(R_sse, V_sse) < 0.0f) {
-            radians = -radians;
-        }
-    } else
-    #endif
-
-    #if defined(SDL_NEON_INTRINSICS)  /* (the math is explained in the scalar version.) */
-    if (has_neon) {
-        const float32x4_t at_neon = vld1q_f32(at);
-        const float32x4_t up_neon = vld1q_f32(up);
-        float32x4_t V_neon;
-        float32x4_t R_neon;
-        ALfloat cosangle;
-        ALfloat mags;
-        ALfloat a;
-
-        a = dotproduct_neon(position_neon, up_neon);
-        V_neon = vsubq_f32(position_neon, vmulq_f32(vdupq_n_f32(a), up_neon));
-
-        mags = magnitude_neon(at_neon) * magnitude_neon(V_neon);
-        if (mags == 0.0f) {
-            radians = 0.0f;
-        } else {
-            cosangle = dotproduct_neon(at_neon, V_neon) / mags;
-            cosangle = SDL_clamp(cosangle, -1.0f, 1.0f);
-            radians = SDL_acosf(cosangle);
-        }
-
-        R_neon = xyzzy_neon(at_neon, up_neon);
-
-        if (dotproduct_neon(R_neon, V_neon) < 0.0f) {
-            radians = -radians;
-        }
-
-    } else
-    #endif
-
-    {
-    #if NEED_SCALAR_FALLBACK
-        ALfloat V[3];
-        ALfloat R[3];
-        ALfloat mags;
-        ALfloat cosangle;
-        ALfloat a;
-
-        /* Remove upwards component so it lies completely within the horizontal plane. */
-        a = dotproduct(position, up);
-        V[0] = position[0] - (a * up[0]);
-        V[1] = position[1] - (a * up[1]);
-        V[2] = position[2] - (a * up[2]);
-
-        /* Calculate angle */
-        mags = magnitude(at) * magnitude(V);
-        if (mags == 0.0f) {
-            radians = 0.0f;
-        } else {
-            cosangle = dotproduct(at, V) / mags;
-            cosangle = SDL_clamp(cosangle, -1.0f, 1.0f);
-            radians = SDL_acosf(cosangle);
-        }
-
-        /* Get "right" vector */
-        xyzzy(R, at, up);
-
-        /* make it negative to the left, positive to the right. */
-        if (dotproduct(R, V) < 0.0f) {
-            radians = -radians;
-        }
-    #endif
+        /* apply distance attenuation and gain to positioning. */
+        src->panning[0] *= gain;
+        src->panning[1] *= gain;
     }
-
-    /* here comes the Constant Power Panning magic... */
-    #define SQRT2_DIV2 0.7071067812f  /* sqrt(2.0) / 2.0 ... */
-
-    /* this might be a terrible idea, which is totally my own doing here,
-      but here you go: Constant Power Panning only works from -45 to 45
-      degrees in front of the listener. So we split this into 4 quadrants.
-      - from -45 to 45: standard panning.
-      - from 45 to 135: pan full right.
-      - from 135 to 225: flip angle so it works like standard panning.
-      - from 225 to -45: pan full left. */
-
-    #define RADIANS_45_DEGREES 0.7853981634f
-    #define RADIANS_135_DEGREES 2.3561944902f
-    if ((radians >= -RADIANS_45_DEGREES) && (radians <= RADIANS_45_DEGREES)) {
-        ALfloat sine, cosine;
-        calculate_sincos(radians, &sine, &cosine);
-        gains[0] = (SQRT2_DIV2 * (cosine - sine));
-        gains[1] = (SQRT2_DIV2 * (cosine + sine));
-    } else if ((radians >= RADIANS_45_DEGREES) && (radians <= RADIANS_135_DEGREES)) {
-        gains[0] = 0.0f;
-        gains[1] = 1.0f;
-    } else if ((radians >= -RADIANS_135_DEGREES) && (radians <= -RADIANS_45_DEGREES)) {
-        gains[0] = 1.0f;
-        gains[1] = 0.0f;
-    } else if (radians < 0.0f) {  /* back left */
-        ALfloat sine, cosine;
-        calculate_sincos(-(radians + SDL_PI_F), &sine, &cosine);
-        gains[0] = (SQRT2_DIV2 * (cosine - sine));
-        gains[1] = (SQRT2_DIV2 * (cosine + sine));
-    } else { /* back right */
-        ALfloat sine, cosine;
-        calculate_sincos(-(radians - SDL_PI_F), &sine, &cosine);
-        gains[0] = (SQRT2_DIV2 * (cosine - sine));
-        gains[1] = (SQRT2_DIV2 * (cosine + sine));
-    }
-
-    /* apply distance attenuation and gain to positioning. */
-    gains[0] *= gain;
-    gains[1] *= gain;
 }
 
 
@@ -1870,7 +2170,7 @@ static ALCboolean mix_source(ALCcontext *ctx, ALsource *src, float *stream, int 
         if (src->recalc || force_recalc) {
             SDL_MemoryBarrierAcquire();
             src->recalc = AL_FALSE;
-            calculate_channel_gains(ctx, src, src->panning);
+            calculate_channel_gains(ctx, src);
         }
         if (src->type == AL_STATIC) {
             BufferQueueItem fakequeue = { src->buffer, NULL };
@@ -2018,7 +2318,7 @@ static void SDLCALL context_callback(void *userdata, SDL_AudioStream *stream, in
 
     if (SDL_GetAtomicInt(&ctx->device->connected)) {
 #if 0
-// !!! FIXME: did this ever work? Why would the audio callback fire on a stopped device?
+/* !!! FIXME: did this ever work? Why would the audio callback fire on a stopped device? */
         if (SDL_GetAudioDeviceStatus(device->playback.sdldevice) == SDL_AUDIO_STOPPED) {
             SDL_SetAtomicInt(&device->connected, ALC_FALSE);
         } else {
@@ -2107,8 +2407,8 @@ static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
         spec.freq = freq;   /* Only force a frequency if the context requested one. Otherwise just take the device-preferred format. */
     }
 
-    FIXME("always take device channels, spatialize to whatever they offer.");
-    spec.channels = 2;
+    /* always take device channels, spatialize to whatever they offer. */
+    /*spec.channels = 2;*/
 
     /* we always want to work in float32, to keep our work simple and
        let us use SIMD. If the device will take it, great, otherwise
@@ -2147,6 +2447,8 @@ static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
     }
     retval->next = device->playback.contexts;
     device->playback.contexts = retval;
+
+    VBAP2D_Init(&retval->vbap2d, spec.channels);
 
     SDL_ResumeAudioStreamDevice(retval->stream);
 
