@@ -1869,14 +1869,14 @@ static ALfloat calculate_distance_attenuation(const ALCcontext *ctx, const ALsou
     switch (ctx->distance_model) {
         case AL_INVERSE_DISTANCE_CLAMPED:
             distance = SDL_min(SDL_max(distance, src->reference_distance), src->max_distance);
-            /* fallthrough */
+            SDL_FALLTHROUGH;
         case AL_INVERSE_DISTANCE:
             /* AL SPEC: "gain = AL_REFERENCE_DISTANCE / (AL_REFERENCE_DISTANCE + AL_ROLLOFF_FACTOR * (distance - AL_REFERENCE_DISTANCE))" */
             return src->reference_distance / (src->reference_distance + src->rolloff_factor * (distance - src->reference_distance));
 
         case AL_LINEAR_DISTANCE_CLAMPED:
             distance = SDL_max(distance, src->reference_distance);
-            /* fallthrough */
+            SDL_FALLTHROUGH;
         case AL_LINEAR_DISTANCE:
             /* AL SPEC: "distance = min(distance, AL_MAX_DISTANCE) // avoid negative gain
                          gain = (1 - AL_ROLLOFF_FACTOR * (distance - AL_REFERENCE_DISTANCE) / (AL_MAX_DISTANCE - AL_REFERENCE_DISTANCE))" */
@@ -1884,7 +1884,7 @@ static ALfloat calculate_distance_attenuation(const ALCcontext *ctx, const ALsou
 
         case AL_EXPONENT_DISTANCE_CLAMPED:
             distance = SDL_min(SDL_max(distance, src->reference_distance), src->max_distance);
-            /* fallthrough */
+            SDL_FALLTHROUGH;
         case AL_EXPONENT_DISTANCE:
             /* AL SPEC: "gain = (distance / AL_REFERENCE_DISTANCE) ^ (- AL_ROLLOFF_FACTOR)" */
             return SDL_powf(distance / src->reference_distance, -src->rolloff_factor);
