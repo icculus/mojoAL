@@ -1943,7 +1943,7 @@ static void calculate_channel_gains(const ALCcontext *ctx, ALsource *src)
     #if defined(SDL_SSE_INTRINSICS)
     if (has_sse) {
         position_sse = _mm_load_ps(src->position);
-        if (!src->source_relative) {
+        if (src->source_relative) {
             position_sse = _mm_sub_ps(position_sse, _mm_load_ps(ctx->listener.position));
         }
         distance = magnitude_sse(position_sse);
@@ -1951,7 +1951,7 @@ static void calculate_channel_gains(const ALCcontext *ctx, ALsource *src)
     #elif defined(SDL_NEON_INTRINSICS)
     if (has_neon) {
         position_neon = vld1q_f32(src->position);
-        if (!src->source_relative) {
+        if (src->source_relative) {
             position_neon = vsubq_f32(position_neon, vld1q_f32(ctx->listener.position));
         }
         distance = magnitude_neon(position_neon);
