@@ -1774,7 +1774,7 @@ static void normalize(ALfloat *v)
 {
     const ALfloat mag = magnitude(v);
     if (mag == 0.0f) {
-        SDL_memset(v, '\0', sizeof (*v) * 3);
+        v[0] = v[1] = v[2] = 0.0f;
     } else {
         v[0] /= mag;
         v[1] /= mag;
@@ -1962,7 +1962,9 @@ static void calculate_channel_gains(const ALCcontext *ctx, ALsource *src)
     #if NEED_SCALAR_FALLBACK
     /* if values aren't source-relative, then convert it to be so. */
     if (!src->source_relative) {
-        SDL_memcpy(position, src->position, sizeof (position));
+        position[0] = src->position[0];
+        position[1] = src->position[1];
+        position[2] = src->position[2];
     } else {
         position[0] = src->position[0] - ctx->listener.position[0];
         position[1] = src->position[1] - ctx->listener.position[1];
