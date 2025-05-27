@@ -1761,19 +1761,6 @@ static ALfloat magnitude(const ALfloat *v)
     /* technically, the inital part on this is just a dot product of itself. */
     return SDL_sqrtf((v[0] * v[0]) + (v[1] * v[1]) + (v[2] * v[2]));
 }
-
-/* https://www.khanacademy.org/computing/computer-programming/programming-natural-simulations/programming-vectors/a/vector-magnitude-normalization */
-static void normalize(ALfloat *v)
-{
-    const ALfloat mag = magnitude(v);
-    if (mag == 0.0f) {
-        v[0] = v[1] = v[2] = 0.0f;
-    } else {
-        v[0] /= mag;
-        v[1] /= mag;
-        v[2] /= mag;
-    }
-}
 #endif
 
 #if defined(SDL_SSE_INTRINSICS)
@@ -1801,15 +1788,6 @@ static ALfloat SDL_TARGETING("sse") magnitude_sse(const __m128 v)
 {
     return SDL_sqrtf(dotproduct_sse(v, v));
 }
-
-static __m128 SDL_TARGETING("sse") normalize_sse(const __m128 v)
-{
-    const ALfloat mag = magnitude_sse(v);
-    if (mag == 0.0f) {
-        return _mm_setzero_ps();
-    }
-    return _mm_div_ps(v, _mm_set_ps1(mag));
-}
 #endif
 
 #if defined(SDL_NEON_INTRINSICS)
@@ -1834,15 +1812,6 @@ static ALfloat SDL_TARGETING("neon") dotproduct_neon(const float32x4_t a, const 
 static ALfloat SDL_TARGETING("neon") magnitude_neon(const float32x4_t v)
 {
     return SDL_sqrtf(dotproduct_neon(v, v));
-}
-
-static float32x4_t SDL_TARGETING("neon") normalize_neon(const float32x4_t v)
-{
-    const ALfloat mag = magnitude_neon(v);
-    if (mag == 0.0f) {
-        return vdupq_n_f32(0.0f);
-    }
-    return vmulq_f32(v, vdupq_n_f32(1.0f / mag));
 }
 #endif
 
