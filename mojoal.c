@@ -506,6 +506,7 @@ struct SDL_ALIGNED(16) ALsource  /* aligned to 16 bytes for SIMD support */
     ALfloat cone_inner_angle;
     ALfloat cone_outer_angle;
     ALfloat cone_outer_gain;
+    ALfloat EXT_balance; /* stereo linear balance extension */
     ALbuffer *buffer;
     SDL_AudioStream *stream;  /* for conversion, resampling, pitch, etc. ALL DATA GOES THROUGH HERE NOW. */
     SDL_AtomicInt total_queued_buffers;   /* everything queued, playing and processed. AL_BUFFERS_QUEUED value. */
@@ -1699,7 +1700,12 @@ static void calculate_channel_gains(const ALCcontext *ctx, ALsource *src)
 
     /* this goes through the steps the AL spec dictates for gain and distance attenuation... */
 
-    if (!spatialize) {
+    if (src->queue_channels == 2) {
+        gain = SDL_min(SDL_max(src->gain, src->min_gain), src->max_gain) * ctx->listener.gain;
+        gains[0] = gain * SDL_min(1.f, 1.f - src->EXT_balance); // left channel
+        gains[1] = gain * SDL_min(1.f, 1.f + src->EXT_balance); // right channel
+        return;
+    } else if (!spatialize) {
         /* simpler path through the same AL spec details if not spatializing. */
         gain = SDL_min(SDL_max(src->gain, src->min_gain), src->max_gain) * ctx->listener.gain;
         src->panning[0] = src->panning[1] = gain;  /* no spatialization, but AL_GAIN (etc) is still applied. */
@@ -3780,6 +3786,8 @@ static void _alSourcefv(const ALuint name, const ALenum param, const ALfloat *va
             source_set_offset(src, param, *values);
             break;
 
+        case AL_EXT_BALANCE: src->EXT_balance = *values; break;
+
         default: set_al_error(ctx, AL_INVALID_ENUM); return;
 
     }
@@ -3804,6 +3812,7 @@ static void _alSourcef(const ALuint name, const ALenum param, const ALfloat valu
         case AL_SEC_OFFSET:
         case AL_SAMPLE_OFFSET:
         case AL_BYTE_OFFSET:
+        case AL_EXT_BALANCE:
             _alSourcefv(name, param, &value);
             break;
 
@@ -3952,6 +3961,8 @@ static void _alGetSourcefv(const ALuint name, const ALenum param, ALfloat *value
             *values = source_get_offset(src, param);
             break;
 
+        case AL_EXT_BALANCE: *values = src->EXT_balance; break;
+
         default: set_al_error(ctx, AL_INVALID_ENUM); break;
     }
 }
@@ -3973,6 +3984,7 @@ static void _alGetSourcef(const ALuint name, const ALenum param, ALfloat *value)
         case AL_SEC_OFFSET:
         case AL_SAMPLE_OFFSET:
         case AL_BYTE_OFFSET:
+        case AL_EXT_BALANCE:
             _alGetSourcefv(name, param, value);
             break;
         default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
