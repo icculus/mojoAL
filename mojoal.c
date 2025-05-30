@@ -6,7 +6,6 @@
  *  This file written by Ryan C. Gordon.
  */
 
-#include <stdlib.h>  /* needed for alloca */
 #include <float.h>   /* needed for FLT_MAX */
 
 /* Unless compiling statically into another app, we want the public API
