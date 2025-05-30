@@ -205,14 +205,6 @@ The locking strategy for this OpenAL implementation:
 #define restrict __restrict
 #endif
 
-#ifdef _MSC_VER
-#define SIMDALIGNEDSTRUCT __declspec(align(16)) struct
-#elif (defined(__GNUC__) || defined(__clang__))
-#define SIMDALIGNEDSTRUCT struct __attribute__((aligned(16)))
-#else
-#define SIMDALIGNEDSTRUCT struct
-#endif
-
 #if defined(SDL_SSE_INTRINSICS)   /* we assume you always have this on x86/x86-64 chips. SSE1 is 20+ years old! */
 #define has_sse 1
 #endif
@@ -510,7 +502,7 @@ typedef struct PitchState
 
 typedef struct ALsource ALsource;
 
-SIMDALIGNEDSTRUCT ALsource
+struct SDL_ALIGNED(16) ALsource  /* aligned to 16 bytes for SIMD support */
 {
     /* keep these first to help guarantee that its elements are aligned for SIMD */
     ALfloat position[4];
@@ -594,7 +586,7 @@ struct ALCdevice_struct
 struct ALCcontext_struct
 {
     /* keep these first to help guarantee that its elements are aligned for SIMD */
-    SIMDALIGNEDSTRUCT {
+    struct SDL_ALIGNED(16) {
         ALfloat position[4];
         ALfloat velocity[4];
         ALfloat orientation[8];
