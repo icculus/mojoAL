@@ -6,17 +6,17 @@
  *  This file written by Ryan C. Gordon.
  */
 
-#include <float.h>   /* needed for FLT_MAX */
+#include <float.h>   // needed for FLT_MAX
 
-/* Unless compiling statically into another app, we want the public API
-   to export on Windows. Define these before including al.h, so we override
-   its attempt to mark these as `dllimport`. */
+// Unless compiling statically into another app, we want the public API
+//   to export on Windows. Define these before including al.h, so we override
+//   its attempt to mark these as `dllimport`.
 #if defined(_WIN32) && !defined(AL_LIBTYPE_STATIC)
   #define AL_API __declspec(dllexport)
   #define ALC_API __declspec(dllexport)
 #endif
 
-/* This is for debugging and/or pulling the fire alarm. */
+// This is for debugging and/or pulling the fire alarm.
 #ifndef MOJOAL_FORCE_SCALAR_FALLBACK
 #  define MOJOAL_FORCE_SCALAR_FALLBACK 0
 #endif
@@ -31,13 +31,13 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_intrin.h>
 
-#if defined(SDL_SSE_INTRINSICS)  /* if you are on x86 or x86-64, we assume you have SSE1 by now. */
+#if defined(SDL_SSE_INTRINSICS)  // if you are on x86 or x86-64, we assume you have SSE1 by now.
 #define NEED_SCALAR_FALLBACK 0
-#elif defined(SDL_NEON_INTRINSICS) && (defined(__ARM_ARCH) && (__ARM_ARCH >= 8))  /* ARMv8 always has NEON. */
+#elif defined(SDL_NEON_INTRINSICS) && (defined(__ARM_ARCH) && (__ARM_ARCH >= 8))  // ARMv8 always has NEON.
 #define NEED_SCALAR_FALLBACK 0
-#elif defined(SDL_NEON_INTRINSICS) && (defined(__APPLE__) && defined(__ARM_ARCH) && (__ARM_ARCH >= 7))   /* All ARMv7 chips from Apple have NEON. */
+#elif defined(SDL_NEON_INTRINSICS) && (defined(__APPLE__) && defined(__ARM_ARCH) && (__ARM_ARCH >= 7))   // All ARMv7 chips from Apple have NEON.
 #define NEED_SCALAR_FALLBACK 0
-#elif defined(SDL_NEON_INTRINSICS) && (defined(__WINDOWS__) || defined(__WINRT__)) && defined(_M_ARM)  /* all WinRT-level Microsoft devices have NEON */
+#elif defined(SDL_NEON_INTRINSICS) && (defined(__WINDOWS__) || defined(__WINRT__)) && defined(_M_ARM)  // all WinRT-level Microsoft devices have NEON
 #define NEED_SCALAR_FALLBACK 0
 #else
 #define NEED_SCALAR_FALLBACK 1
@@ -50,7 +50,6 @@
 #define OPENAL_VERSION_STRING3_FINAL(major, minor, micro) #major "." #minor "." #micro
 #define OPENAL_VERSION_STRING3(major, minor, micro) OPENAL_VERSION_STRING3_FINAL(major, minor, micro)
 
-/* !!! FIXME: make some decisions about VENDOR and RENDERER strings here */
 #define MOJOAL_VERSION_MAJOR 2
 #define MOJOAL_VERSION_MINOR 9
 #define MOJOAL_VERSION_MICRO 9
@@ -61,17 +60,17 @@
 #define DEFAULT_PLAYBACK_DEVICE "Default OpenAL playback device"
 #define DEFAULT_CAPTURE_DEVICE "Default OpenAL capture device"
 
-/* Number of buffers to allocate at once when we need a new block during alGenBuffers(). */
+// Number of buffers to allocate at once when we need a new block during alGenBuffers().
 #ifndef OPENAL_BUFFER_BLOCK_SIZE
 #define OPENAL_BUFFER_BLOCK_SIZE 256
 #endif
 
-/* Number of sources to allocate at once when we need a new block during alGenSources(). */
+// Number of sources to allocate at once when we need a new block during alGenSources().
 #ifndef OPENAL_SOURCE_BLOCK_SIZE
 #define OPENAL_SOURCE_BLOCK_SIZE 64
 #endif
 
-/* AL_EXT_FLOAT32 support... */
+// AL_EXT_FLOAT32 support...
 #ifndef AL_FORMAT_MONO_FLOAT32
 #define AL_FORMAT_MONO_FLOAT32 0x10010
 #endif
@@ -80,7 +79,7 @@
 #define AL_FORMAT_STEREO_FLOAT32 0x10011
 #endif
 
-/* ALC_EXT_DISCONNECTED support... */
+// ALC_EXT_DISCONNECTED support...
 #ifndef ALC_CONNECTED
 #define ALC_CONNECTED 0x313
 #endif
@@ -208,19 +207,19 @@ The locking strategy for this OpenAL implementation:
 }
 #endif
 
-#if defined(SDL_SSE_INTRINSICS)   /* we assume you always have this on x86/x86-64 chips. SSE1 is 20+ years old! */
+#if defined(SDL_SSE_INTRINSICS)   // we assume you always have this on x86/x86-64 chips. SSE1 is 20+ years old!
 #define has_sse true
 #endif
 
 #if defined(SDL_NEON_INTRINSICS)
 #if NEED_SCALAR_FALLBACK
-static bool has_neon = false;  /* !!! FIXME: make this bool */
+static bool has_neon = false;
 #else
 #define has_neon true
 #endif
 #endif
 
-#define IS_SIMD_ALIGNED(x) ( (((size_t) (x)) % 16) == simd_alignment )
+#define IS_SIMD_ALIGNED(x) ( (((size_t) (x)) % 16) == 0 )
 
 static SDL_Mutex *api_lock = NULL;
 
@@ -275,11 +274,11 @@ static void free_simd_aligned(void *ptr)
     SDL_aligned_free(ptr);
 }
 
-/* VBAP code originally from https://github.com/drbafflegab/vbap/ ... CC0 license (public domain). */
+// VBAP code originally from https://github.com/drbafflegab/vbap/ ... CC0 license (public domain).
 
 #define VBAP2D_MAX_RESOLUTION 3600
-#define VBAP2D_MAX_SPEAKER_COUNT 8   /* original code had 64, assumed you'd use less, but we're hardcoding our current maximum. */
-#define VBAP2D_RESOLUTION 36   /* 10 degrees per division */
+#define VBAP2D_MAX_SPEAKER_COUNT 8   // original code had 64, assumed you'd use less, but we're hardcoding our current maximum.
+#define VBAP2D_RESOLUTION 36   // 10 degrees per division
 
 static SDL_INLINE float VBAP2D_division_to_angle(int const division)
 {
@@ -310,8 +309,8 @@ static SDL_INLINE void VBAP2D_unpack_speaker_pair(int speaker_pair, int speaker_
 
 typedef struct VBAP2D_SpeakerPosition
 {
-    const Uint8 division;  /* this is in degrees--positive to the left--divided by the resolution. RESOLUTION MUST BE AT LEAST 2 TO FIT IN UINT8! */
-    const Uint8 sdl_channel;  /* the channel in SDL's layout (in stereo: {left=0, right=1}...etc). */
+    const Uint8 division;  // this is in degrees--positive to the left--divided by the resolution. RESOLUTION MUST BE < 256 TO FIT IN UINT8!
+    const Uint8 sdl_channel;  // the channel in SDL's layout (in stereo: {left=0, right=1}...etc).
 } VBAP2D_SpeakerPosition;
 
 typedef struct VBAP2D_SpeakerLayout
@@ -320,14 +319,14 @@ typedef struct VBAP2D_SpeakerLayout
     const int lfe_channel;
 } VBAP2D_SpeakerLayout;
 
-/* these have to go from smallest to largest angle, I think... */
+// these have to go from smallest to largest angle, I think...
 #define P(angle) ( (Uint8) ((angle / 360.0) * VBAP2D_RESOLUTION ) )
 static const VBAP2D_SpeakerPosition VBAP2D_SpeakerPositions_quad[] = { { P(45), 1 }, { P(135), 0 }, { P(225), 2 }, { P(315), 3 } };
 static const VBAP2D_SpeakerPosition VBAP2D_SpeakerPositions_4_1[] = { { P(45), 1 }, { P(135), 0 }, { P(225), 3 }, { P(315), 4 } };
 static const VBAP2D_SpeakerPosition VBAP2D_SpeakerPositions_5_1[] = { { P(60), 1 }, { P(90), 2 }, { P(120), 0 }, { P(240), 4 }, { P(300), 5 } };
 static const VBAP2D_SpeakerPosition VBAP2D_SpeakerPositions_6_1[] = { { P(60), 1 }, { P(90), 2 }, { P(120), 0 }, { P(190), 5 }, { P(270), 4 }, { P(350), 6 } };
 static const VBAP2D_SpeakerPosition VBAP2D_SpeakerPositions_7_1[] = { { P(0), 7 }, { P(60), 1 }, { P(90), 2 }, { P(120), 0 }, { P(200), 6 }, { P(240), 4 }, { P(300), 5 } };
-static const VBAP2D_SpeakerLayout VBAP2D_SpeakerLayouts[VBAP2D_MAX_SPEAKER_COUNT-3] = {  /* -3 to skip mono/stereo/2.1 */
+static const VBAP2D_SpeakerLayout VBAP2D_SpeakerLayouts[VBAP2D_MAX_SPEAKER_COUNT-3] = {  // -3 to skip mono/stereo/2.1
     { VBAP2D_SpeakerPositions_quad, -1 },
     { VBAP2D_SpeakerPositions_4_1, 2 },
     { VBAP2D_SpeakerPositions_5_1, 3 },
@@ -343,7 +342,7 @@ typedef struct VBAP2D
 {
     int speaker_count;
     VBAP2D_Bucket buckets[VBAP2D_RESOLUTION];
-    VBAP2D_Matrix matrices[VBAP2D_MAX_SPEAKER_COUNT-1];   /* the upper ones all have an LFE channel, which we don't track here, so minus one. */
+    VBAP2D_Matrix matrices[VBAP2D_MAX_SPEAKER_COUNT-1];   // the upper ones all have an LFE channel, which we don't track here, so minus one.
 } VBAP2D;
 
 static void VBAP2D_Init(VBAP2D *vbap2d, int speaker_count)
@@ -353,16 +352,16 @@ static void VBAP2D_Init(VBAP2D *vbap2d, int speaker_count)
     SDL_assert(VBAP2D_RESOLUTION <= VBAP2D_MAX_RESOLUTION);
 
     if (speaker_count < 4) {
-        return;  /* no VBAP for mono, stereo, or 2.1. */
+        return;  // no VBAP for mono, stereo, or 2.1.
     }
 
-    const VBAP2D_SpeakerLayout *speaker_layout = &VBAP2D_SpeakerLayouts[speaker_count - 4];  /* offset to zero, skip mono/stereo/2.1 */
+    const VBAP2D_SpeakerLayout *speaker_layout = &VBAP2D_SpeakerLayouts[speaker_count - 4];  // offset to zero, skip mono/stereo/2.1
     const VBAP2D_SpeakerPosition *speaker_positions = speaker_layout->positions;
 
     vbap2d->speaker_count = speaker_count;
 
     if (speaker_layout->lfe_channel >= 0) {
-        speaker_count--;  /* for our purposes, collapse out the subwoofer channel */
+        speaker_count--;  // for our purposes, collapse out the subwoofer channel
     }
 
     VBAP2D_Bucket *buckets = vbap2d->buckets;
@@ -403,13 +402,13 @@ static void VBAP2D_CalculateGains(const VBAP2D *vbap2d, float source_angle, floa
     int speaker_count = vbap2d->speaker_count;
     SDL_assert(speaker_count >= 4);
 
-    const VBAP2D_SpeakerLayout *speaker_layout = &VBAP2D_SpeakerLayouts[speaker_count - 4];  /* offset to zero, skip mono/stereo/2.1 */
+    const VBAP2D_SpeakerLayout *speaker_layout = &VBAP2D_SpeakerLayouts[speaker_count - 4];  // offset to zero, skip mono/stereo/2.1
 
     if (speaker_layout->lfe_channel >= 0) {
-        speaker_count--;  /* for our purposes, collapse out the subwoofer channel */
+        speaker_count--;  // for our purposes, collapse out the subwoofer channel
     }
 
-    /* shift so angle 0 is due east instead of due north, and normalize it to the 0 to 2pi range. */
+    // shift so angle 0 is due east instead of due north, and normalize it to the 0 to 2pi range.
     source_angle += SDL_PI_F / 2.0f;
 
     while (source_angle < 0.0f) {
@@ -442,7 +441,7 @@ static void VBAP2D_CalculateGains(const VBAP2D *vbap2d, float source_angle, floa
     gains[1] = gain_b_normalized;
 }
 
-/* end VBAP code. */
+// end VBAP code.
 
 
 
@@ -451,49 +450,49 @@ typedef struct ALbuffer
     ALboolean allocated;
     ALuint name;
     SDL_AudioSpec spec;
-    ALsizei len;   /* length of data in bytes. */
+    ALsizei len;   // length of data in bytes.
     const void *data;
-    SDL_AtomicInt refcount;  /* if zero, can be deleted or alBufferData'd */
+    SDL_AtomicInt refcount;  // if zero, can be deleted or alBufferData'd
 } ALbuffer;
 
-/* !!! FIXME: buffers and sources use almost identical code for blocks */
+// !!! FIXME: buffers and sources use almost identical code for blocks
 typedef struct BufferBlock
 {
-    ALbuffer buffers[OPENAL_BUFFER_BLOCK_SIZE];  /* allocate these in blocks so we can step through faster. */
+    ALbuffer buffers[OPENAL_BUFFER_BLOCK_SIZE];  // allocate these in blocks so we can step through faster.
     ALuint used;
-    ALuint tmp;  /* only touch under api_lock, assume it'll be gone later. */
+    ALuint tmp;  // only touch under api_lock, assume it'll be gone later.
 } BufferBlock;
 
 typedef struct BufferQueueItem
 {
     ALbuffer *buffer;
-    void *next;  /* void* because we'll atomicgetptr it. */
+    void *next;  // void* because we'll atomicgetptr it.
 } BufferQueueItem;
 
 typedef struct BufferQueue
 {
-    void *just_queued;  /* void* because we'll atomicgetptr it. */
+    void *just_queued;  // void* because we'll atomicgetptr it.
     BufferQueueItem *head;
     BufferQueueItem *tail;
-    SDL_AtomicInt num_items;  /* counts just_queued+head/tail */
+    SDL_AtomicInt num_items;  // counts just_queued+head/tail
 } BufferQueue;
 
 
 typedef struct ALsource ALsource;
 
-struct SDL_ALIGNED(16) ALsource  /* aligned to 16 bytes for SIMD support */
+struct SDL_ALIGNED(16) ALsource  // aligned to 16 bytes for SIMD support
 {
-    /* keep these first to help guarantee that its elements are aligned for SIMD */
+    // keep these first to help guarantee that its elements are aligned for SIMD
     ALfloat position[4];
     ALfloat velocity[4];
     ALfloat direction[4];
-    int speakers[2];  /* speakers we will play through (at max, currently, it's never more than 2 of them). */
+    int speakers[2];  // speakers we will play through (at max, currently, it's never more than 2 of them).
     ALfloat panning[2];
     SDL_AtomicInt mixer_accessible;
-    SDL_AtomicInt state;  /* initial, playing, paused, stopped */
+    SDL_AtomicInt state;  // initial, playing, paused, stopped
     ALuint name;
     ALboolean allocated;
-    ALenum type;  /* undetermined, static, streaming */
+    ALenum type;  // undetermined, static, streaming
     ALboolean recalc;
     ALboolean source_relative;
     ALboolean looping;
@@ -508,23 +507,23 @@ struct SDL_ALIGNED(16) ALsource  /* aligned to 16 bytes for SIMD support */
     ALfloat cone_outer_angle;
     ALfloat cone_outer_gain;
     ALbuffer *buffer;
-    SDL_AudioStream *stream;  /* for conversion, resampling, pitch, etc. ALL DATA GOES THROUGH HERE NOW. */
-    SDL_AtomicInt total_queued_buffers;   /* everything queued, playing and processed. AL_BUFFERS_QUEUED value. */
+    SDL_AudioStream *stream;  // for conversion, resampling, pitch, etc. ALL DATA GOES THROUGH HERE NOW.
+    SDL_AtomicInt total_queued_buffers;   // everything queued, playing and processed. AL_BUFFERS_QUEUED value.
     BufferQueue buffer_queue;
     BufferQueue buffer_queue_processed;
-    ALsizei offset;  /* offset in bytes for converted stream! */
-    ALboolean offset_latched;  /* AL_SEC_OFFSET, etc, say set values apply to next alSourcePlay if not currently playing! */
+    ALsizei offset;  // offset in bytes for converted stream!
+    ALboolean offset_latched;  // AL_SEC_OFFSET, etc, say set values apply to next alSourcePlay if not currently playing!
     ALint queue_channels;
     ALsizei queue_frequency;
-    ALsource *playlist_next;  /* linked list that contains currently-playing sources! Only touched by mixer thread! */
+    ALsource *playlist_next;  // linked list that contains currently-playing sources! Only touched by mixer thread!
 };
 
-/* !!! FIXME: buffers and sources use almost identical code for blocks */
+// !!! FIXME: buffers and sources use almost identical code for blocks
 typedef struct SourceBlock
 {
-    ALsource sources[OPENAL_SOURCE_BLOCK_SIZE];  /* allocate these in blocks so we can step through faster. */
+    ALsource sources[OPENAL_SOURCE_BLOCK_SIZE];  // allocate these in blocks so we can step through faster.
     ALuint used;
-    ALuint tmp;  /* only touch under api_lock, assume it'll be gone later. */
+    ALuint tmp;  // only touch under api_lock, assume it'll be gone later.
 } SourceBlock;
 
 
@@ -536,7 +535,7 @@ typedef struct SourcePlayTodo
 
 struct ALCdevice_struct
 {
-    SDL_AudioDeviceID device_id;  /* physical device ID (or default). */
+    SDL_AudioDeviceID device_id;  // physical device ID (or default).
     char *name;
     ALCenum error;
     SDL_AtomicInt connected;
@@ -549,10 +548,10 @@ struct ALCdevice_struct
     union {
         struct {
             ALCcontext *contexts;
-            BufferBlock **buffer_blocks;  /* buffers are shared between contexts on the same device. */
+            BufferBlock **buffer_blocks;  // buffers are shared between contexts on the same device.
             ALCsizei num_buffer_blocks;
-            BufferQueueItem *buffer_queue_pool;  /* mixer thread doesn't touch this. */
-            void *source_todo_pool;  /* void* because we'll atomicgetptr it. */
+            BufferQueueItem *buffer_queue_pool;  // mixer thread doesn't touch this.
+            void *source_todo_pool;  // void* because we'll atomicgetptr it.
         } playback;
         struct {
             SDL_AudioStream *stream;
@@ -565,7 +564,7 @@ struct ALCdevice_struct
 
 struct ALCcontext_struct
 {
-    /* keep these first to help guarantee that its elements are aligned for SIMD */
+    // keep these first to help guarantee that its elements are aligned for SIMD
     struct SDL_ALIGNED(16) {
         ALfloat position[4];
         ALfloat velocity[4];
@@ -594,15 +593,15 @@ struct ALCcontext_struct
     ALfloat doppler_velocity;
     ALfloat speed_of_sound;
 
-    void *playlist_todo;  /* void* so we can AtomicCASPtr it. Transmits new play commands from api thread to mixer thread */
-    ALsource *playlist;  /* linked list of currently-playing sources. Mixer thread only! */
-    ALsource *playlist_tail;  /* end of playlist so we know if last item is being readded. Mixer thread only! */
+    void *playlist_todo;  // void* so we can AtomicCASPtr it. Transmits new play commands from api thread to mixer thread
+    ALsource *playlist;  // linked list of currently-playing sources. Mixer thread only!
+    ALsource *playlist_tail;  // end of playlist so we know if last item is being readded. Mixer thread only!
 
-    ALCcontext *prev;  /* contexts are in a double-linked list */
+    ALCcontext *prev;  // contexts are in a double-linked list
     ALCcontext *next;
 };
 
-/* forward declarations */
+// forward declarations
 static float source_get_offset(ALsource *src, ALenum param);
 static void source_set_offset(ALsource *src, ALenum param, ALfloat value);
 
@@ -616,7 +615,7 @@ static void unlock_source(ALsource *src)
     SDL_UnlockAudioStream(src->stream);
 }
 
-/* the just_queued list is backwards. Add it to the queue in the correct order. */
+// the just_queued list is backwards. Add it to the queue in the correct order.
 static void queue_new_buffer_items_recursive(BufferQueue *queue, BufferQueueItem *items)
 {
     if (items == NULL) {
@@ -640,15 +639,15 @@ static void obtain_newly_queued_buffers(BufferQueue *queue)
         items = (BufferQueueItem *) SDL_GetAtomicPointer(&queue->just_queued);
     } while (!SDL_CompareAndSwapAtomicPointer(&queue->just_queued, items, NULL));
 
-    /* Now that we own this pointer, we can just do whatever we want with it.
-       Nothing touches the head/tail fields other than the mixer thread, so we
-       move it there. Not even atomically!  :) */
+    // Now that we own this pointer, we can just do whatever we want with it.
+    //  Nothing touches the head/tail fields other than the mixer thread, so we
+    //  move it there. Not even atomically!  :)
     SDL_assert((queue->tail != NULL) == (queue->head != NULL));
 
     queue_new_buffer_items_recursive(queue, items);
 }
 
-/* You probably need to hold a lock before you call this (currently). */
+// You probably need to hold a lock before you call this (currently).
 static void source_mark_all_buffers_processed(ALsource *src)
 {
     obtain_newly_queued_buffers(&src->buffer_queue);
@@ -658,7 +657,7 @@ static void source_mark_all_buffers_processed(ALsource *src)
         src->buffer_queue.head = (BufferQueueItem*)item->next;
         SDL_AddAtomicInt(&src->buffer_queue.num_items, -1);
 
-        /* Move it to the processed queue for alSourceUnqueueBuffers() to pick up. */
+        // Move it to the processed queue for alSourceUnqueueBuffers() to pick up.
         do {
             ptr = SDL_GetAtomicPointer(&src->buffer_queue_processed.just_queued);
             SDL_SetAtomicPointer(&item->next, ptr);
@@ -693,7 +692,7 @@ static void put_albuffer_to_audiostream(ALCcontext *ctx, ALbuffer *buffer, int o
 
 static void source_release_buffer_queue(ALCcontext *ctx, ALsource *src)
 {
-    /* move any buffer queue items to the device's available pool for reuse. */
+    // move any buffer queue items to the device's available pool for reuse.
     obtain_newly_queued_buffers(&src->buffer_queue);
     if (src->buffer_queue.tail != NULL) {
         BufferQueueItem *i;
@@ -722,17 +721,17 @@ static void source_release_buffer_queue(ALCcontext *ctx, ALsource *src)
 
 
 
-/* Spatialization ... */
+// Spatialization ...
 
-/* All the 3D math here is way overcommented because I HAVE NO IDEA WHAT I'M
-   DOING and had to research the hell out of what are probably pretty simple
-   concepts. Pay attention in math class, kids.
+// All the 3D math here is way overcommented because I HAVE NO IDEA WHAT I'M
+// DOING and had to research the hell out of what are probably pretty simple
+// concepts. Pay attention in math class, kids.
+//
+// The scalar versions have explanitory comments and links. The SIMD versions don't.
+//
+// The work starts in calculate_channel_gains(). Everything between here and there
+// is math support code.
 
-   The scalar versions have explanitory comments and links. The SIMD versions don't.
-
-   The work starts in calculate_channel_gains(). Everything between here and there
-   is math support code.
-*/
 
 /* Get the sin(angle) and cos(angle) at the same time. Ideally, with one
    instruction, like what is offered on the x86.
@@ -745,11 +744,11 @@ static void calculate_sincos(const ALfloat angle, ALfloat *_sin, ALfloat *_cos)
 
 static ALfloat calculate_distance_attenuation(const ALCcontext *ctx, const ALsource *src, ALfloat distance)
 {
-    /* AL SPEC: "With all the distance models, if the formula can not be
-       evaluated then the source will not be attenuated. For example, if a
-       linear model is being used with AL_REFERENCE_DISTANCE equal to
-       AL_MAX_DISTANCE, then the gain equation will have a divide-by-zero
-       error in it. In this case, there is no attenuation for that source." */
+    // AL SPEC: "With all the distance models, if the formula can not be
+    // evaluated then the source will not be attenuated. For example, if a
+    // linear model is being used with AL_REFERENCE_DISTANCE equal to
+    // AL_MAX_DISTANCE, then the gain equation will have a divide-by-zero
+    // error in it. In this case, there is no attenuation for that source."
     FIXME("check divisions by zero");
 
     switch (ctx->distance_model) {
@@ -757,22 +756,22 @@ static ALfloat calculate_distance_attenuation(const ALCcontext *ctx, const ALsou
             distance = SDL_min(SDL_max(distance, src->reference_distance), src->max_distance);
             SDL_FALLTHROUGH;
         case AL_INVERSE_DISTANCE:
-            /* AL SPEC: "gain = AL_REFERENCE_DISTANCE / (AL_REFERENCE_DISTANCE + AL_ROLLOFF_FACTOR * (distance - AL_REFERENCE_DISTANCE))" */
+            // AL SPEC: "gain = AL_REFERENCE_DISTANCE / (AL_REFERENCE_DISTANCE + AL_ROLLOFF_FACTOR * (distance - AL_REFERENCE_DISTANCE))"
             return src->reference_distance / (src->reference_distance + src->rolloff_factor * (distance - src->reference_distance));
 
         case AL_LINEAR_DISTANCE_CLAMPED:
             distance = SDL_max(distance, src->reference_distance);
             SDL_FALLTHROUGH;
         case AL_LINEAR_DISTANCE:
-            /* AL SPEC: "distance = min(distance, AL_MAX_DISTANCE) // avoid negative gain
-                         gain = (1 - AL_ROLLOFF_FACTOR * (distance - AL_REFERENCE_DISTANCE) / (AL_MAX_DISTANCE - AL_REFERENCE_DISTANCE))" */
+            // AL SPEC: "distance = min(distance, AL_MAX_DISTANCE) // avoid negative gain
+            //           gain = (1 - AL_ROLLOFF_FACTOR * (distance - AL_REFERENCE_DISTANCE) / (AL_MAX_DISTANCE - AL_REFERENCE_DISTANCE))"
             return 1.0f - src->rolloff_factor * (SDL_min(distance, src->max_distance) - src->reference_distance) / (src->max_distance - src->reference_distance);
 
         case AL_EXPONENT_DISTANCE_CLAMPED:
             distance = SDL_min(SDL_max(distance, src->reference_distance), src->max_distance);
             SDL_FALLTHROUGH;
         case AL_EXPONENT_DISTANCE:
-            /* AL SPEC: "gain = (distance / AL_REFERENCE_DISTANCE) ^ (- AL_ROLLOFF_FACTOR)" */
+            // AL SPEC: "gain = (distance / AL_REFERENCE_DISTANCE) ^ (- AL_ROLLOFF_FACTOR)"
             return SDL_powf(distance / src->reference_distance, -src->rolloff_factor);
 
         default: break;
@@ -783,13 +782,11 @@ static ALfloat calculate_distance_attenuation(const ALCcontext *ctx, const ALsou
 }
 
 #if NEED_SCALAR_FALLBACK
-/*
-    XYZZY!! https://en.wikipedia.org/wiki/Cross_product#Mnemonic
-
-    Calculates cross product. https://en.wikipedia.org/wiki/Cross_product
-    Basically takes two vectors and gives you a vector that's perpendicular
-    to both.
-*/
+// XYZZY!! https://en.wikipedia.org/wiki/Cross_product#Mnemonic
+//
+// Calculates cross product. https://en.wikipedia.org/wiki/Cross_product
+// Basically takes two vectors and gives you a vector that's perpendicular
+// to both.
 static void xyzzy_scalar(ALfloat *v, const ALfloat *a, const ALfloat *b)
 {
     v[0] = (a[1] * b[2]) - (a[2] * b[1]);
@@ -797,18 +794,18 @@ static void xyzzy_scalar(ALfloat *v, const ALfloat *a, const ALfloat *b)
     v[2] = (a[0] * b[1]) - (a[1] * b[0]);
 }
 
-/* calculate dot product (multiply each element of two vectors, sum them) */
+// calculate dot product (multiply each element of two vectors, sum them)
 static ALfloat dotproduct_scalar(const ALfloat *a, const ALfloat *b)
 {
     return (a[0] * b[0]) + (a[1] * b[1]) + (a[2] * b[2]);
 }
 
-/* calculate distance ("magnitude") in 3D space:
-    https://math.stackexchange.com/questions/42640/calculate-distance-in-3d-space
-    assumes vector starts at (0,0,0). */
+// calculate distance ("magnitude") in 3D space:
+//    https://math.stackexchange.com/questions/42640/calculate-distance-in-3d-space
+// assumes vector starts at (0,0,0).
 static ALfloat magnitude_scalar(const ALfloat *v)
 {
-    /* technically, the inital part on this is just a dot product of itself. */
+    // technically, the inital part on this is just a dot product of itself.
     return SDL_sqrtf((v[0] * v[0]) + (v[1] * v[1]) + (v[2] * v[2]));
 }
 
@@ -822,8 +819,8 @@ static void calculate_distance_attenuation_and_angle_scalar(const ALCcontext *ct
     ALfloat mags;
     ALfloat a;
 
-    /* if !source_relative, position is absolute, otherwise, it's in relation to the Listener's position.
-       Another way to say this is that if !source_relative, act like the listener is at (0,0,0). */
+    // If !source_relative, position is absolute, otherwise, it's in relation to the Listener's position.
+    //   Another way to say this is that if !source_relative, act like the listener is at (0,0,0).
     if (!src->source_relative) {
         position[0] = src->position[0];
         position[1] = src->position[1];
@@ -834,14 +831,14 @@ static void calculate_distance_attenuation_and_angle_scalar(const ALCcontext *ct
         position[2] = src->position[2] - ctx->listener.position[2];
     }
 
-    /* Remove upwards component so it lies completely within the horizontal plane. */
+    // Remove upwards component so it lies completely within the horizontal plane.
     a = dotproduct_scalar(position, up);
 
     V[0] = position[0] - (a * up[0]);
     V[1] = position[1] - (a * up[1]);
     V[2] = position[2] - (a * up[2]);
 
-    /* Calculate angle */
+    // Calculate angle
     mags = magnitude_scalar(at) * magnitude_scalar(V);
     if (mags == 0.0f) {
         radians = 0.0f;
@@ -851,9 +848,9 @@ static void calculate_distance_attenuation_and_angle_scalar(const ALCcontext *ct
         radians = SDL_acosf(cosangle);
     }
 
-    xyzzy_scalar(R, at, up);   /* Get "right" vector */
+    xyzzy_scalar(R, at, up);   // Get "right" vector
 
-    *_radians = (dotproduct_scalar(R, V) < 0.0f) ? -radians : radians;   /* make it negative to the left, positive to the right. */
+    *_radians = (dotproduct_scalar(R, V) < 0.0f) ? -radians : radians;   // make it negative to the left, positive to the right.
     *_gain = calculate_distance_attenuation(ctx, src, magnitude_scalar(position));
 }
 #endif
@@ -861,8 +858,8 @@ static void calculate_distance_attenuation_and_angle_scalar(const ALCcontext *ct
 #if defined(SDL_SSE_INTRINSICS)
 static __m128 SDL_TARGETING("sse") xyzzy_sse(const __m128 a, const __m128 b)
 {
-    /* http://fastcpp.blogspot.com/2011/04/vector-cross-product-using-sse-code.html
-        this is the "three shuffle" version in the comments, plus the variables swapped around for handedness in the later comment. */
+    // http://fastcpp.blogspot.com/2011/04/vector-cross-product-using-sse-code.html
+    //  this is the "three shuffle" version in the comments, plus the variables swapped around for handedness in the later comment.
     const __m128 v = _mm_sub_ps(
         _mm_mul_ps(a, _mm_shuffle_ps(b, b, _MM_SHUFFLE(3, 0, 2, 1))),
         _mm_mul_ps(b, _mm_shuffle_ps(a, a, _MM_SHUFFLE(3, 0, 2, 1)))
@@ -886,7 +883,7 @@ static ALfloat SDL_TARGETING("sse") magnitude_sse(const __m128 v)
 
 static void SDL_TARGETING("sse") calculate_distance_attenuation_and_angle_sse(const ALCcontext *ctx, const ALsource *src, float *_gain, float *_radians)
 {
-    /* (the math is explained in the scalar version.) */
+    // (the math is explained in the scalar version.)
     const __m128 position_sse = src->source_relative ? _mm_sub_ps(_mm_load_ps(src->position), _mm_load_ps(ctx->listener.position)) : _mm_load_ps(src->position);
     const __m128 at_sse = _mm_load_ps(&ctx->listener.orientation[0]);
     const __m128 up_sse = _mm_load_ps(&ctx->listener.orientation[4]);
@@ -935,7 +932,7 @@ static ALfloat SDL_TARGETING("neon") magnitude_neon(const float32x4_t v)
 
 static void SDL_TARGETING("neon") calculate_distance_attenuation_and_angle_neon(const ALCcontext *ctx, const ALsource *src, float *_gain, float *_radians)
 {
-    /* (the math is explained in the scalar version.) */
+    // (the math is explained in the scalar version.)
     const float32x4_t position_neon = src->source_relative ? vsubq_f32(vld1q_f32(src->position), vld1q_f32(ctx->listener.position)) : vld1q_f32(src->position);
     const float32x4_t at_neon = vld1q_f32(&ctx->listener.orientation[0]);
     const float32x4_t up_neon = vld1q_f32(&ctx->listener.orientation[4]);
@@ -981,8 +978,7 @@ static void calculate_distance_attenuation_and_angle(const ALCcontext *ctx, cons
 
 static void calculate_channel_gains(const ALCcontext *ctx, ALsource *src)
 {
-    /* rolloff==0.0f makes all distance models result in 1.0f,
-       and we never spatialize non-mono sources, per the AL spec. */
+    // rolloff==0.0f makes all distance models result in 1.0f, and we never spatialize non-mono sources, per the AL spec.
     const ALboolean spatialize = (ctx->distance_model != AL_NONE) &&
                                  (src->queue_channels == 1) &&
                                  (src->rolloff_factor != 0.0f);
@@ -991,71 +987,69 @@ static void calculate_channel_gains(const ALCcontext *ctx, ALsource *src)
     ALfloat gain;
     ALfloat radians;
 
-    /* this goes through the steps the AL spec dictates for gain and distance attenuation... */
+    // this goes through the steps the AL spec dictates for gain and distance attenuation...
 
     if (!spatialize) {
-        /* simpler path through the same AL spec details if not spatializing. */
+        // simpler path through the same AL spec details if not spatializing.
         gain = SDL_min(SDL_max(src->gain, src->min_gain), src->max_gain) * ctx->listener.gain;
-        src->panning[0] = src->panning[1] = gain;  /* no spatialization, but AL_GAIN (etc) is still applied. */
+        src->panning[0] = src->panning[1] = gain;  // no spatialization, but AL_GAIN (etc) is still applied.
         src->speakers[0] = 0;
         src->speakers[1] = 1;
         return;
     }
 
-    /* AL SPEC: ""1. Distance attenuation is calculated first, including
-       minimum (AL_REFERENCE_DISTANCE) and maximum (AL_MAX_DISTANCE)
-       thresholds." */
+    // AL SPEC: ""1. Distance attenuation is calculated first, including
+    //  minimum (AL_REFERENCE_DISTANCE) and maximum (AL_MAX_DISTANCE)
+    //  thresholds."
     calculate_distance_attenuation_and_angle(ctx, src, &gain, &radians);
 
-    /* AL SPEC: "2. The result is then multiplied by source gain (AL_GAIN)." */
+    // AL SPEC: "2. The result is then multiplied by source gain (AL_GAIN)."
     gain *= src->gain;
 
-    /* AL SPEC: "3. If the source is directional (AL_CONE_INNER_ANGLE less
-       than AL_CONE_OUTER_ANGLE), an angle-dependent attenuation is calculated
-       depending on AL_CONE_OUTER_GAIN, and multiplied with the distance
-       dependent attenuation. The resulting attenuation factor for the given
-       angle and distance between listener and source is multiplied with
-       source AL_GAIN." */
+    // AL SPEC: "3. If the source is directional (AL_CONE_INNER_ANGLE less
+    // than AL_CONE_OUTER_ANGLE), an angle-dependent attenuation is calculated
+    // depending on AL_CONE_OUTER_GAIN, and multiplied with the distance
+    // dependent attenuation. The resulting attenuation factor for the given
+    // angle and distance between listener and source is multiplied with
+    // source AL_GAIN."
     if (src->cone_inner_angle < src->cone_outer_angle) {
         FIXME("directional sources");
     }
 
-    /* AL SPEC: "4. The effective gain computed this way is compared against
-       AL_MIN_GAIN and AL_MAX_GAIN thresholds." */
+    // AL SPEC: "4. The effective gain computed this way is compared against
+    // AL_MIN_GAIN and AL_MAX_GAIN thresholds."
     gain = SDL_min(SDL_max(gain, src->min_gain), src->max_gain);
 
-    /* AL SPEC: "5. The result is guaranteed to be clamped to [AL_MIN_GAIN,
-       AL_MAX_GAIN], and subsequently multiplied by listener gain which serves
-       as an overall volume control. The implementation is free to clamp
-       listener gain if necessary due to hardware or implementation
-       constraints." */
+    // AL SPEC: "5. The result is guaranteed to be clamped to [AL_MIN_GAIN,
+    // AL_MAX_GAIN], and subsequently multiplied by listener gain which serves
+    // as an overall volume control. The implementation is free to clamp
+    // listener gain if necessary due to hardware or implementation
+    // constraints."
     gain *= ctx->listener.gain;
 
-    /* now figure out positioning. */
-    if (output_channels == 1) {  /* no positioning for mono output, just distance attenuation. */
+    // now figure out positioning.
+    if (output_channels == 1) {  // no positioning for mono output, just distance attenuation.
         src->speakers[0] = src->speakers[1] = 0;
         src->panning[0] = src->panning[1] = gain;
     } else if (output_channels < 4) {
-        /* If we're aiming for stereo (or 2.1), we just need a simple panning effect.
-           We're going to do what's called "constant power panning," as explained...
-           https://dsp.stackexchange.com/questions/21691/algorithm-to-pan-audio
-        */
+        // If we're aiming for stereo (or 2.1), we just need a simple panning effect.
+        // We're going to do what's called "constant power panning," as explained...
+        // https://dsp.stackexchange.com/questions/21691/algorithm-to-pan-audio
 
         src->speakers[0] = 0;
         src->speakers[1] = 1;
 
-        /* here comes the Constant Power Panning magic... */
-        #define SQRT2_DIV2 0.7071067812f  /* sqrt(2.0) / 2.0 ... */
+        // here comes the Constant Power Panning magic...
+        #define SQRT2_DIV2 0.7071067812f  // sqrt(2.0) / 2.0 ...
 
-        /*
-           this might be a terrible idea, which is totally my own doing here,
-           but here you go: Constant Power Panning only works from -45 to 45
-           degrees in front of the listener. So we split this into 4 quadrants.
-           - from -45 to 45: standard panning.
-           - from 45 to 135: pan full right.
-           - from 135 to 225: flip angle so it works like standard panning.
-           - from 225 to -45: pan full left.
-        */
+        // This might be a terrible idea, which is totally my own doing here,
+        // but here you go: Constant Power Panning only works from -45 to 45
+        // degrees in front of the listener. So we split this into 4 quadrants.
+        //
+        // - from -45 to 45: standard panning.
+        // - from 45 to 135: pan full right.
+        // - from 135 to 225: flip angle so it works like standard panning.
+        // - from 225 to -45: pan full left.
 
         #define RADIANS_45_DEGREES 0.7853981634f
         #define RADIANS_135_DEGREES 2.3561944902f
@@ -1070,30 +1064,30 @@ static void calculate_channel_gains(const ALCcontext *ctx, ALsource *src)
         } else if ((radians >= -RADIANS_135_DEGREES) && (radians <= -RADIANS_45_DEGREES)) {
             src->panning[0] = 1.0f;
             src->panning[1] = 0.0f;
-        } else if (radians < 0.0f) {  /* back left */
+        } else if (radians < 0.0f) {  // back left
             ALfloat sine, cosine;
             calculate_sincos(-(radians + SDL_PI_F), &sine, &cosine);
             src->panning[0] = (SQRT2_DIV2 * (cosine - sine));
             src->panning[1] = (SQRT2_DIV2 * (cosine + sine));
-        } else { /* back right */
+        } else { // back right
             ALfloat sine, cosine;
             calculate_sincos(-(radians - SDL_PI_F), &sine, &cosine);
             src->panning[0] = (SQRT2_DIV2 * (cosine - sine));
             src->panning[1] = (SQRT2_DIV2 * (cosine + sine));
         }
 
-        /* apply distance attenuation and gain to positioning. */
+        // apply distance attenuation and gain to positioning.
         src->panning[0] *= gain;
         src->panning[1] *= gain;
     } else {
-        /* If we're aiming for surround sound, we use Vector Based Amplitude Panning,
-           which picks the two speakers best positioned to play the sounds and assigns
-           a gain value to each. */
+        // If we're aiming for surround sound, we use Vector Based Amplitude Panning,
+        //  which picks the two speakers best positioned to play the sounds and assigns
+        //  a gain value to each.
 
-        /* we're going negative to the _right_ here, at the moment, so negative radians. */
+        // we're going negative to the _right_ here, at the moment, so negative radians.
         VBAP2D_CalculateGains(&ctx->vbap2d, -radians, src->panning, src->speakers);
 
-        /* apply distance attenuation and gain to positioning. */
+        // apply distance attenuation and gain to positioning.
         src->panning[0] *= gain;
         src->panning[1] *= gain;
     }
@@ -1102,7 +1096,7 @@ static void calculate_channel_gains(const ALCcontext *ctx, ALsource *src)
 
 
 
-/* Mixers... */
+// Mixers...
 
 static void mix_float32_mono_to_mono_scalar(const ALfloat * SDL_RESTRICT panning, const float * SDL_RESTRICT data, float * SDL_RESTRICT stream, const ALsizei mixframes)
 {
@@ -1256,8 +1250,8 @@ static void mix_float32_stereo_to_stereo_scalar(const ALfloat * SDL_RESTRICT pan
     }
 }
 
-/* so the idea is that this mixer is used when rendering for a system with >= 3 speakers. Since this is either an unspatialized stereo source or using VBAP2D, we always mix to exactly 2 speakers,
-   although they might be any 2 arbitary channels. */
+// so the idea is that this mixer is used when rendering for a system with >= 3 speakers. Since this is either an unspatialized
+// stereo source or using VBAP2D, we always mix to exactly 2 speakers, although they might be any 2 arbitary channels.
 static void mix_float32_mono_to_surround_scalar(const ALfloat * SDL_RESTRICT panning, const int output_channels, const int * SDL_RESTRICT speakers, const float * SDL_RESTRICT data, float * SDL_RESTRICT stream, const ALsizei mixframes)
 {
     const ALfloat panning0 = panning[0];
@@ -1300,7 +1294,7 @@ static void SDL_TARGETING("sse") mix_float32_mono_to_stereo_sse(const ALfloat * 
     const int leftover = mixframes % 8;
     ALsizei i;
 
-    /* We can align this to 16 in one special case. */
+    // We can align this to 16 in one special case.
     if ( ((((size_t)data) % 16) == 8) && ((((size_t)stream) % 16) == 0) && (mixframes >= 2) ) {
         stream[0] += data[0] * left;
         stream[1] += data[0] * right;
@@ -1308,11 +1302,11 @@ static void SDL_TARGETING("sse") mix_float32_mono_to_stereo_sse(const ALfloat * 
         stream[3] += data[1] * right;
         mix_float32_mono_to_stereo_sse(panning, data + 2, stream + 4, mixframes - 2);
     } else if ( (((size_t)stream) % 16) || (((size_t)data) % 16) ) {
-        /* unaligned, do scalar version. */
+        // unaligned, do scalar version.
         mix_float32_mono_to_stereo_scalar(panning, data, stream, mixframes);
     } else if ((left == 1.0f) && (right == 1.0f)) {
         for (i = 0; i < unrolled; i++, data += 8, stream += 16) {
-            /* We have 8 SSE registers, load 6 of them, have two for math (unrolled once). */
+            // We have 8 SSE registers, load 6 of them, have two for math (unrolled once).
             {
                 const __m128 vdataload1 = _mm_load_ps(data);
                 const __m128 vdataload2 = _mm_load_ps(data+4);
@@ -1334,7 +1328,7 @@ static void SDL_TARGETING("sse") mix_float32_mono_to_stereo_sse(const ALfloat * 
     } else {
         const __m128 vleftright = { left, right, left, right };
         for (i = 0; i < unrolled; i++, data += 8, stream += 16) {
-            /* We have 8 SSE registers, load 6 of them, have two for math (unrolled once). */
+            // We have 8 SSE registers, load 6 of them, have two for math (unrolled once).
             const __m128 vdataload1 = _mm_load_ps(data);
             const __m128 vdataload2 = _mm_load_ps(data+4);
             const __m128 vstream1 = _mm_load_ps(stream);
@@ -1361,13 +1355,13 @@ static void SDL_TARGETING("sse") mix_float32_stereo_to_stereo_sse(const ALfloat 
     const int unrolled = mixframes / 4;
     const int leftover = mixframes % 4;
     ALsizei i;
-    /* We can align this to 16 in one special case. */
+    // We can align this to 16 in one special case.
     if ( ((((size_t)stream) % 16) == 8) && ((((size_t)data) % 16) == 8) && mixframes ) {
         stream[0] += data[0] * left;
         stream[1] += data[1] * right;
         mix_float32_stereo_to_stereo_sse(panning, data + 2, stream + 2, mixframes - 1);
     } else if ( (((size_t)stream) % 16) || (((size_t)data) % 16) ) {
-        /* unaligned, do scalar version. */
+        // unaligned, do scalar version.
         mix_float32_stereo_to_stereo_scalar(panning, data, stream, mixframes);
     } else if ((left == 1.0f) && (right == 1.0f)) {
         for (i = 0; i < unrolled; i++, data += 8, stream += 8) {
@@ -1409,7 +1403,7 @@ static void SDL_TARGETING("neon") mix_float32_mono_to_stereo_neon(const ALfloat 
     const int leftover = mixframes % 8;
     ALsizei i;
 
-    /* We can align this to 16 in one special case. */
+    // We can align this to 16 in one special case.
     if ( ((((size_t)data) % 16) == 8) && ((((size_t)stream) % 16) == 0) && (mixframes >= 2) ) {
         stream[0] += data[0] * left;
         stream[1] += data[0] * right;
@@ -1417,7 +1411,7 @@ static void SDL_TARGETING("neon") mix_float32_mono_to_stereo_neon(const ALfloat 
         stream[3] += data[1] * right;
         mix_float32_mono_to_stereo_neon(panning, data + 2, stream + 4, mixframes - 2);
     } else if ( (((size_t)stream) % 16) || (((size_t)data) % 16) ) {
-        /* unaligned, do scalar version. */
+        // unaligned, do scalar version.
         mix_float32_mono_to_stereo_scalar(panning, data, stream, mixframes);
     } else if ((left == 1.0f) && (right == 1.0f)) {
         for (i = 0; i < unrolled; i++, data += 8, stream += 16) {
@@ -1471,13 +1465,13 @@ static void SDL_TARGETING("neon") mix_float32_stereo_to_stereo_neon(const ALfloa
     const int leftover = mixframes % 8;
     ALsizei i;
 
-    /* We can align this to 16 in one special case. */
+    // We can align this to 16 in one special case.
     if ( ((((size_t)stream) % 16) == 8) && ((((size_t)data) % 16) == 8) && mixframes ) {
         stream[0] += data[0] * left;
         stream[1] += data[1] * right;
         mix_float32_stereo_to_stereo_neon(panning, data + 2, stream + 2, mixframes - 1);
     } else if ( (((size_t)stream) % 16) || (((size_t)data) % 16) ) {
-        /* unaligned, do scalar version. */
+        // unaligned, do scalar version.
         mix_float32_stereo_to_stereo_scalar(panning, data, stream, mixframes);
     } else if ((left == 1.0f) && (right == 1.0f)) {
         for (i = 0; i < unrolled; i++, data += 16, stream += 16) {
@@ -1554,23 +1548,23 @@ static void mix_float32_stereo_to_stereo(const float * SDL_RESTRICT panning, con
 
 
 
-/* Context mixing ... */
+// Context mixing ...
 
 static void mix_buffer(ALsource *src, const ALbuffer *buffer, const int output_channels, const float * SDL_RESTRICT data, float * SDL_RESTRICT stream, const ALsizei mixframes)
 {
     int i;
 
     const ALfloat *panning = src->panning;
-    if ((panning[0] == 0.0f) && (panning[1] == 0.0f)) {  /* don't bother mixing in silence. */
+    if ((panning[0] == 0.0f) && (panning[1] == 0.0f)) {  // don't bother mixing in silence.
         return;
     }
 
-    /* Currently buffers can only be mono or stereo. These assertions will fail if we add extensions for buffers with more channels. */
+    // Currently buffers can only be mono or stereo. These assertions will fail if we add extensions for buffers with more channels.
     SDL_assert(buffer->spec.channels > 0);
     SDL_assert(buffer->spec.channels <= 2);
 
     if (output_channels == 1) {
-        FIXME("SIMD");  /* not actually sure it's worth the time and code bulk to SIMD this, though. */
+        FIXME("SIMD");  // not actually sure it's worth the time and code bulk to SIMD this, though.
         if (buffer->spec.channels == 1) {
             mix_float32_mono_to_mono_scalar(panning, data, stream, mixframes);
         } else if (buffer->spec.channels == 2) {
@@ -1599,10 +1593,10 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
 
     SDL_assert(*len > 0);
 
-    /* you can legally queue or set a NULL buffer. */
+    // you can legally queue or set a NULL buffer.
     if (buffer && buffer->data && (buffer->len > 0)) {
-        /* the stream will output data in `*output`'s format, except for the channel count, which matches the buffer, so we can mix it properly. */
-        /* so we need to figure out the difference between what we need and what we're getting. */
+        // The stream will output data in `*output`'s format, except for the channel count, which matches the buffer, so we can mix it properly.
+        // So we need to figure out the difference between what we need and what we're getting.
         const int bufferframesize = (int) (sizeof (float) * buffer->spec.channels);
         const int needed_frames = *len / (int) ctx->framesize;
         const int get_bytes = needed_frames * bufferframesize;
@@ -1612,7 +1606,7 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
             void *ptr = malloc_simd_aligned(get_bytes);
             if (!ptr) {
                 SDL_ClearAudioStream(stream);
-                return AL_TRUE;  /* oh well, we're in trouble. */
+                return AL_TRUE;  // oh well, we're in trouble.
             }
             free_simd_aligned(ctx->device->get_buffer);
             ctx->device->get_buffer = (float *) ptr;
@@ -1621,11 +1615,11 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
 
         float *get_buffer = ctx->device->get_buffer;
 
-        /* if we still have data queued in src->stream, we assume it's `buffer` still mixing. */
+        // if we still have data queued in src->stream, we assume it's `buffer` still mixing.
         if (SDL_GetAudioStreamAvailable(stream) <= get_bytes) {
             SDL_assert(queue != NULL);
-            if (queue->next == NULL) {  /* we're either AL_STATIC or at the end of the queued buffers. Time to flush. If the app queues more, too late, there's a gap. */
-                SDL_FlushAudioStream(stream);  /* make sure we get the last few bytes when resampling */
+            if (queue->next == NULL) {  // we're either AL_STATIC or at the end of the queued buffers. Time to flush. If the app queues more, too late, there's a gap.
+                SDL_FlushAudioStream(stream);  // make sure we get the last few bytes when resampling
             }
         }
 
@@ -1640,7 +1634,7 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
             *output += got_frames * ctx->spec.channels;
             src->offset += original_queued - now_queued;
             if (src->offset > buffer->len) {
-                src->offset = buffer->len;   /* this might overflow if we were holding back data for resampling and flushed on the last buffer. Just clamp. */
+                src->offset = buffer->len;   // this might overflow if we were holding back data for resampling and flushed on the last buffer. Just clamp.
             }
         }
 
@@ -1659,7 +1653,7 @@ static ALCboolean mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, Buffer
     ALCboolean keep = ALC_TRUE;
 
     while ((len > 0) && mix_source_buffer(ctx, src, queue, &stream, &len)) {
-        /* Finished this buffer! */
+        // Finished this buffer!
         BufferQueueItem *item = queue;
         BufferQueueItem *next = queue ? (BufferQueueItem*)queue->next : NULL;
         void *ptr;
@@ -1669,7 +1663,7 @@ static ALCboolean mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, Buffer
         if (src->looping) {
             if (src->type == AL_STATIC) {
                 FIXME("looping is supposed to move to AL_INITIAL then immediately to AL_PLAYING, but I'm not sure what side effect this is meant to trigger");
-                put_albuffer_to_audiostream(ctx, src->buffer, 0, src->stream);   /* put it back in the stream for another round */
+                put_albuffer_to_audiostream(ctx, src->buffer, 0, src->stream);   // put it back in the stream for another round
                 src->offset = 0;
                 continue;
             } else if (src->type == AL_STREAMING) {
@@ -1682,9 +1676,9 @@ static ALCboolean mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, Buffer
             queue = next;
         }
 
-        if (src->type == AL_STREAMING) {  /* mark buffer processed. */
+        if (src->type == AL_STREAMING) {  // mark buffer processed.
             SDL_assert(item == src->buffer_queue.head);
-            FIXME("bubble out all these NULL checks");  /* these are only here because we check for looping/stopping in this loop, but we really shouldn't enter this loop at all if queue==NULL. */
+            FIXME("bubble out all these NULL checks");  // these are only here because we check for looping/stopping in this loop, but we really shouldn't enter this loop at all if queue==NULL.
             if (item != NULL) {
                 src->buffer_queue.head = next;
                 if (!next) {
@@ -1692,7 +1686,7 @@ static ALCboolean mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, Buffer
                 }
                 SDL_AddAtomicInt(&src->buffer_queue.num_items, -1);
 
-                /* Move it to the processed queue for alSourceUnqueueBuffers() to pick up. */
+                // Move it to the processed queue for alSourceUnqueueBuffers() to pick up.
                 do {
                     ptr = SDL_GetAtomicPointer(&src->buffer_queue_processed.just_queued);
                     SDL_SetAtomicPointer(&item->next, ptr);
@@ -1706,10 +1700,10 @@ static ALCboolean mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, Buffer
             }
         }
 
-        if (queue == NULL) {  /* nothing else to play? */
+        if (queue == NULL) {  // nothing else to play?
             SDL_SetAtomicInt(&src->state, AL_STOPPED);
             keep = ALC_FALSE;
-            break;  /* nothing else to mix here, so stop. */
+            break;  // nothing else to mix here, so stop.
         }
     }
 
@@ -1734,7 +1728,7 @@ static ALCboolean mix_source(ALCcontext *ctx, ALsource *src, float *stream, int 
             obtain_newly_queued_buffers(&src->buffer_queue);
             keep = mix_source_buffer_queue(ctx, src, src->buffer_queue.head, stream, len);
         } else if (src->type == AL_UNDETERMINED) {
-            keep = ALC_FALSE;  /* this has AL_BUFFER set to 0; just dump it. */
+            keep = ALC_FALSE;  // this has AL_BUFFER set to 0; just dump it.
         } else {
             SDL_assert(!"unknown source type");
         }
@@ -1743,32 +1737,31 @@ static ALCboolean mix_source(ALCcontext *ctx, ALsource *src, float *stream, int 
     return keep;
 }
 
-/* move new play requests over to the mixer thread. */
+// move new play requests over to the mixer thread.
 static void migrate_playlist_requests(ALCcontext *ctx)
 {
     SourcePlayTodo *todo;
     SourcePlayTodo *todoend;
     SourcePlayTodo *i;
 
-    do {  /* take the todo list atomically, now we own it. */
+    do {  // take the todo list atomically, now we own it.
         todo = (SourcePlayTodo *) ctx->playlist_todo;
     } while (!SDL_CompareAndSwapAtomicPointer(&ctx->playlist_todo, todo, NULL));
 
     if (!todo) {
-        return;  /* nothing new. */
+        return;  // nothing new.
     }
 
     todoend = todo;
 
-    /* ctx->playlist and ALsource->playlist_next are only ever touched
-       by the mixer thread, and source pointers live until context destruction. */
+    // ctx->playlist and ALsource->playlist_next are only ever touched by the mixer thread, and source pointers live until context destruction.
     for (i = todo; i != NULL; i = i->next) {
         ALsource *src = i->source;
         todoend = i;
         if ((src != ctx->playlist_tail) && (!src->playlist_next)) {
-            SDL_SetAtomicInt(&src->mixer_accessible, 1);  /* just in case */
+            SDL_SetAtomicInt(&src->mixer_accessible, 1);  // just in case
 
-            /* get the initial buffer loaded into the stream... */
+            // get the initial buffer loaded into the stream...
             SDL_ClearAudioStream(src->stream);
             ALbuffer *buffer = NULL;
             if (src->type == AL_STATIC) {
@@ -1791,7 +1784,7 @@ static void migrate_playlist_requests(ALCcontext *ctx)
         }
     }
 
-    /* put these objects back in the pool for reuse */
+    // put these objects back in the pool for reuse
     do {
         todoend->next = i = (SourcePlayTodo *) ctx->device->playback.source_todo_pool;
     } while (!SDL_CompareAndSwapAtomicPointer(&ctx->device->playback.source_todo_pool, i, todo));
@@ -1808,7 +1801,7 @@ static void mix_context(ALCcontext *ctx, SDL_AudioStream *stream, int len)
     if (ctx->device->mix_buffer_len < len) {
         void *ptr = malloc_simd_aligned(len);
         if (!ptr) {
-            return;  /* oh well, we're in trouble. */
+            return;  // oh well, we're in trouble.
         }
         free_simd_aligned(ctx->device->mix_buffer);
         ctx->device->mix_buffer = (float *) ptr;
@@ -1828,10 +1821,10 @@ static void mix_context(ALCcontext *ctx, SDL_AudioStream *stream, int len)
 
     for (i = ctx->playlist; i != NULL; i = next) {
         lock_source(i);
-        next = i->playlist_next;  /* save this to a local in case we leave the list. */
+        next = i->playlist_next;  // save this to a local in case we leave the list.
 
         if (!mix_source(ctx, i, mix_buffer, len, force_recalc)) {
-            /* take it out of the playlist. It wasn't actually playing or it just finished. */
+            // take it out of the playlist. It wasn't actually playing or it just finished.
             i->playlist_next = NULL;
             if (next == NULL) {
                 SDL_assert(i == ctx->playlist_tail);
@@ -1844,7 +1837,7 @@ static void mix_context(ALCcontext *ctx, SDL_AudioStream *stream, int len)
                 ctx->playlist = next;
             }
             SDL_SetAtomicInt(&i->mixer_accessible, 0);
-            SDL_ClearAudioStream(i->stream);  /* just in case. */
+            SDL_ClearAudioStream(i->stream);  // just in case.
         } else {
             prev = i;
         }
@@ -1855,7 +1848,7 @@ static void mix_context(ALCcontext *ctx, SDL_AudioStream *stream, int len)
     SDL_PutAudioStreamData(stream, mix_buffer, len);
 }
 
-/* Disconnected devices move all PLAYING sources to STOPPED, making their buffer queues processed. */
+// Disconnected devices move all PLAYING sources to STOPPED, making their buffer queues processed.
 static void mix_disconnected_context(ALCcontext *ctx)
 {
     ALsource *next = NULL;
@@ -1867,7 +1860,7 @@ static void mix_disconnected_context(ALCcontext *ctx)
         next = i->playlist_next;
 
         lock_source(i);
-        /* remove from playlist; all playing things got stopped, paused/initial/stopped shouldn't be listed. */
+        // remove from playlist; all playing things got stopped, paused/initial/stopped shouldn't be listed.
         if (SDL_GetAtomicInt(&i->state) == AL_PLAYING) {
             SDL_assert(i->allocated);
             SDL_SetAtomicInt(&i->state, AL_STOPPED);
@@ -1876,16 +1869,16 @@ static void mix_disconnected_context(ALCcontext *ctx)
 
         i->playlist_next = NULL;
         SDL_SetAtomicInt(&i->mixer_accessible, 0);
-        SDL_ClearAudioStream(i->stream);  /* just in case. */
+        SDL_ClearAudioStream(i->stream);  // just in case.
         unlock_source(i);
     }
     ctx->playlist = NULL;
     ctx->playlist_tail = NULL;
 }
 
-/* We process a single ALC context during this call, mixing their
-   output and putting it to `stream`. SDL then mixes all the contexts' streams
-   together for playback on the hardware. */
+// We process a single ALC context during this call, mixing their
+//  output and putting it to `stream`. SDL then mixes all the contexts' streams
+//  together for playback on the hardware.
 static void SDLCALL context_callback(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount)
 {
     ALCcontext *ctx = (ALCcontext *) userdata;
@@ -1893,7 +1886,7 @@ static void SDLCALL context_callback(void *userdata, SDL_AudioStream *stream, in
 
     if (SDL_GetAtomicInt(&ctx->device->connected)) {
 #if 0
-/* !!! FIXME: did this ever work? Why would the audio callback fire on a stopped device? */
+// !!! FIXME: did this ever work? Why would the audio callback fire on a stopped device?
         if (SDL_GetAudioDeviceStatus(device->playback.sdldevice) == SDL_AUDIO_STOPPED) {
             SDL_SetAtomicInt(&device->connected, ALC_FALSE);
         } else {
@@ -1916,12 +1909,12 @@ static void SDLCALL context_callback(void *userdata, SDL_AudioStream *stream, in
 
 
 
-/* ALC implementation... */
+// ALC implementation...
 
 static void *current_context = NULL;
 static ALCenum null_device_error = ALC_NO_ERROR;
 
-/* we don't have any device-specific extensions. */
+// we don't have any device-specific extensions.
 #define ALC_EXTENSION_ITEMS \
     ALC_EXTENSION_ITEM(ALC_ENUMERATION_EXT) \
     ALC_EXTENSION_ITEM(ALC_EXT_CAPTURE) \
@@ -1934,13 +1927,13 @@ static ALCenum null_device_error = ALC_NO_ERROR;
 static void set_alc_error(ALCdevice *device, const ALCenum error)
 {
     ALCenum *perr = device ? &device->error : &null_device_error;
-    /* can't set a new error when the previous hasn't been cleared yet. */
+    // can't set a new error when the previous hasn't been cleared yet.
     if (*perr == ALC_NO_ERROR) {
         *perr = error;
     }
 }
 
-/* all data written before the release barrier must be available before the recalc flag changes. */ \
+// all data written before the release barrier must be available before the recalc flag changes.
 #define context_needs_recalc(ctx) SDL_MemoryBarrierRelease(); ctx->recalc = AL_TRUE;
 #define source_needs_recalc(src) SDL_MemoryBarrierRelease(); src->recalc = AL_TRUE;
 
@@ -1957,14 +1950,14 @@ static ALCdevice *prep_alc_device(const char *devicename, const ALCboolean iscap
     #if defined(SDL_SSE_INTRINSICS)
     if (!SDL_HasSSE()) {
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
-        return NULL;  /* whoa! Better order a new Pentium III from Gateway 2000! */
+        return NULL;  // whoa! Better order a new Pentium III from Gateway 2000!
     }
     #endif
 
     #if defined(SDL_NEON_INTRINSICS) && !NEED_SCALAR_FALLBACK
     if (!SDL_HasNEON()) {
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
-        return NULL;  /* :( */
+        return NULL;  // :(
     }
     #elif defined(SDL_NEON_INTRINSICS) && NEED_SCALAR_FALLBACK
     has_neon = SDL_HasNEON();
@@ -1973,7 +1966,7 @@ static ALCdevice *prep_alc_device(const char *devicename, const ALCboolean iscap
     if (!simd_alignment) {
         simd_alignment = SDL_GetSIMDAlignment();
         if (!simd_alignment) {
-            simd_alignment = 16;  /* oh well. */
+            simd_alignment = 16;  // oh well.
         }
     }
 
@@ -2026,20 +2019,19 @@ static ALCdevice *prep_alc_device(const char *devicename, const ALCboolean iscap
     return dev;
 }
 
-/* no api lock; this creates it and otherwise doesn't have any state that can race */
+// no api lock; this creates it and otherwise doesn't have any state that can race
 ALCdevice *alcOpenDevice(const ALCchar *devicename)
 {
     if (!devicename) {
-        devicename = DEFAULT_PLAYBACK_DEVICE;  /* so ALC_DEVICE_SPECIFIER is meaningful */
+        devicename = DEFAULT_PLAYBACK_DEVICE;  // so ALC_DEVICE_SPECIFIER is meaningful
     }
 
     return prep_alc_device(devicename, ALC_FALSE);
 
-    /* we don't actually open an SDL audio device until the first context is
-       created, so we can attempt to match audio formats. */
+    // we don't actually open an SDL audio device until the first context is created, so we can attempt to match audio formats.
 }
 
-/* no api lock; this requires you to not destroy a device that's still in use */
+// no api lock; this requires you to not destroy a device that's still in use
 ALCboolean alcCloseDevice(ALCdevice *device)
 {
     BufferQueueItem *item;
@@ -2050,14 +2042,14 @@ ALCboolean alcCloseDevice(ALCdevice *device)
         return ALC_FALSE;
     }
 
-    /* spec: "Failure will occur if all the device's contexts and buffers have not been destroyed." */
+    // spec: "Failure will occur if all the device's contexts and buffers have not been destroyed."
     if (device->playback.contexts) {
         return ALC_FALSE;
     }
 
     for (i = 0; i <device->playback.num_buffer_blocks; i++) {
         if (device->playback.buffer_blocks[i]->used > 0) {
-            return ALC_FALSE;  /* still buffers allocated. */
+            return ALC_FALSE;  // still buffers allocated.
         }
     }
 
@@ -2140,7 +2132,7 @@ static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
     ALCint refresh = 100;
     SDL_AudioSpec spec;
 
-    /* we don't care about ALC_MONO_SOURCES or ALC_STEREO_SOURCES as we have no hardware limitation. */
+    // we don't care about ALC_MONO_SOURCES or ALC_STEREO_SOURCES as we have no hardware limitation.
 
     if (!device) {
         set_alc_error(NULL, ALC_INVALID_DEVICE);
@@ -2174,7 +2166,7 @@ static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
 
     SDL_zerop(retval);
 
-    /* Make sure everything that wants to use SIMD is aligned for it. */
+    // Make sure everything that wants to use SIMD is aligned for it.
     SDL_assert( (((size_t) &retval->listener.position[0]) % 16) == 0 );
     SDL_assert( (((size_t) &retval->listener.orientation[0]) % 16) == 0 );
     SDL_assert( (((size_t) &retval->listener.velocity[0]) % 16) == 0 );
@@ -2190,19 +2182,18 @@ static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
 
     SDL_GetAudioDeviceFormat(device->device_id, &spec, NULL);
     if (freq_set) {
-        spec.freq = freq;   /* Only force a frequency if the context requested one. Otherwise just take the device-preferred format. */
+        spec.freq = freq;   // Only force a frequency if the context requested one. Otherwise just take the device-preferred format.
     }
 
-    /* always take device channels, spatialize to whatever they offer. */
-    /*spec.channels = 2;*/
+    // always take device channels, spatialize to whatever they offer.
+    //spec.channels = 2;
 
-    /* we always want to work in float32, to keep our work simple and
-       let us use SIMD. If the device will take it, great, otherwise
-       we'll let SDL convert when feeding the device. */
+    // we always want to work in float32, to keep our work simple and let us use SIMD. If the device
+    //  will take it, great, otherwise we'll let SDL convert when feeding the device.
     spec.format = SDL_AUDIO_F32;
 
-    /* each context gets an SDL_AudioStream, bound to the audio device. */
-    /* Open a logical device for each context; first one might get can get the exact format we want from the hardware. */
+    // each context gets an SDL_AudioStream, bound to the audio device.
+    // Open a logical device for each context; first one might get can get the exact format we want from the hardware.
     retval->stream = SDL_OpenAudioDeviceStream(device->device_id, &spec, context_callback, retval);
     if (!retval->stream) {
         SDL_free(retval->attributes);
@@ -2222,9 +2213,9 @@ static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
     retval->listener.orientation[5] = 1.0f;
     retval->device = device;
     context_needs_recalc(retval);
-    SDL_SetAtomicInt(&retval->processing, 1);  /* contexts default to processing */
+    SDL_SetAtomicInt(&retval->processing, 1);  // contexts default to processing
 
-    /* these are protected by the api lock; the mixer thread no longer looks at device->playback.contexts as of the migration to SDL3. */
+    // these are protected by the api lock; the mixer thread no longer looks at device->playback.contexts as of the migration to SDL3.
     if (device->playback.contexts != NULL) {
         SDL_assert(device->playback.contexts->prev == NULL);
         device->playback.contexts->prev = retval;
@@ -2246,7 +2237,7 @@ static SDL_INLINE ALCcontext *get_current_context(void)
     return (ALCcontext *) SDL_GetAtomicPointer(&current_context);
 }
 
-/* no api lock; it just sets an atomic pointer at the moment */
+// no api lock; it just sets an atomic pointer at the moment
 ALCboolean alcMakeContextCurrent(ALCcontext *ctx)
 {
     FIXME("maybe just use the api lock");
@@ -2285,18 +2276,18 @@ static void _alcDestroyContext(ALCcontext *ctx)
     FIXME("Should NULL context be an error?");
     if (!ctx) return;
 
-    /* The spec says it's illegal to delete the current context. */
+    // The spec says it's illegal to delete the current context.
     if (get_current_context() == ctx) {
         set_alc_error(ctx->device, ALC_INVALID_CONTEXT);
         return;
     }
 
-    /* do this first in case the mixer is running _right now_. */
+    // do this first in case the mixer is running _right now_.
     SDL_SetAtomicInt(&ctx->processing, 0);
 
-    SDL_DestroyAudioStream(ctx->stream);  /* will unbind from the audio device, mixer thread will no longer touch. */
+    SDL_DestroyAudioStream(ctx->stream);  // will unbind from the audio device, mixer thread will no longer touch.
 
-    /* these are protected by the api lock; the mixer thread no longer looks at device->playback.contexts as of the migration to SDL3. */
+    // these are protected by the api lock; the mixer thread no longer looks at device->playback.contexts as of the migration to SDL3.
     if (ctx->prev) {
         ctx->prev->next = ctx->next;
     } else {
@@ -2333,13 +2324,13 @@ static void _alcDestroyContext(ALCcontext *ctx)
 }
 ENTRYPOINTVOID(alcDestroyContext,(ALCcontext *ctx),(ctx))
 
-/* no api lock; atomic. */
+// no api lock; atomic.
 ALCcontext *alcGetCurrentContext(void)
 {
     return get_current_context();
 }
 
-/* no api lock; immutable. */
+// no api lock; immutable.
 ALCdevice *alcGetContextsDevice(ALCcontext *context)
 {
     return context ? context->device : NULL;
@@ -2354,7 +2345,7 @@ static ALCenum _alcGetError(ALCdevice *device)
 }
 ENTRYPOINT(ALCenum,alcGetError,(ALCdevice *device),(device))
 
-/* no api lock; immutable */
+// no api lock; immutable
 ALCboolean alcIsExtensionPresent(ALCdevice *device, const ALCchar *extname)
 {
     #define ALC_EXTENSION_ITEM(ext) if (SDL_strcasecmp(extname, #ext) == 0) { return ALC_TRUE; }
@@ -2363,7 +2354,7 @@ ALCboolean alcIsExtensionPresent(ALCdevice *device, const ALCchar *extname)
     return ALC_FALSE;
 }
 
-/* no api lock; immutable */
+// no api lock; immutable
 void *alcGetProcAddress(ALCdevice *device, const ALCchar *funcname)
 {
     if (!funcname) {
@@ -2398,7 +2389,7 @@ void *alcGetProcAddress(ALCdevice *device, const ALCchar *funcname)
     return NULL;
 }
 
-/* no api lock; immutable */
+// no api lock; immutable
 ALCenum alcGetEnumValue(ALCdevice *device, const ALCchar *enumname)
 {
     if (!enumname) {
@@ -2458,10 +2449,10 @@ static const ALCchar *calculate_sdl_device_list(const int iscapture)
     size_t cpy;
     int i;
 
-    /* default device is always available. */
+    // default device is always available.
     cpy = SDL_strlcpy(ptr, iscapture ? DEFAULT_CAPTURE_DEVICE : DEFAULT_PLAYBACK_DEVICE, avail);
     SDL_assert((cpy+1) < avail);
-    ptr += cpy + 1;  /* skip past null char. */
+    ptr += cpy + 1;  // skip past null char.
     avail -= cpy + 1;
 
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) == -1) {
@@ -2488,12 +2479,12 @@ static const ALCchar *calculate_sdl_device_list(const int iscapture)
         }
 
         const size_t devnamelen = SDL_strlen(devname);
-        /* if we're out of space, we just have to drop devices we can't cram in the buffer. */
+        // if we're out of space, we just have to drop devices we can't cram in the buffer.
         if (avail > (devnamelen + 2)) {
             cpy = SDL_strlcpy(ptr, devname, avail);
             SDL_assert(cpy == devnamelen);
             SDL_assert((cpy+1) < avail);
-            ptr += cpy + 1;  /* skip past null char. */
+            ptr += cpy + 1;  // skip past null char.
             avail -= cpy + 1;
         }
     }
@@ -2512,7 +2503,7 @@ static const ALCchar *calculate_sdl_device_list(const int iscapture)
     #undef DEVICE_LIST_BUFFER_SIZE
 }
 
-/* no api lock; immutable (unless it isn't, then we manually lock). */
+// no api lock; immutable (unless it isn't, then we manually lock).
 const ALCchar *alcGetString(ALCdevice *device, ALCenum param)
 {
     switch (param) {
@@ -2520,11 +2511,11 @@ const ALCchar *alcGetString(ALCdevice *device, ALCenum param)
             #define ALC_EXTENSION_ITEM(ext) " " #ext
             static ALCchar alc_extensions_string[] = ALC_EXTENSION_ITEMS;
             #undef ALC_EXTENSION_ITEM
-            return alc_extensions_string + 1;  /* skip that first space char */
+            return alc_extensions_string + 1;  // skip that first space char
         }
 
-        /* You open the default SDL device with a NULL device name, but that is how OpenAL
-           reports an error here, so we give it a magic identifier here instead. */
+        // You open the default SDL device with a NULL device name, but that is how OpenAL
+        //  reports an error here, so we give it a magic identifier here instead.
         case ALC_DEFAULT_DEVICE_SPECIFIER:
             return DEFAULT_PLAYBACK_DEVICE;
 
@@ -2560,7 +2551,7 @@ static void _alcGetIntegerv(ALCdevice *device, const ALCenum param, const ALCsiz
     SDL_AudioSpec spec;
 
     if (!size || !values) {
-        return;  /* "A NULL destination or a zero size parameter will cause ALC to ignore the query." */
+        return;  // "A NULL destination or a zero size parameter will cause ALC to ignore the query."
     }
 
     switch (param) {
@@ -2636,9 +2627,9 @@ static void _alcGetIntegerv(ALCdevice *device, const ALCenum param, const ALCsiz
 ENTRYPOINTVOID(alcGetIntegerv,(ALCdevice *device, ALCenum param, ALCsizei size, ALCint *values),(device,param,size,values))
 
 
-/* audio callback for capture devices just needs to drop data if we're overfull.
-   SDL should have handled resampling and conversion for us to the expected
-   audio format. */
+// audio callback for capture devices just needs to drop data if we're overfull.
+//  SDL should have handled resampling and conversion for us to the expected
+//  audio format.
 static void SDLCALL capture_device_callback(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount)
 {
     ALCdevice *device = (ALCdevice *) userdata;
@@ -2670,14 +2661,14 @@ static void SDLCALL capture_device_callback(void *userdata, SDL_AudioStream *str
             const ALCsizei dumpsamps = (ALCsizei) SDL_min(maxread, (maximum - available));
             if (!SDL_GetAudioStreamData(stream, bitbucket, dumpsamps * framesize)) {
                 SDL_ClearAudioStream(stream);
-                return;  /* oh well. */
+                return;  // oh well.
             }
             available = SDL_GetAudioStreamAvailable(stream);
         }
     }
 }
 
-/* no api lock; this creates it and otherwise doesn't have any state that can race */
+// no api lock; this creates it and otherwise doesn't have any state that can race
 ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, ALCenum format, ALCsizei buffersize)
 {
     SDL_AudioSpec spec;
@@ -2693,7 +2684,7 @@ ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, AL
     spec.freq = frequency;
 
     if (!devicename) {
-        devicename = DEFAULT_CAPTURE_DEVICE;  /* so ALC_CAPTURE_DEVICE_SPECIFIER is meaningful */
+        devicename = DEFAULT_CAPTURE_DEVICE;  // so ALC_CAPTURE_DEVICE_SPECIFIER is meaningful
     }
 
     device = prep_alc_device(devicename, ALC_TRUE);
@@ -2717,7 +2708,7 @@ ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, AL
     return device;
 }
 
-/* no api lock; this requires you to not destroy a device that's still in use */
+// no api lock; this requires you to not destroy a device that's still in use
 ALCboolean alcCaptureCloseDevice(ALCdevice *device)
 {
     if (!device || !device->iscapture) {
@@ -2735,7 +2726,7 @@ ALCboolean alcCaptureCloseDevice(ALCdevice *device)
 static void _alcCaptureStart(ALCdevice *device)
 {
     if (device && device->iscapture) {
-        /* alcCaptureStart() drops any previously-buffered data. */
+        // alcCaptureStart() drops any previously-buffered data.
         SDL_ClearAudioStream(device->capture.stream);
         SDL_ResumeAudioStreamDevice(device->capture.stream);
     }
@@ -2761,7 +2752,7 @@ static void _alcCaptureSamples(ALCdevice *device, ALCvoid *buffer, const ALCsize
     requested_bytes = samples * device->capture.framesize;
     if (requested_bytes > SDL_GetAudioStreamAvailable(device->capture.stream)) {
         FIXME("set error state?");
-        return;  /* this is an error state, according to the spec. */
+        return;  // this is an error state, according to the spec.
     }
 
     FIXME("does ALC allow requesting a partial frame?");
@@ -2771,20 +2762,20 @@ ENTRYPOINTVOID(alcCaptureSamples,(ALCdevice *device, ALCvoid *buffer, ALCsizei s
 
 
 
-/* AL implementation... */
+// AL implementation...
 
 static ALenum null_context_error = AL_NO_ERROR;
 
 static void set_al_error(ALCcontext *ctx, const ALenum error)
 {
     ALenum *perr = ctx ? &ctx->error : &null_context_error;
-    /* can't set a new error when the previous hasn't been cleared yet. */
+    // can't set a new error when the previous hasn't been cleared yet.
     if (*perr == AL_NO_ERROR) {
         *perr = error;
     }
 }
 
-/* !!! FIXME: buffers and sources use almost identical code for blocks */
+// !!! FIXME: buffers and sources use almost identical code for blocks
 static ALsource *get_source(ALCcontext *ctx, const ALuint name, SourceBlock **_block)
 {
     const ALsizei blockidx = (((ALsizei) name) - 1) / OPENAL_SOURCE_BLOCK_SIZE;
@@ -2792,7 +2783,7 @@ static ALsource *get_source(ALCcontext *ctx, const ALuint name, SourceBlock **_b
     ALsource *source;
     SourceBlock *block;
 
-    /*printf("get_source(%d): blockidx=%d, block_offset=%d\n", (int) name, (int) blockidx, (int) block_offset);*/
+    //SDL_Log("get_source(%d): blockidx=%d, block_offset=%d", (int) name, (int) blockidx, (int) block_offset);
 
     if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
@@ -2816,7 +2807,7 @@ static ALsource *get_source(ALCcontext *ctx, const ALuint name, SourceBlock **_b
     return NULL;
 }
 
-/* !!! FIXME: buffers and sources use almost identical code for blocks */
+// !!! FIXME: buffers and sources use almost identical code for blocks
 static ALbuffer *get_buffer(ALCcontext *ctx, const ALuint name, BufferBlock **_block)
 {
     const ALsizei blockidx = (((ALsizei) name) - 1) / OPENAL_BUFFER_BLOCK_SIZE;
@@ -2824,7 +2815,7 @@ static ALbuffer *get_buffer(ALCcontext *ctx, const ALuint name, BufferBlock **_b
     ALbuffer *buffer;
     BufferBlock *block;
 
-    /*printf("get_buffer(%d): blockidx=%d, block_offset=%d\n", (int) name, (int) blockidx, (int) block_offset);*/
+    //SDL_Log("get_buffer(%d): blockidx=%d, block_offset=%d", (int) name, (int) blockidx, (int) block_offset);
 
     if (!ctx) {
         set_al_error(ctx, AL_INVALID_OPERATION);
@@ -2918,21 +2909,21 @@ ENTRYPOINTVOID(alDistanceModel,(ALenum model),(model))
 
 static void _alEnable(const ALenum capability)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in core OpenAL 1.1 uses this
 }
 ENTRYPOINTVOID(alEnable,(ALenum capability),(capability))
 
 
 static void _alDisable(const ALenum capability)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in core OpenAL 1.1 uses this
 }
 ENTRYPOINTVOID(alDisable,(ALenum capability),(capability))
 
 
 static ALboolean _alIsEnabled(const ALenum capability)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in core OpenAL 1.1 uses this
     return AL_FALSE;
 }
 ENTRYPOINT(ALboolean,alIsEnabled,(ALenum capability),(capability))
@@ -2944,7 +2935,7 @@ static const ALchar *_alGetString(const ALenum param)
             #define AL_EXTENSION_ITEM(ext) " " #ext
             static ALchar al_extensions_string[] = AL_EXTENSION_ITEMS;
             #undef AL_EXTENSION_ITEM
-            return al_extensions_string + 1;  /* skip that first space char */
+            return al_extensions_string + 1;  // skip that first space char
         }
 
         case AL_VERSION: return OPENAL_VERSION_STRING;
@@ -2975,9 +2966,9 @@ static void _alGetBooleanv(const ALenum param, ALboolean *values)
         return;
     }
 
-    if (!values) return;  /* legal no-op */
+    if (!values) return;  // legal no-op
 
-    /* nothing in core OpenAL 1.1 uses this */
+    // nothing in core OpenAL 1.1 uses this
     set_al_error(ctx, AL_INVALID_ENUM);
 }
 ENTRYPOINTVOID(alGetBooleanv,(ALenum param, ALboolean *values),(param,values))
@@ -2990,7 +2981,7 @@ static void _alGetIntegerv(const ALenum param, ALint *values)
         return;
     }
 
-    if (!values) return;  /* legal no-op */
+    if (!values) return;  // legal no-op
 
     switch (param) {
         case AL_DISTANCE_MODEL: *values = (ALint) ctx->distance_model; break;
@@ -3007,7 +2998,7 @@ static void _alGetFloatv(const ALenum param, ALfloat *values)
         return;
     }
 
-    if (!values) return;  /* legal no-op */
+    if (!values) return;  // legal no-op
 
     switch (param) {
         case AL_DOPPLER_FACTOR: *values = ctx->doppler_factor; break;
@@ -3026,14 +3017,14 @@ static void _alGetDoublev(const ALenum param, ALdouble *values)
         return;
     }
 
-    if (!values) return;  /* legal no-op */
+    if (!values) return;  // legal no-op
 
-    /* nothing in core OpenAL 1.1 uses this */
+    // nothing in core OpenAL 1.1 uses this
     set_al_error(ctx, AL_INVALID_ENUM);
 }
 ENTRYPOINTVOID(alGetDoublev,(ALenum param, ALdouble *values),(param,values))
 
-/* no api lock; just passes through to the real api */
+// no api lock; just passes through to the real api
 ALboolean alGetBoolean(ALenum param)
 {
     ALboolean retval = AL_FALSE;
@@ -3041,7 +3032,7 @@ ALboolean alGetBoolean(ALenum param)
     return retval;
 }
 
-/* no api lock; just passes through to the real api */
+// no api lock; just passes through to the real api
 ALint alGetInteger(ALenum param)
 {
     ALint retval = 0;
@@ -3049,7 +3040,7 @@ ALint alGetInteger(ALenum param)
     return retval;
 }
 
-/* no api lock; just passes through to the real api */
+// no api lock; just passes through to the real api
 ALfloat alGetFloat(ALenum param)
 {
     ALfloat retval = 0.0f;
@@ -3057,7 +3048,7 @@ ALfloat alGetFloat(ALenum param)
     return retval;
 }
 
-/* no api lock; just passes through to the real api */
+// no api lock; just passes through to the real api
 ALdouble alGetDouble(ALenum param)
 {
     ALdouble retval = 0.0f;
@@ -3075,7 +3066,7 @@ static ALenum _alGetError(void)
 }
 ENTRYPOINT(ALenum,alGetError,(void),())
 
-/* no api lock; immutable (unless we start having contexts with different extensions) */
+// no api lock; immutable (unless we start having contexts with different extensions)
 ALboolean alIsExtensionPresent(const ALchar *extname)
 {
     #define AL_EXTENSION_ITEM(ext) if (SDL_strcasecmp(extname, #ext) == 0) { return AL_TRUE; }
@@ -3330,7 +3321,7 @@ static void _alListeneriv(const ALenum param, const ALint *values)
         set_al_error(ctx, AL_INVALID_VALUE);
     } else {
         ALboolean recalc = AL_TRUE;
-        FIXME("Not atomic vs the mixer thread");  /* maybe have a latching system? */
+        FIXME("Not atomic vs the mixer thread");  // maybe have a latching system?
         switch (param) {
             case AL_POSITION:
                 ctx->listener.position[0] = (ALfloat) values[0];
@@ -3368,7 +3359,7 @@ ENTRYPOINTVOID(alListeneriv,(ALenum param, const ALint *values),(param,values))
 
 static void _alListeneri(const ALenum param, const ALint value)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in AL 1.1 uses this */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in AL 1.1 uses this
 }
 ENTRYPOINTVOID(alListeneri,(ALenum param, ALint value),(param,value))
 
@@ -3396,7 +3387,7 @@ static void _alGetListenerfv(const ALenum param, ALfloat *values)
         return;
     }
 
-    if (!values) return;  /* legal no-op */
+    if (!values) return;  // legal no-op
 
     switch (param) {
         case AL_GAIN:
@@ -3450,7 +3441,7 @@ ENTRYPOINTVOID(alGetListener3f,(ALenum param, ALfloat *value1, ALfloat *value2, 
 
 static void _alGetListeneri(const ALenum param, ALint *value)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in AL 1.1 uses this */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in AL 1.1 uses this
 }
 ENTRYPOINTVOID(alGetListeneri,(ALenum param, ALint *value),(param,value))
 
@@ -3463,7 +3454,7 @@ static void _alGetListeneriv(const ALenum param, ALint *values)
         return;
     }
 
-    if (!values) return;  /* legal no-op */
+    if (!values) return;  // legal no-op
 
     switch (param) {
         case AL_POSITION:
@@ -3509,7 +3500,7 @@ static void _alGetListener3i(const ALenum param, ALint *value1, ALint *value2, A
 }
 ENTRYPOINTVOID(alGetListener3i,(ALenum param, ALint *value1, ALint *value2, ALint *value3),(param,value1,value2,value3))
 
-/* !!! FIXME: buffers and sources use almost identical code for blocks */
+// !!! FIXME: buffers and sources use almost identical code for blocks
 static void _alGenSources(const ALsizei n, ALuint *names)
 {
     ALCcontext *ctx = get_current_context();
@@ -3531,7 +3522,7 @@ static void _alGenSources(const ALsizei n, ALuint *names)
         set_al_error(ctx, AL_INVALID_OPERATION);
         return;
     } else if (n == 0) {
-        return;  /* not an error, but nothing to do. */
+        return;  // not an error, but nothing to do.
     }
 
     if (n <= SDL_arraysize(stackobjs)) {
@@ -3551,7 +3542,7 @@ static void _alGenSources(const ALsizei n, ALuint *names)
         }
     }
 
-    /* allocate all our SDL_AudioStreams up front, so if this fails, we haven't changed AL state. */
+    // allocate all our SDL_AudioStreams up front, so if this fails, we haven't changed AL state.
     for (i = 0; i < n; i++) {
         streams[i] = SDL_CreateAudioStream(&ctx->spec, &ctx->spec);
         if (!streams[i]) {
@@ -3570,15 +3561,15 @@ static void _alGenSources(const ALsizei n, ALuint *names)
     for (blocki = 0; blocki < totalblocks; blocki++) {
         SourceBlock *block = ctx->source_blocks[blocki];
         block->tmp = 0;
-        if (block->used < SDL_arraysize(block->sources)) {  /* skip if full */
+        if (block->used < SDL_arraysize(block->sources)) {  // skip if full
             for (i = 0; i < SDL_arraysize(block->sources); i++) {
-                /* if a playing source was deleted, it will still be marked mixer_accessible
-                    until the mixer thread shuffles it out. Until then, the source isn't
-                    available for reuse. */
+                // if a playing source was deleted, it will still be marked mixer_accessible
+                //  until the mixer thread shuffles it out. Until then, the source isn't
+                //  available for reuse.
                 if (!block->sources[i].allocated && !SDL_GetAtomicInt(&block->sources[i].mixer_accessible)) {
                     block->tmp++;
                     objects[found] = &block->sources[i];
-                    names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
+                    names[found++] = (i + block_offset) + 1;  // +1 so it isn't zero.
                     if (found == n) {
                         break;
                     }
@@ -3593,8 +3584,8 @@ static void _alGenSources(const ALsizei n, ALuint *names)
         block_offset += SDL_arraysize(block->sources);
     }
 
-    while (found < n) {  /* out of blocks? Add new ones. */
-        /* ctx->source_blocks is only accessed on the API thread under a mutex, so it's safe to realloc. */
+    while (found < n) {  // out of blocks? Add new ones.
+        // ctx->source_blocks is only accessed on the API thread under a mutex, so it's safe to realloc.
         void *ptr = SDL_realloc(ctx->source_blocks, sizeof (SourceBlock *) * (totalblocks + 1));
         SourceBlock *block;
 
@@ -3617,7 +3608,7 @@ static void _alGenSources(const ALsizei n, ALuint *names)
         for (i = 0; i < SDL_arraysize(block->sources); i++) {
             block->tmp++;
             objects[found] = &block->sources[i];
-            names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
+            names[found++] = (i + block_offset) + 1;  // +1 so it isn't zero.
             if (found == n) {
                 break;
             }
@@ -3636,9 +3627,9 @@ static void _alGenSources(const ALsizei n, ALuint *names)
         return;
     }
 
-    SDL_assert(found == n);  /* we should have either gotten space or bailed on alloc failure */
+    SDL_assert(found == n);  // we should have either gotten space or bailed on alloc failure
 
-    /* update the "used" field in blocks with items we are taking now. */
+    // update the "used" field in blocks with items we are taking now.
     found = 0;
     for (blocki = 0; found < n; blocki++) {
         SourceBlock *block = ctx->source_blocks[blocki];
@@ -3656,11 +3647,11 @@ static void _alGenSources(const ALsizei n, ALuint *names)
     for (i = 0; i < n; i++) {
         ALsource *src = objects[i];
 
-        /*printf("Generated source %u\n", (unsigned int) names[i]);*/
+        //SDL_Log("Generated source %u", (unsigned int) names[i]);
 
         SDL_assert(!src->allocated);
 
-        /* Make sure everything that wants to use SIMD is aligned for it. */
+        // Make sure everything that wants to use SIMD is aligned for it.
         SDL_assert( (((size_t) &src->position[0]) % 16) == 0 );
         SDL_assert( (((size_t) &src->velocity[0]) % 16) == 0 );
         SDL_assert( (((size_t) &src->direction[0]) % 16) == 0 );
@@ -3681,7 +3672,7 @@ static void _alGenSources(const ALsizei n, ALuint *names)
         src->cone_inner_angle = 360.0f;
         src->cone_outer_angle = 360.0f;
         source_needs_recalc(src);
-        src->allocated = AL_TRUE;   /* we officially own it. */
+        src->allocated = AL_TRUE;   // we officially own it.
     }
 
     if (objects != stackobjs) { SDL_free(objects); }
@@ -3706,11 +3697,11 @@ static void _alDeleteSources(const ALsizei n, const ALuint *names)
     for (i = 0; i < n; i++) {
         const ALuint name = names[i];
         if (name == 0) {
-            /* ignore it. */ FIXME("Spec says alDeleteBuffers() can have a zero name as a legal no-op, but this text isn't included in alDeleteSources...");
+            // ignore it. FIXME("Spec says alDeleteBuffers() can have a zero name as a legal no-op, but this text isn't included in alDeleteSources...");
         } else {
             ALsource *source = get_source(ctx, name, NULL);
             if (!source) {
-                /* "If one or more of the specified names is not valid, an AL_INVALID_NAME error will be recorded, and no objects will be deleted." */
+                // "If one or more of the specified names is not valid, an AL_INVALID_NAME error will be recorded, and no objects will be deleted."
                 set_al_error(ctx, AL_INVALID_NAME);
                 return;
             }
@@ -3724,7 +3715,7 @@ static void _alDeleteSources(const ALsizei n, const ALuint *names)
             ALsource *source = get_source(ctx, name, &block);
             SDL_assert(source != NULL);
 
-            /* "A playing source can be deleted--the source will be stopped automatically and then deleted." */
+            // "A playing source can be deleted--the source will be stopped automatically and then deleted."
             SDL_SetAtomicInt(&source->state, AL_STOPPED);
             source->allocated = AL_FALSE;
             source_release_buffer_queue(ctx, source);
@@ -3753,7 +3744,7 @@ ENTRYPOINT(ALboolean,alIsSource,(ALuint name),(name))
 static void source_set_pitch(ALCcontext *ctx, ALsource *src, const ALfloat pitch)
 {
     src->pitch = pitch;
-    SDL_SetAudioStreamFrequencyRatio(src->stream, pitch);  /* this locks the source. */
+    SDL_SetAudioStreamFrequencyRatio(src->stream, pitch);  // this locks the source.
 }
 
 static void _alSourcefv(const ALuint name, const ALenum param, const ALfloat *values)
@@ -3834,7 +3825,7 @@ static void set_source_static_buffer(ALCcontext *ctx, ALsource *src, const ALuin
 {
     const ALenum state = (const ALenum) SDL_GetAtomicInt(&src->state);
     if ((state == AL_PLAYING) || (state == AL_PAUSED)) {
-        set_al_error(ctx, AL_INVALID_OPERATION);  /* can't change buffer on playing/paused sources */
+        set_al_error(ctx, AL_INVALID_OPERATION);  // can't change buffer on playing/paused sources
     } else {
         ALbuffer *buffer = NULL;
         if (bufname && ((buffer = get_buffer(ctx, bufname, NULL)) == NULL)) {
@@ -4109,7 +4100,7 @@ static void source_play(ALCcontext *ctx, const ALsizei n, const ALuint *names)
             ptr = item->next;
         } while (!SDL_CompareAndSwapAtomicPointer(&ctx->device->playback.source_todo_pool, item, ptr));
 
-        if (!item) {  /* allocate a new item */
+        if (!item) {  // allocate a new item
             item = (SourcePlayTodo *) SDL_calloc(1, sizeof (SourcePlayTodo));
             if (!item) {
                 set_al_error(ctx, AL_OUT_OF_MEMORY);
@@ -4124,7 +4115,7 @@ static void source_play(ALCcontext *ctx, const ALsizei n, const ALuint *names)
     }
 
     if (failed) {
-        /* put the whole new queue back in the pool for reuse later. */
+        // put the whole new queue back in the pool for reuse later.
         if (todo.next) {
             do {
                 ptr = SDL_GetAtomicPointer(&ctx->device->playback.source_todo_pool);
@@ -4156,7 +4147,7 @@ static void source_play(ALCcontext *ctx, const ALsizei n, const ALuint *names)
                hang there forever). */
             SDL_SetAtomicInt(&src->state, AL_PLAYING);
 
-            /* Mark this as visible to the mixer. This will be set back to zero by the mixer thread when it is done with the source. */
+            // Mark this as visible to the mixer. This will be set back to zero by the mixer thread when it is done with the source.
             SDL_SetAtomicInt(&src->mixer_accessible, 1);
 
             todoptr->source = src;
@@ -4229,7 +4220,7 @@ static float source_get_offset(ALsource *src, ALenum param)
     int framesize = sizeof (float);
     int freq = 1;
     if (src->type == AL_STREAMING) {
-        /* streaming: the offset counts from the first processed buffer in the queue. */
+        // streaming: the offset counts from the first processed buffer in the queue.
         BufferQueueItem *item = src->buffer_queue.head;
         if (item) {
             framesize = (int) (item->buffer->spec.channels * sizeof (float));
@@ -4262,7 +4253,7 @@ static void source_set_offset(ALsource *src, ALenum param, ALfloat value)
 
     lock_source(src);
 
-    if (src->type == AL_UNDETERMINED) {  /* no buffer to seek in */
+    if (src->type == AL_UNDETERMINED) {  // no buffer to seek in
         set_al_error(ctx, AL_INVALID_OPERATION);
     } else if (src->type == AL_STREAMING) {
         FIXME("set_offset for streaming sources not implemented");
@@ -4285,7 +4276,7 @@ static void source_set_offset(ALsource *src, ALenum param, ALfloat value)
                 break;
             default:
                 SDL_assert(!"Unexpected source offset type!");
-                set_al_error(ctx, AL_INVALID_ENUM);  /* this is a MojoAL bug, not an app bug, but we'll try to recover. */
+                set_al_error(ctx, AL_INVALID_ENUM);  // this is a MojoAL bug, not an app bug, but we'll try to recover.
                 okay = AL_FALSE;
                 break;
         }
@@ -4294,7 +4285,7 @@ static void source_set_offset(ALsource *src, ALenum param, ALfloat value)
             if ((offset < 0) || (offset > bufflen)) {
                 set_al_error(ctx, AL_INVALID_VALUE);
             } else {
-                /* make sure the offset lands on a sample frame boundary. */
+                // make sure the offset lands on a sample frame boundary.
                 offset -= offset % framesize;
 
                 SDL_ClearAudioStream(src->stream);
@@ -4312,7 +4303,7 @@ static void source_set_offset(ALsource *src, ALenum param, ALfloat value)
     unlock_source(src);
 }
 
-/* deal with alSourcePlay and alSourcePlayv (etc) boiler plate... */
+// deal with alSourcePlay and alSourcePlayv (etc) boiler plate...
 #define SOURCE_STATE_TRANSITION_OP(alfn, fn) \
     void alSource##alfn(ALuint name) { source_##fn(get_current_context(), name); } \
     void alSource##alfn##v(ALsizei n, const ALuint *sources) { \
@@ -4366,14 +4357,14 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
         set_al_error(ctx, AL_INVALID_VALUE);
         return;
     } else if (nb == 0) {
-        return;  /* not an error, but nothing to do. */
+        return;  // not an error, but nothing to do.
     }
 
-    for (i = nb; i > 0; i--) {  /* build list in reverse */
+    for (i = nb; i > 0; i--) {  // build list in reverse
         BufferQueueItem *item = NULL;
         const ALuint bufname = bufnames[i-1];
         ALbuffer *buffer = bufname ? get_buffer(ctx, bufname, NULL) : NULL;
-        if (!buffer && bufname) {  /* uhoh, bad buffer name! */
+        if (!buffer && bufname) {  // uhoh, bad buffer name!
             set_al_error(ctx, AL_INVALID_VALUE);
             failed = AL_TRUE;
             break;
@@ -4385,7 +4376,7 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
                 queue_channels = buffer->spec.channels;
                 queue_frequency = buffer->spec.freq;
             } else if ((queue_channels != buffer->spec.channels) || (queue_frequency != buffer->spec.freq)) {
-                /* the whole queue must be the same format. */
+                // the whole queue must be the same format.
                 set_al_error(ctx, AL_INVALID_VALUE);
                 failed = AL_TRUE;
                 break;
@@ -4395,7 +4386,7 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
         item = ctx->device->playback.buffer_queue_pool;
         if (item) {
             ctx->device->playback.buffer_queue_pool = (BufferQueueItem*)item->next;
-        } else {  /* allocate a new item */
+        } else {  // allocate a new item
             item = (BufferQueueItem *) SDL_calloc(1, sizeof (BufferQueueItem));
             if (!item) {
                 set_al_error(ctx, AL_OUT_OF_MEMORY);
@@ -4405,7 +4396,7 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
         }
 
         if (buffer) {
-            SDL_AtomicIncRef(&buffer->refcount);  /* mark it as in-use. */
+            SDL_AtomicIncRef(&buffer->refcount);  // mark it as in-use.
         }
         item->buffer = buffer;
 
@@ -4420,7 +4411,7 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
 
     if (failed) {
         if (queue) {
-            /* Drop our claim on any buffers we planned to queue. */
+            // Drop our claim on any buffers we planned to queue.
             BufferQueueItem *item;
             for (item = queue; item != NULL; item = (BufferQueueItem*)item->next) {
                 if (item->buffer) {
@@ -4428,7 +4419,7 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
                 }
             }
 
-            /* put the whole new queue back in the pool for reuse later. */
+            // put the whole new queue back in the pool for reuse later.
             queueend->next = ctx->device->playback.buffer_queue_pool;
             ctx->device->playback.buffer_queue_pool = queue;
         }
@@ -4491,7 +4482,7 @@ static void _alSourceUnqueueBuffers(const ALuint name, const ALsizei nb, ALuint 
         set_al_error(ctx, AL_INVALID_VALUE);
         return;
     } else if (nb == 0) {
-        return;  /* not an error, but nothing to do. */
+        return;  // not an error, but nothing to do.
     }
 
     if (((ALsizei) SDL_GetAtomicInt(&src->buffer_queue_processed.num_items)) < nb) {
@@ -4506,7 +4497,7 @@ static void _alSourceUnqueueBuffers(const ALuint name, const ALsizei nb, ALuint 
 
     item = queue = src->buffer_queue_processed.head;
     for (i = 0; i < nb; i++) {
-        /* buffer_queue_processed.num_items said list was long enough. */
+        // buffer_queue_processed.num_items said list was long enough.
         SDL_assert(item != NULL);
         item = (BufferQueueItem*)item->next;
     }
@@ -4525,14 +4516,14 @@ static void _alSourceUnqueueBuffers(const ALuint name, const ALsizei nb, ALuint 
         item = (BufferQueueItem*)item->next;
     }
 
-    /* put the whole new queue back in the pool for reuse later. */
+    // put the whole new queue back in the pool for reuse later.
     SDL_assert(queueend != NULL);
     queueend->next = ctx->device->playback.buffer_queue_pool;
     ctx->device->playback.buffer_queue_pool = queue;
 }
 ENTRYPOINTVOID(alSourceUnqueueBuffers,(ALuint name, ALsizei nb, ALuint *bufnames),(name,nb,bufnames))
 
-/* !!! FIXME: buffers and sources use almost identical code for blocks */
+// !!! FIXME: buffers and sources use almost identical code for blocks
 static void _alGenBuffers(const ALsizei n, ALuint *names)
 {
     ALCcontext *ctx = get_current_context();
@@ -4552,7 +4543,7 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
         set_al_error(ctx, AL_INVALID_OPERATION);
         return;
     } else if (n == 0) {
-        return;  /* not an error, but nothing to do. */
+        return;  // not an error, but nothing to do.
     }
 
     if (n <= SDL_arraysize(stackobjs)) {
@@ -4569,12 +4560,12 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
     for (blocki = 0; blocki < totalblocks; blocki++) {
         BufferBlock *block = ctx->device->playback.buffer_blocks[blocki];
         block->tmp = 0;
-        if (block->used < SDL_arraysize(block->buffers)) {  /* skip if full */
+        if (block->used < SDL_arraysize(block->buffers)) {  // skip if full
             for (i = 0; i < SDL_arraysize(block->buffers); i++) {
                 if (!block->buffers[i].allocated) {
                     block->tmp++;
                     objects[found] = &block->buffers[i];
-                    names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
+                    names[found++] = (i + block_offset) + 1;  // +1 so it isn't zero.
                     if (found == n) {
                         break;
                     }
@@ -4589,8 +4580,8 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
         block_offset += SDL_arraysize(block->buffers);
     }
 
-    while (found < n) {  /* out of blocks? Add new ones. */
-        /* ctx->buffer_blocks is only accessed on the API thread under a mutex, so it's safe to realloc. */
+    while (found < n) {  // out of blocks? Add new ones.
+        // ctx->buffer_blocks is only accessed on the API thread under a mutex, so it's safe to realloc.
         void *ptr = SDL_realloc(ctx->device->playback.buffer_blocks, sizeof (BufferBlock *) * (totalblocks + 1));
         BufferBlock *block;
 
@@ -4612,7 +4603,7 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
         for (i = 0; i < SDL_arraysize(block->buffers); i++) {
             block->tmp++;
             objects[found] = &block->buffers[i];
-            names[found++] = (i + block_offset) + 1;  /* +1 so it isn't zero. */
+            names[found++] = (i + block_offset) + 1;  // +1 so it isn't zero.
             if (found == n) {
                 break;
             }
@@ -4627,9 +4618,9 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
         return;
     }
 
-    SDL_assert(found == n);  /* we should have either gotten space or bailed on alloc failure */
+    SDL_assert(found == n);  // we should have either gotten space or bailed on alloc failure
 
-    /* update the "used" field in blocks with items we are taking now. */
+    // update the "used" field in blocks with items we are taking now.
     found = 0;
     for (blocki = 0; found < n; blocki++) {
         BufferBlock *block = ctx->device->playback.buffer_blocks[blocki];
@@ -4646,14 +4637,14 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
 
     for (i = 0; i < n; i++) {
         ALbuffer *buffer = objects[i];
-        /*printf("Generated buffer %u\n", (unsigned int) names[i]);*/
+        //SDL_Log("Generated buffer %u", (unsigned int) names[i]);
         SDL_assert(!buffer->allocated);
         SDL_zerop(buffer);
         buffer->name = names[i];
         buffer->spec.format = SDL_AUDIO_S16;
         buffer->spec.channels = 1;
         buffer->spec.freq = 0;
-        buffer->allocated = AL_TRUE;  /* we officially own it. */
+        buffer->allocated = AL_TRUE;  // we officially own it.
     }
 
     if (objects != stackobjs) SDL_free(objects);
@@ -4672,21 +4663,21 @@ static void _alDeleteBuffers(const ALsizei n, const ALuint *names)
         set_al_error(ctx, AL_INVALID_OPERATION);
         return;
     } else if (n == 0) {
-        return;  /* not an error, but nothing to do. */
+        return;  // not an error, but nothing to do.
     }
 
     for (i = 0; i < n; i++) {
         const ALuint name = names[i];
         if (name == 0) {
-            /* ignore it. */
+            // ignore it.
         } else {
             ALbuffer *buffer = get_buffer(ctx, name, NULL);
             if (!buffer) {
-                /* "If one or more of the specified names is not valid, an AL_INVALID_NAME error will be recorded, and no objects will be deleted." */
+                // "If one or more of the specified names is not valid, an AL_INVALID_NAME error will be recorded, and no objects will be deleted."
                 set_al_error(ctx, AL_INVALID_NAME);
                 return;
             } else if (SDL_GetAtomicInt(&buffer->refcount) != 0) {
-                set_al_error(ctx, AL_INVALID_OPERATION);  /* still in use */
+                set_al_error(ctx, AL_INVALID_OPERATION);  // still in use
                 return;
             }
         }
@@ -4732,7 +4723,7 @@ static void _alBufferData(const ALuint name, const ALenum alfmt, const ALvoid *d
         set_al_error(ctx, AL_INVALID_VALUE);
         return;
     } else if (freq < 0) {
-        return;  /* not an error, but nothing to do. */
+        return;  // not an error, but nothing to do.
     }
 
     FIXME("spec: 'The size given is the number of bytes, and must be logical for the format given -- an odd value for 16-bit data will always be an error, for example. An invalid size will result in an AL_INVALID_VALUE error.'");
@@ -4743,20 +4734,20 @@ static void _alBufferData(const ALuint name, const ALenum alfmt, const ALvoid *d
     }
     spec.freq = (int) freq;
 
-    /* increment refcount so this can't be deleted or alBufferData'd from another thread */
+    // increment refcount so this can't be deleted or alBufferData'd from another thread
     prevrefcount = SDL_AtomicIncRef(&buffer->refcount);
     SDL_assert(prevrefcount >= 0);
     if (prevrefcount != 0) {
-        /* this buffer is being used by some source. Unqueue it first. */
+        // this buffer is being used by some source. Unqueue it first.
         (void) SDL_AtomicDecRef(&buffer->refcount);
         set_al_error(ctx, AL_INVALID_OPERATION);
         return;
     }
 
-    /* This check was from the wild west of lock-free programming, now we shouldn't pass get_buffer() if not allocated. */
+    // This check was from the wild west of lock-free programming, now we shouldn't pass get_buffer() if not allocated.
     SDL_assert(buffer->allocated);
 
-    /* make a copy of the data for later. No conversion here, we'll push it through an SDL_AudioStream as needed. */
+    // make a copy of the data for later. No conversion here, we'll push it through an SDL_AudioStream as needed.
     SDL_assert(sizeof (SDL_AtomicInt) <= simd_alignment);
     void *alignedptr = SDL_aligned_alloc(simd_alignment, size + simd_alignment);
     if (!alignedptr) {
@@ -4775,61 +4766,61 @@ static void _alBufferData(const ALuint name, const ALenum alfmt, const ALvoid *d
     SDL_copyp(&buffer->spec, &spec);
     buffer->data = newdata;
     buffer->len = size;
-    (void) SDL_AtomicDecRef(&buffer->refcount);  /* ready to go! */
+    (void) SDL_AtomicDecRef(&buffer->refcount);  // ready to go!
 }
 ENTRYPOINTVOID(alBufferData,(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, ALsizei freq),(name,alfmt,data,size,freq))
 
 static void _alBufferfv(const ALuint name, const ALenum param, const ALfloat *values)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in core OpenAL 1.1 uses this
 }
 ENTRYPOINTVOID(alBufferfv,(ALuint name, ALenum param, const ALfloat *values),(name,param,values))
 
 static void _alBufferf(const ALuint name, const ALenum param, const ALfloat value)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in core OpenAL 1.1 uses this
 }
 ENTRYPOINTVOID(alBufferf,(ALuint name, ALenum param, ALfloat value),(name,param,value))
 
 static void _alBuffer3f(const ALuint name, const ALenum param, const ALfloat value1, const ALfloat value2, const ALfloat value3)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in core OpenAL 1.1 uses this
 }
 ENTRYPOINTVOID(alBuffer3f,(ALuint name, ALenum param, ALfloat value1, ALfloat value2, ALfloat value3),(name,param,value1,value2,value3))
 
 static void _alBufferiv(const ALuint name, const ALenum param, const ALint *values)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in core OpenAL 1.1 uses this
 }
 ENTRYPOINTVOID(alBufferiv,(ALuint name, ALenum param, const ALint *values),(name,param,values))
 
 static void _alBufferi(const ALuint name, const ALenum param, const ALint value)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in core OpenAL 1.1 uses this
 }
 ENTRYPOINTVOID(alBufferi,(ALuint name, ALenum param, ALint value),(name,param,value))
 
 static void _alBuffer3i(const ALuint name, const ALenum param, const ALint value1, const ALint value2, const ALint value3)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in core OpenAL 1.1 uses this
 }
 ENTRYPOINTVOID(alBuffer3i,(ALuint name, ALenum param, ALint value1, ALint value2, ALint value3),(name,param,value1,value2,value3))
 
 static void _alGetBufferfv(const ALuint name, const ALenum param, const ALfloat *values)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in core OpenAL 1.1 uses this
 }
 ENTRYPOINTVOID(alGetBufferfv,(ALuint name, ALenum param, ALfloat *values),(name,param,values))
 
 static void _alGetBufferf(const ALuint name, const ALenum param, ALfloat *value)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in core OpenAL 1.1 uses this
 }
 ENTRYPOINTVOID(alGetBufferf,(ALuint name, ALenum param, ALfloat *value),(name,param,value))
 
 static void _alGetBuffer3f(const ALuint name, const ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *value3)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  /* nothing in core OpenAL 1.1 uses this */
+    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in core OpenAL 1.1 uses this
 }
 ENTRYPOINTVOID(alGetBuffer3f,(ALuint name, ALenum param, ALfloat *value1, ALfloat *value2, ALfloat *value3),(name,param,value1,value2,value3))
 
@@ -4849,7 +4840,7 @@ ENTRYPOINTVOID(alGetBufferi,(ALuint name, ALenum param, ALint *value),(name,para
 
 static void _alGetBuffer3i(const ALuint name, const ALenum param, ALint *value1, ALint *value2, ALint *value3)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM); /* nothing in core OpenAL 1.1 uses this */
+    set_al_error(get_current_context(), AL_INVALID_ENUM); // nothing in core OpenAL 1.1 uses this
 }
 ENTRYPOINTVOID(alGetBuffer3i,(ALuint name, ALenum param, ALint *value1, ALint *value2, ALint *value3),(name,param,value1,value2,value3))
 
@@ -4869,5 +4860,5 @@ static void _alGetBufferiv(const ALuint name, const ALenum param, ALint *values)
 }
 ENTRYPOINTVOID(alGetBufferiv,(ALuint name, ALenum param, ALint *values),(name,param,values))
 
-/* end of mojoal.c ... */
+// end of mojoal.c ...
 
