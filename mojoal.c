@@ -204,11 +204,6 @@ The locking strategy for this OpenAL implementation:
 }
 #endif
 
-/* restrict is from C99, but __restrict works with both Visual Studio and GCC. */
-#if !defined(restrict) && ((!defined(__STDC_VERSION__) || (__STDC_VERSION__ < 199901)))
-#define restrict __restrict
-#endif
-
 #if defined(SDL_SSE_INTRINSICS)   /* we assume you always have this on x86/x86-64 chips. SSE1 is 20+ years old! */
 #define has_sse 1
 #endif
@@ -933,7 +928,7 @@ static ALCboolean alcfmt_to_sdlfmt(const ALCenum alfmt, SDL_AudioFormat *sdlfmt,
     return ALC_TRUE;
 }
 
-static void mix_float32_mono_to_mono_scalar(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+static void mix_float32_mono_to_mono_scalar(const ALfloat * SDL_RESTRICT panning, const float * SDL_RESTRICT data, float * SDL_RESTRICT stream, const ALsizei mixframes)
 {
     const ALfloat adjust = panning[0];
     const int unrolled = mixframes / 4;
@@ -963,7 +958,7 @@ static void mix_float32_mono_to_mono_scalar(const ALfloat * restrict panning, co
     }
 }
 
-static void mix_float32_stereo_to_mono_scalar(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+static void mix_float32_stereo_to_mono_scalar(const ALfloat * SDL_RESTRICT panning, const float * SDL_RESTRICT data, float * SDL_RESTRICT stream, const ALsizei mixframes)
 {
     const ALfloat adjust = panning[0];
     const int unrolled = mixframes / 4;
@@ -993,7 +988,7 @@ static void mix_float32_stereo_to_mono_scalar(const ALfloat * restrict panning, 
     }
 }
 
-static void mix_float32_mono_to_stereo_scalar(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+static void mix_float32_mono_to_stereo_scalar(const ALfloat * SDL_RESTRICT panning, const float * SDL_RESTRICT data, float * SDL_RESTRICT stream, const ALsizei mixframes)
 {
     const ALfloat left = panning[0];
     const ALfloat right = panning[1];
@@ -1044,7 +1039,7 @@ static void mix_float32_mono_to_stereo_scalar(const ALfloat * restrict panning, 
     }
 }
 
-static void mix_float32_stereo_to_stereo_scalar(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+static void mix_float32_stereo_to_stereo_scalar(const ALfloat * SDL_RESTRICT panning, const float * SDL_RESTRICT data, float * SDL_RESTRICT stream, const ALsizei mixframes)
 {
     const ALfloat left = panning[0];
     const ALfloat right = panning[1];
@@ -1087,7 +1082,7 @@ static void mix_float32_stereo_to_stereo_scalar(const ALfloat * restrict panning
 
 /* so the idea is that this mixer is used when rendering for a system with >= 3 speakers. Since this is either an unspatialized stereo source or using VBAP2D, we always mix to exactly 2 speakers,
    although they might be any 2 arbitary channels. */
-static void mix_float32_mono_to_surround_scalar(const ALfloat * restrict panning, const int output_channels, const int * restrict speakers, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+static void mix_float32_mono_to_surround_scalar(const ALfloat * SDL_RESTRICT panning, const int output_channels, const int * SDL_RESTRICT speakers, const float * SDL_RESTRICT data, float * SDL_RESTRICT stream, const ALsizei mixframes)
 {
     const ALfloat panning0 = panning[0];
     const ALfloat panning1 = panning[1];
@@ -1104,7 +1099,7 @@ static void mix_float32_mono_to_surround_scalar(const ALfloat * restrict panning
     }
 }
 
-static void mix_float32_stereo_to_surround_scalar(const ALfloat * restrict panning, const int output_channels, const int * restrict speakers, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+static void mix_float32_stereo_to_surround_scalar(const ALfloat * SDL_RESTRICT panning, const int output_channels, const int * SDL_RESTRICT speakers, const float * SDL_RESTRICT data, float * SDL_RESTRICT stream, const ALsizei mixframes)
 {
     const ALfloat panning0 = panning[0];
     const ALfloat panning1 = panning[1];
@@ -1121,7 +1116,7 @@ static void mix_float32_stereo_to_surround_scalar(const ALfloat * restrict panni
 }
 
 #if defined(SDL_SSE_INTRINSICS)
-static void SDL_TARGETING("sse") mix_float32_mono_to_stereo_sse(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+static void SDL_TARGETING("sse") mix_float32_mono_to_stereo_sse(const ALfloat * SDL_RESTRICT panning, const float * SDL_RESTRICT data, float * SDL_RESTRICT stream, const ALsizei mixframes)
 {
     const ALfloat left = panning[0];
     const ALfloat right = panning[1];
@@ -1183,14 +1178,13 @@ static void SDL_TARGETING("sse") mix_float32_mono_to_stereo_sse(const ALfloat * 
     }
 }
 
-static void SDL_TARGETING("sse") mix_float32_stereo_to_stereo_sse(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+static void SDL_TARGETING("sse") mix_float32_stereo_to_stereo_sse(const ALfloat * SDL_RESTRICT panning, const float * SDL_RESTRICT data, float * SDL_RESTRICT stream, const ALsizei mixframes)
 {
     const ALfloat left = panning[0];
     const ALfloat right = panning[1];
     const int unrolled = mixframes / 4;
     const int leftover = mixframes % 4;
     ALsizei i;
-
     /* We can align this to 16 in one special case. */
     if ( ((((size_t)stream) % 16) == 8) && ((((size_t)data) % 16) == 8) && mixframes ) {
         stream[0] += data[0] * left;
@@ -1231,7 +1225,7 @@ static void SDL_TARGETING("sse") mix_float32_stereo_to_stereo_sse(const ALfloat 
 #endif
 
 #if defined(SDL_NEON_INTRINSICS)
-static void SDL_TARGETING("neon") mix_float32_mono_to_stereo_neon(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+static void SDL_TARGETING("neon") mix_float32_mono_to_stereo_neon(const ALfloat * SDL_RESTRICT panning, const float * SDL_RESTRICT data, float * SDL_RESTRICT stream, const ALsizei mixframes)
 {
     const ALfloat left = panning[0];
     const ALfloat right = panning[1];
@@ -1293,7 +1287,7 @@ static void SDL_TARGETING("neon") mix_float32_mono_to_stereo_neon(const ALfloat 
     }
 }
 
-static void SDL_TARGETING("neon") mix_float32_stereo_to_stereo_neon(const ALfloat * restrict panning, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+static void SDL_TARGETING("neon") mix_float32_stereo_to_stereo_neon(const ALfloat * SDL_RESTRICT panning, const float * SDL_RESTRICT data, float * SDL_RESTRICT stream, const ALsizei mixframes)
 {
     const ALfloat left = panning[0];
     const ALfloat right = panning[1];
@@ -1353,7 +1347,7 @@ static void SDL_TARGETING("neon") mix_float32_stereo_to_stereo_neon(const ALfloa
 #endif
 
 
-static void mix_buffer(ALsource *src, const ALbuffer *buffer, const int output_channels, const float * restrict data, float * restrict stream, const ALsizei mixframes)
+static void mix_buffer(ALsource *src, const ALbuffer *buffer, const int output_channels, const float * SDL_RESTRICT data, float * SDL_RESTRICT stream, const ALsizei mixframes)
 {
     int i;
 
