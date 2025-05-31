@@ -6,19 +6,14 @@
  *  This file written by Ryan C. Gordon.
  */
 
-/* This is just test code, you don't need to compile this with MojoAL. */
-
-#include <stdio.h>
+// This is just test code, you don't need to compile this with MojoAL.
 
 #include "AL/al.h"
 #include "AL/alc.h"
 
+#define SDL_MAIN_USE_CALLBACKS 1
 #include <SDL3/SDL.h>
-
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#endif
-
+#include <SDL3/SDL_main.h>
 
 static LPALCTRACEDEVICELABEL palcTraceDeviceLabel;
 static LPALCTRACECONTEXTLABEL palcTraceContextLabel;
@@ -28,14 +23,19 @@ static LPALTRACEMESSAGE palTraceMessage;
 static LPALTRACEBUFFERLABEL palTraceBufferLabel;
 static LPALTRACESOURCELABEL palTraceSourceLabel;
 
-static int check_openal_error(const char *where)
+static ALCdevice *device = NULL;
+static ALCcontext *context = NULL;
+static SDL_Window *window = NULL;
+static SDL_Renderer *renderer = NULL;
+
+static bool check_openal_error(const char *where)
 {
     const ALenum err = alGetError();
     if (err != AL_NONE) {
-        printf("OpenAL Error at %s! %s (%u)\n", where, alGetString(err), (unsigned int) err);
-        return 1;
+        SDL_Log("OpenAL Error at %s! %s (%u)", where, alGetString(err), (unsigned int) err);
+        return true;
     }
-    return 0;
+    return false;
 }
 
 static ALenum get_openal_format(const SDL_AudioSpec *spec)
@@ -59,12 +59,13 @@ static ALenum get_openal_format(const SDL_AudioSpec *spec)
 typedef struct
 {
     ALuint sid;
+    ALuint bid;
     float x;
     float y;
 } obj;
 
-/* !!! FIXME: eventually, add more sources and sounds. */
-static obj objects[2];  /* one listener, one source. */
+// !!! FIXME: eventually, add more sources and sounds.
+static obj objects[2];  // one listener, one source.
 static int draggingobj = -1;
 
 static int obj_under_mouse(const float x, const float y)
@@ -81,213 +82,33 @@ static int obj_under_mouse(const float x, const float y)
     return -1;
 }
 
-static int mainloop(SDL_Renderer *renderer)
+SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
 {
-    int i;
-    SDL_Event e;
-
-    while (SDL_PollEvent(&e)) {
-        switch (e.type) {
-            case SDL_EVENT_QUIT:
-                return 0;
-
-            case SDL_EVENT_KEY_DOWN:
-                if (e.key.key == SDLK_ESCAPE) {
-                    return 0;
-                }
-                break;
-
-            case SDL_EVENT_MOUSE_BUTTON_UP:
-            case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                if (e.button.button == 1) {
-                    if (!e.button.down) {
-                        if (palTraceMessage) palTraceMessage("Mouse button released");
-                        draggingobj = -1;
-                    } else {
-                        if (palTraceMessage) palTraceMessage("Mouse button pressed");
-                        draggingobj = obj_under_mouse(e.button.x, e.button.y);
-                    }
-                }
-                break;
-
-            case SDL_EVENT_MOUSE_MOTION:
-                if (draggingobj != -1) {
-                    obj *o = &objects[draggingobj];
-                    o->x = SDL_min(800.0f, SDL_max(0.0f, e.motion.x));
-                    o->y = SDL_min(600.0f, SDL_max(0.0f, e.motion.y));
-                    /* we are treating the 2D view as the X and Z coordinate, as if we're looking at it from above.
-                       From this configuration, the Y coordinate would be depth, and we leave that at zero.
-                       the listener's default "at" orientation is towards the north in this configuration, with its
-                       "up" pointing at the camera. Since we are rendering the audio in relation to a listener we
-                       move around in 2D space in the camera's view, it's obviously detached from the camera itself. */
-                    if (o->sid == 0) {  /* it's the listener. */
-                        alListener3f(AL_POSITION, ((o->x / 400.0f) - 1.0f) * 10.0f, 0.0f, ((o->y / 300.0f) - 1.0f) * 10.0f);
-                    } else {
-                        alSource3f(o->sid, AL_POSITION, ((o->x / 400.0f) - 1.0f) * 10.0f, 0.0f, ((o->y / 300.0f) - 1.0f) * 10.0f);
-                    }
-                }
-                break;
-
-        }
-    }
-
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0xFF);
-    SDL_RenderClear(renderer);
-
-    for (i = 0; i < SDL_arraysize(objects); i++) {
-        const obj *o = &objects[i];
-        const SDL_FRect r = { o->x - 25, o->y - 25, 50, 50 };
-        if (o->sid == 0) {
-            SDL_SetRenderDrawColor(renderer, 0x00, 0xFF, 0x00, 0xFF);
-        } else {
-            SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0xFF, 0xFF);
-        }
-        SDL_RenderFillRect(renderer, &r);
-    }
-
-    SDL_RenderPresent(renderer);
-
-    return 1;
-}
-
-
-#ifdef __EMSCRIPTEN__
-static void emscriptenMainloop(void *arg)
-{
-    (void) mainloop((SDL_Renderer *) arg);
-}
-#endif
-
-
-static void spatialize(SDL_Renderer *renderer, const char *fname)
-{
-    obj *o = objects;
-    SDL_AudioSpec spec;
-    ALenum alfmt = AL_NONE;
-    Uint8 *buf = NULL;
-    Uint32 buflen = 0;
-    ALuint sid = 0;
-    ALuint bid = 0;
-
-    if (!SDL_LoadWAV(fname, &spec, &buf, &buflen)) {
-        printf("Loading '%s' failed! %s\n", fname, SDL_GetError());
-        return;
-    } else if ((alfmt = get_openal_format(&spec)) == AL_NONE) {
-        printf("Can't queue '%s', format not supported by the AL.\n", fname);
-        SDL_free(buf);
-        return;
-    }
-
-    check_openal_error("startup");
-
-    printf("Now queueing '%s'...\n", fname);
-
-    if (palTracePushScope) palTracePushScope("Initial setup");
-
-    alGenSources(1, &sid);
-    if (check_openal_error("alGenSources")) {
-        SDL_free(buf);
-        return;
-    }
-
-    if (palTraceSourceLabel) palTraceSourceLabel(sid, "Moving source");
-
-    alGenBuffers(1, &bid);
-    if (check_openal_error("alGenBuffers")) {
-        alDeleteSources(1, &sid);
-        check_openal_error("alDeleteSources");
-        SDL_free(buf);
-        return;
-    }
-
-    if (palTraceBufferLabel) palTraceBufferLabel(bid, "Sound effect");
-
-    alBufferData(bid, alfmt, buf, buflen, spec.freq);
-    SDL_free(buf);
-    check_openal_error("alBufferData");
-    alSourcei(sid, AL_BUFFER, bid);
-    check_openal_error("alSourcei");
-    alSourcei(sid, AL_LOOPING, AL_TRUE);
-    check_openal_error("alSourcei");
-    alSourcePlay(sid);
-    check_openal_error("alSourcePlay");
-
-    /* the listener. */
-    o->sid = 0;
-    o->x = 400.0f;
-    o->y = 300.0f;
-    alListener3f(AL_POSITION, ((o->x / 400.0f) - 1.0f) * 10.0f, 0.0f, ((o->y / 300.0f) - 1.0f) * 10.0f);
-    o++;
-
-    o->sid = sid;
-    o->x = 400.0f;
-    o->y = 50.0f;
-    alSource3f(o->sid, AL_POSITION, ((o->x / 400.0f) - 1.0f) * 10.0f, 0.0f, ((o->y / 300.0f) - 1.0f) * 10.0f);
-    o++;
-
-    if (palTracePopScope) palTracePopScope();
-
-    #ifdef __EMSCRIPTEN__
-    emscripten_set_main_loop_arg(emscriptenMainloop, renderer, 0, 1);
-    #else
-    while (mainloop(renderer)) { /* go again */ }
-    #endif
-
-
-    //alSourcei(sid, AL_BUFFER, 0);  /* force unqueueing */
-    alDeleteSources(1, &sid);
-    check_openal_error("alDeleteSources");
-    alDeleteBuffers(1, &bid);
-    check_openal_error("alDeleteBuffers");
-}
-
-
-int main(int argc, char **argv)
-{
-    ALCdevice *device;
-    ALCcontext *context;
-    SDL_Window *window;
-    SDL_Renderer *renderer;
+    SDL_SetAppMetadata("MojoAL testposition", "1.0", "org.icculus.mojoal-testposition");
 
     if (argc != 2) {
-        fprintf(stderr, "USAGE: %s [wavfile]\n", argv[0]);
-        return 1;
+        SDL_Log("USAGE: %s [wavfile]", argv[0]);
+        return SDL_APP_FAILURE;
     }
+
+    const char *fname = argv[1];
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
-        fprintf(stderr, "SDL_Init(SDL_INIT_VIDEO) failed: %s\n", SDL_GetError());
-        return 2;
+        SDL_Log("SDL_Init(SDL_INIT_VIDEO) failed: %s", SDL_GetError());
+        return SDL_APP_FAILURE;
     }
 
-    window = SDL_CreateWindow(argv[0], 800, 600, SDL_WINDOW_RESIZABLE);
-
-    if (!window) {
-        fprintf(stderr, "SDL_CreateWindow() failed: %s\n", SDL_GetError());
-        SDL_Quit();
-        return 3;
+    if (!SDL_CreateWindowAndRenderer("MojoAL testposition", 800, 600, SDL_WINDOW_RESIZABLE, &window, &renderer)) {
+        SDL_Log("Couldn't create window/renderer: %s", SDL_GetError());
+        return SDL_APP_FAILURE;
     }
 
-    renderer = SDL_CreateRenderer(window, NULL);
-    if (!renderer) {
-        fprintf(stderr, "SDL_CreateRenderer() failed: %s\n", SDL_GetError());
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 4;
-    }
-    SDL_SetRenderLogicalPresentation(renderer, 800, 600,
-                                     SDL_LOGICAL_PRESENTATION_LETTERBOX);
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0xFF);
-    SDL_RenderClear(renderer);
-    SDL_RenderPresent(renderer);
+    SDL_SetRenderLogicalPresentation(renderer, 800, 600, SDL_LOGICAL_PRESENTATION_LETTERBOX);
 
     device = alcOpenDevice(NULL);
-    if (!device)
-    {
-        printf("Couldn't open OpenAL default device.\n");
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 5;
+    if (!device) {
+        SDL_Log("Couldn't open OpenAL default device.");
+        return SDL_APP_FAILURE;
     }
 
     if (alcIsExtensionPresent(device, "ALC_EXT_trace_info")) {
@@ -297,12 +118,8 @@ int main(int argc, char **argv)
 
     context = alcCreateContext(device, NULL);
     if (!context) {
-        printf("Couldn't create OpenAL context.\n");
-        alcCloseDevice(device);
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 6;
+        SDL_Log("Couldn't create OpenAL context.");
+        return SDL_APP_FAILURE;
     }
 
     if (palcTraceDeviceLabel) palcTraceDeviceLabel(device, "The playback device");
@@ -318,20 +135,179 @@ int main(int argc, char **argv)
         palTraceSourceLabel = (LPALTRACESOURCELABEL) alGetProcAddress("alTraceSourceLabel");
     }
 
-    spatialize(renderer, argv[1]);
+    obj *o = objects;
+    SDL_AudioSpec spec;
+    ALenum alfmt = AL_NONE;
+    Uint8 *buf = NULL;
+    Uint32 buflen = 0;
+    ALuint sid = 0;
+    ALuint bid = 0;
 
-    alcMakeContextCurrent(NULL);
-    alcDestroyContext(context);
-    alcCloseDevice(device);
+    if (!SDL_LoadWAV(fname, &spec, &buf, &buflen)) {
+        SDL_Log("Loading '%s' failed! %s", fname, SDL_GetError());
+        return SDL_APP_FAILURE;
+    } else if ((alfmt = get_openal_format(&spec)) == AL_NONE) {
+        SDL_Log("Can't queue '%s', format not supported by the AL.", fname);
+        SDL_free(buf);
+        return SDL_APP_FAILURE;
+    }
 
+    check_openal_error("startup");
 
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    SDL_Quit();
+    SDL_Log("Now queueing '%s'...", fname);
 
-    printf("Done!\n");
-    return 0;
+    if (palTracePushScope) palTracePushScope("Initial setup");
+
+    alGenSources(1, &sid);
+    if (check_openal_error("alGenSources")) {
+        SDL_free(buf);
+        return SDL_APP_FAILURE;
+    }
+
+    if (palTraceSourceLabel) palTraceSourceLabel(sid, "Moving source");
+
+    alGenBuffers(1, &bid);
+    if (check_openal_error("alGenBuffers")) {
+        alDeleteSources(1, &sid);
+        check_openal_error("alDeleteSources");
+        SDL_free(buf);
+        return SDL_APP_FAILURE;
+    }
+
+    if (palTraceBufferLabel) palTraceBufferLabel(bid, "Sound effect");
+
+    alBufferData(bid, alfmt, buf, buflen, spec.freq);
+    SDL_free(buf);
+    check_openal_error("alBufferData");
+    alSourcei(sid, AL_BUFFER, bid);
+    check_openal_error("alSourcei");
+    alSourcei(sid, AL_LOOPING, AL_TRUE);
+    check_openal_error("alSourcei");
+
+    // the listener.
+    o->sid = 0;
+    o->bid = 0;
+    o->x = 400.0f;
+    o->y = 300.0f;
+    alListener3f(AL_POSITION, ((o->x / 400.0f) - 1.0f) * 10.0f, 0.0f, ((o->y / 300.0f) - 1.0f) * 10.0f);
+    o++;
+
+    o->sid = sid;
+    o->bid = bid;
+    o->x = 400.0f;
+    o->y = 50.0f;
+    alSource3f(o->sid, AL_POSITION, ((o->x / 400.0f) - 1.0f) * 10.0f, 0.0f, ((o->y / 300.0f) - 1.0f) * 10.0f);
+    o++;
+
+    alSourcePlay(sid);
+    check_openal_error("alSourcePlay");
+
+    if (palTracePopScope) palTracePopScope();
+
+    return SDL_APP_CONTINUE;
 }
 
-/* end of testposition.c ... */
+SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
+{
+    switch (event->type) {
+        case SDL_EVENT_QUIT:
+            return SDL_APP_SUCCESS;
+
+        case SDL_EVENT_KEY_DOWN:
+            if (event->key.key == SDLK_ESCAPE) {
+                return SDL_APP_SUCCESS;
+            }
+            break;
+
+        case SDL_EVENT_MOUSE_BUTTON_UP:
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            if (event->button.button == 1) {
+                if (!event->button.down) {
+                    if (palTraceMessage) palTraceMessage("Mouse button released");
+                    draggingobj = -1;
+                } else {
+                    if (palTraceMessage) palTraceMessage("Mouse button pressed");
+                    draggingobj = obj_under_mouse(event->button.x, event->button.y);
+                }
+            }
+            break;
+
+        case SDL_EVENT_MOUSE_MOTION:
+            if (draggingobj != -1) {
+                obj *o = &objects[draggingobj];
+                o->x = SDL_min(800.0f, SDL_max(0.0f, event->motion.x));
+                o->y = SDL_min(600.0f, SDL_max(0.0f, event->motion.y));
+                /* we are treating the 2D view as the X and Z coordinate, as if we're looking at it from above.
+                   From this configuration, the Y coordinate would be depth, and we leave that at zero.
+                   the listener's default "at" orientation is towards the north in this configuration, with its
+                   "up" pointing at the camera. Since we are rendering the audio in relation to a listener we
+                   move around in 2D space in the camera's view, it's obviously detached from the camera itself. */
+                if (o->sid == 0) {  // it's the listener.
+                    alListener3f(AL_POSITION, ((o->x / 400.0f) - 1.0f) * 10.0f, 0.0f, ((o->y / 300.0f) - 1.0f) * 10.0f);
+                    check_openal_error("alListener3f");
+                } else {
+                    alSource3f(o->sid, AL_POSITION, ((o->x / 400.0f) - 1.0f) * 10.0f, 0.0f, ((o->y / 300.0f) - 1.0f) * 10.0f);
+                    check_openal_error("alSource3f");
+                }
+            }
+            break;
+    }
+
+    return SDL_APP_CONTINUE;
+}
+
+SDL_AppResult SDL_AppIterate(void *appstate)
+{
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0xFF);
+    SDL_RenderClear(renderer);
+
+    for (int i = 0; i < SDL_arraysize(objects); i++) {
+        const obj *o = &objects[i];
+        const SDL_FRect r = { o->x - 25, o->y - 25, 50, 50 };
+        if (o->sid == 0) {
+            SDL_SetRenderDrawColor(renderer, 0x00, 0xFF, 0x00, 0xFF);
+        } else {
+            SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0xFF, 0xFF);
+        }
+        SDL_RenderFillRect(renderer, &r);
+    }
+
+    SDL_RenderPresent(renderer);
+    return SDL_APP_CONTINUE;
+}
+
+// This function runs once at shutdown.
+void SDL_AppQuit(void *appstate, SDL_AppResult result)
+{
+    for (int i = 0; i < SDL_arraysize(objects); i++) {
+        obj *o = &objects[i];
+        if (o->sid) {
+            alSourceStop(o->sid);
+            check_openal_error("alSourceStop");
+            alSourcei(o->sid, AL_BUFFER, 0);
+            check_openal_error("alSourcei");
+            alDeleteSources(1, &o->sid);
+            check_openal_error("alDeleteSources");
+        }
+        if (o->bid) {
+            alDeleteBuffers(1, &o->bid);
+            check_openal_error("alDeleteBuffers");
+        }
+    }
+
+    if (context) {
+        alcMakeContextCurrent(NULL);
+        alcDestroyContext(context);
+    }
+
+    if (device) {
+        alcCloseDevice(device);
+    }
+
+    if (result == SDL_APP_SUCCESS) {
+        SDL_Log("Done!");
+    }
+}
+
+// end of testposition.c ...
 
