@@ -254,7 +254,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (SDL_Init(SDL_INIT_VIDEO) == -1) {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
         fprintf(stderr, "SDL_Init(SDL_INIT_VIDEO) failed: %s\n", SDL_GetError());
         return 2;
     }
