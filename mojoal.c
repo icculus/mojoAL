@@ -2265,8 +2265,7 @@ static void _alcDestroyContext(ALCcontext *ctx)
     for (ALCsizei blocki = 0; blocki < ctx->num_source_blocks; blocki++) {
         SourceBlock *sb = ctx->source_blocks[blocki];
         if (sb->used > 0) {
-            ALsizei i;
-            for (i = 0; i < SDL_arraysize(sb->sources); i++) {
+            for (ALsizei i = 0; i < SDL_arraysize(sb->sources); i++) {
                 ALsource *src = &sb->sources[i];
                 if (!src->allocated) {
                     continue;
@@ -4284,11 +4283,10 @@ static void source_set_offset(ALsource *src, ALenum param, ALfloat value)
         } else if (!ctx) { \
             set_al_error(ctx, AL_INVALID_OPERATION); \
         } else { \
-            ALsizei i; \
             if (n > 1) { \
                 FIXME("Can we do this without a full context lock?"); \
                 SDL_LockAudioStream(ctx->stream);  /* lock the SDL device so these all start mixing in the same callback. */ \
-                for (i = 0; i < n; i++) { \
+                for (ALsizei i = 0; i < n; i++) { \
                     source_##fn(ctx, sources[i]); \
                 } \
                 SDL_UnlockAudioStream(ctx->stream); \
