@@ -948,7 +948,7 @@ static void SDL_TARGETING("neon") calculate_distance_attenuation_and_angle_neon(
         radians = SDL_acosf(cosangle);
     }
 
-    const foat32x4_t R_neon = xyzzy_neon(at_neon, up_neon);
+    const float32x4_t R_neon = xyzzy_neon(at_neon, up_neon);
     *_radians = (dotproduct_neon(R_neon, V_neon) < 0.0f) ? -radians : radians;
     *_gain = calculate_distance_attenuation(ctx, src, magnitude_neon(position_neon));
 }
