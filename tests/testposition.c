@@ -59,22 +59,22 @@ static ALenum get_openal_format(const SDL_AudioSpec *spec)
 typedef struct
 {
     ALuint sid;
-    int x;
-    int y;
+    float x;
+    float y;
 } obj;
 
 /* !!! FIXME: eventually, add more sources and sounds. */
 static obj objects[2];  /* one listener, one source. */
 static int draggingobj = -1;
 
-static int obj_under_mouse(const int x, const int y)
+static int obj_under_mouse(const float x, const float y)
 {
-    const SDL_Point p = { x, y };
+    const SDL_FPoint p = { x, y };
     const obj *o = objects;
     int i;
     for (i = 0; i < SDL_arraysize(objects); i++, o++) {
-        const SDL_Rect r = { o->x - 25, o->y - 25, 50, 50 };
-        if (SDL_PointInRect(&p, &r)) {
+        const SDL_FRect r = { o->x - 25.0f, o->y - 25.0f, 50.0f, 50.0f };
+        if (SDL_PointInRectFloat(&p, &r)) {
             return i;
         }
     }
@@ -113,8 +113,8 @@ static int mainloop(SDL_Renderer *renderer)
             case SDL_EVENT_MOUSE_MOTION:
                 if (draggingobj != -1) {
                     obj *o = &objects[draggingobj];
-                    o->x = SDL_min(800, SDL_max(0, e.motion.x));
-                    o->y = SDL_min(600, SDL_max(0, e.motion.y));
+                    o->x = SDL_min(800.0f, SDL_max(0.0f, e.motion.x));
+                    o->y = SDL_min(600.0f, SDL_max(0.0f, e.motion.y));
                     /* we are treating the 2D view as the X and Z coordinate, as if we're looking at it from above.
                        From this configuration, the Y coordinate would be depth, and we leave that at zero.
                        the listener's default "at" orientation is towards the north in this configuration, with its
@@ -214,14 +214,14 @@ static void spatialize(SDL_Renderer *renderer, const char *fname)
 
     /* the listener. */
     o->sid = 0;
-    o->x = 400;
-    o->y = 300;
+    o->x = 400.0f;
+    o->y = 300.0f;
     alListener3f(AL_POSITION, ((o->x / 400.0f) - 1.0f) * 10.0f, 0.0f, ((o->y / 300.0f) - 1.0f) * 10.0f);
     o++;
 
     o->sid = sid;
-    o->x = 400;
-    o->y = 50;
+    o->x = 400.0f;
+    o->y = 50.0f;
     alSource3f(o->sid, AL_POSITION, ((o->x / 400.0f) - 1.0f) * 10.0f, 0.0f, ((o->y / 300.0f) - 1.0f) * 10.0f);
     o++;
 
