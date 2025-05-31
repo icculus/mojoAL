@@ -577,6 +577,7 @@ struct ALCcontext_struct
 
     ALCdevice *device;
     SDL_AudioStream *stream;
+    SDL_AudioDeviceID device_id;  // logical device id.
     VBAP2D vbap2d;
 
     SDL_AudioSpec spec;
@@ -1843,8 +1844,8 @@ static void mix_disconnected_context(ALCcontext *ctx)
         }
 
         i->playlist_next = NULL;
-        SDL_SetAtomicInt(&i->mixer_accessible, 0);
         SDL_ClearAudioStream(i->stream);  // just in case.
+        SDL_SetAtomicInt(&i->mixer_accessible, 0);
         unlock_source(i);
     }
     ctx->playlist = NULL;
@@ -1857,23 +1858,8 @@ static void mix_disconnected_context(ALCcontext *ctx)
 static void SDLCALL context_callback(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount)
 {
     ALCcontext *ctx = (ALCcontext *) userdata;
-    ALCboolean connected = ALC_FALSE;
-
-    if (SDL_GetAtomicInt(&ctx->device->connected)) {
-#if 0
-// !!! FIXME: did this ever work? Why would the audio callback fire on a stopped device?
-        if (SDL_GetAudioDeviceStatus(device->playback.sdldevice) == SDL_AUDIO_STOPPED) {
-            SDL_SetAtomicInt(&device->connected, ALC_FALSE);
-        } else {
-            connected = ALC_TRUE;
-        }
-#else
-        connected = ALC_TRUE;
-#endif
-    }
-
     if (SDL_GetAtomicInt(&ctx->processing)) {
-        if (connected) {
+        if (SDL_GetAtomicInt(&ctx->device->connected)) {
             mix_context(ctx, stream, additional_amount);
         } else {
             mix_disconnected_context(ctx);
@@ -1911,6 +1897,23 @@ static void set_alc_error(ALCdevice *device, const ALCenum error)
 // all data written before the release barrier must be available before the recalc flag changes.
 #define context_needs_recalc(ctx) SDL_MemoryBarrierRelease(); ctx->recalc = AL_TRUE;
 #define source_needs_recalc(src) SDL_MemoryBarrierRelease(); src->recalc = AL_TRUE;
+
+// catch events to see if a device has disconnected.
+static bool SDLCALL DeviceDisconnectedEventWatcher(void *userdata, SDL_Event *event)
+{
+    ALCdevice *device = (ALCdevice *) userdata;
+    if (event->type == SDL_EVENT_AUDIO_DEVICE_REMOVED) {
+        if (device->device_id == event->adevice.which) {
+            //SDL_Log("MojoAL device=%p device_id=%u is DISCONNECTED", device, (unsigned int) device->device_id);
+            if (device->iscapture) {
+                SDL_PauseAudioStreamDevice(device->capture.stream);  // the app can still read existing data, but don't pull anymore (silence) from the device.
+                SDL_FlushAudioStream(device->capture.stream);
+            }
+            SDL_SetAtomicInt(&device->connected, (int) ALC_FALSE);
+        }
+    }
+    return true;
+}
 
 static ALCdevice *prep_alc_device(const char *devicename, const ALCboolean iscapture)
 {
@@ -1970,25 +1973,27 @@ static ALCdevice *prep_alc_device(const char *devicename, const ALCboolean iscap
         return NULL;
     }
 
-    ALCdevice *dev = (ALCdevice *) SDL_calloc(1, sizeof (*dev));
-    if (!dev) {
+    ALCdevice *device = (ALCdevice *) SDL_calloc(1, sizeof (*device));
+    if (!device) {
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return NULL;
     }
 
-    dev->device_id = devid;
+    device->device_id = devid;
 
-    dev->name = SDL_strdup(devicename);
-    if (!dev->name) {
-        SDL_free(dev);
+    device->name = SDL_strdup(devicename);
+    if (!device->name) {
+        SDL_free(device);
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return NULL;
     }
 
-    SDL_SetAtomicInt(&dev->connected, ALC_TRUE);
-    dev->iscapture = iscapture;
+    SDL_SetAtomicInt(&device->connected, (int) ALC_TRUE);
+    device->iscapture = iscapture;
 
-    return dev;
+    SDL_AddEventWatch(DeviceDisconnectedEventWatcher, device);
+
+    return device;
 }
 
 // no api lock; this creates it and otherwise doesn't have any state that can race
@@ -2019,6 +2024,8 @@ ALCboolean alcCloseDevice(ALCdevice *device)
             return ALC_FALSE;  // still buffers allocated.
         }
     }
+
+    SDL_RemoveEventWatch(DeviceDisconnectedEventWatcher, device);
 
     for (ALCsizei i = 0; i < device->playback.num_buffer_blocks; i++) {
         SDL_free(device->playback.buffer_blocks[i]);
@@ -2088,6 +2095,57 @@ static ALCboolean alcfmt_to_sdlfmt(const ALCenum alfmt, SDL_AudioFormat *sdlfmt,
 
     return ALC_TRUE;
 }
+
+// catch events to see if output device format has changed. This can let us move to/from surround sound support on the fly, not to mention spend less time doing unnecessary conversions.
+static bool SDLCALL ContextDeviceChangeEventWatcher(void *userdata, SDL_Event *event)
+{
+    if (event->type == SDL_EVENT_AUDIO_DEVICE_FORMAT_CHANGED) {
+        ALCcontext *ctx = (ALCcontext *) userdata;
+        if (ctx->device_id == event->adevice.which) {
+            // stop the whole world while we update everything.
+            grab_api_lock();
+            SDL_LockAudioStream(ctx->stream);
+
+            SDL_AudioSpec spec;
+            SDL_GetAudioDeviceFormat(ctx->device_id, &spec, NULL);
+            spec.format = SDL_AUDIO_F32;
+
+            //SDL_Log("Changing MojoAL context format for ctx=%p on device_id=%u", ctx, (unsigned int) ctx->device_id);
+            //SDL_Log("ctx=%p was { fmt=%s, channels=%d, freq=%d }", ctx, SDL_GetAudioFormatName(ctx->spec.format), ctx->spec.channels, ctx->spec.freq);
+            //SDL_Log("ctx=%p now { fmt=%s, channels=%d, freq=%d }", ctx, SDL_GetAudioFormatName(spec.format), spec.channels, spec.freq);
+
+            SDL_SetAudioStreamFormat(ctx->stream, &spec, NULL);  // the output end is connected to the logical device; it would have been updated by SDL.
+
+            if (ctx->spec.channels != spec.channels) {
+                VBAP2D_Init(&ctx->vbap2d, spec.channels);  // make sure we have the right speaker layout.
+            }
+
+            for (ALCsizei blocki = 0; blocki < ctx->num_source_blocks; blocki++) {
+                SourceBlock *sb = ctx->source_blocks[blocki];
+                if (sb->used > 0) {
+                    for (ALsizei i = 0; i < SDL_arraysize(sb->sources); i++) {
+                        ALsource *src = &sb->sources[i];
+                        if (src->allocated) {
+                            SDL_AudioSpec outspec;
+                            SDL_GetAudioStreamFormat(src->stream, &outspec, NULL);
+                            outspec.format = SDL_AUDIO_F32;
+                            outspec.freq = spec.freq;
+                            SDL_SetAudioStreamFormat(src->stream, NULL, &outspec);
+                        }
+                    }
+                }
+            }
+
+            SDL_copyp(&ctx->spec, &spec);
+
+            SDL_UnlockAudioStream(ctx->stream);
+            ungrab_api_lock();
+        }
+    }
+
+    return true;
+}
+
 
 static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
 {
@@ -2166,6 +2224,7 @@ static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
         return NULL;
     }
 
+    ctx->device_id = SDL_GetAudioStreamDevice(ctx->stream);
     SDL_copyp(&ctx->spec, &spec);
     ctx->framesize = SDL_AUDIO_FRAMESIZE(spec);
     ctx->distance_model = AL_INVERSE_DISTANCE_CLAMPED;
@@ -2188,6 +2247,8 @@ static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
     device->playback.contexts = ctx;
 
     VBAP2D_Init(&ctx->vbap2d, spec.channels);
+
+    SDL_AddEventWatch(ContextDeviceChangeEventWatcher, ctx);
 
     SDL_ResumeAudioStreamDevice(ctx->stream);
 
@@ -2249,6 +2310,7 @@ static void _alcDestroyContext(ALCcontext *ctx)
     // do this first in case the mixer is running _right now_.
     SDL_SetAtomicInt(&ctx->processing, 0);
 
+    SDL_RemoveEventWatch(ContextDeviceChangeEventWatcher, ctx);
     SDL_DestroyAudioStream(ctx->stream);  // will unbind from the audio device, mixer thread will no longer touch.
 
     // these are protected by the api lock; the mixer thread no longer looks at device->playback.contexts as of the migration to SDL3.
@@ -2595,38 +2657,22 @@ ENTRYPOINTVOID(alcGetIntegerv,(ALCdevice *device, ALCenum param, ALCsizei size, 
 static void SDLCALL capture_device_callback(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount)
 {
     ALCdevice *device = (ALCdevice *) userdata;
-    ALCboolean connected = ALC_FALSE;
 
     SDL_assert(device->iscapture);
     SDL_assert(stream == device->capture.stream);
 
-    FIXME("Why would this callback fire if the device wasn't connected?");
-    if (SDL_GetAtomicInt(&device->connected)) {
-#if 0
-        if (SDL_GetAudioDeviceStatus(device->sdldevice) == SDL_AUDIO_STOPPED) {
-            SDL_SetAtomicInt(&device->connected, ALC_FALSE);
-        } else {
-            connected = ALC_TRUE;
+    Uint8 bitbucket[512];
+    const ALCsizei framesize = device->capture.framesize;
+    const ALCsizei maximum = device->capture.max_samples * framesize;
+    const ALCsizei maxread = sizeof (bitbucket) / framesize;
+    ALCsizei available = SDL_GetAudioStreamAvailable(stream);
+    while (available > maximum) {
+        const ALCsizei dumpsamps = (ALCsizei) SDL_min(maxread, (available - maximum) / framesize);
+        if (!SDL_GetAudioStreamData(stream, bitbucket, dumpsamps * framesize)) {
+            SDL_ClearAudioStream(stream);
+            return;  // oh well.
         }
-#else
-    connected = ALC_TRUE;
-#endif
-    }
-
-    if (connected) {
-        Uint8 bitbucket[512];
-        const ALCsizei framesize = device->capture.framesize;
-        const ALCsizei maximum = device->capture.max_samples * framesize;
-        const ALCsizei maxread = sizeof (bitbucket) / framesize;
-        ALCsizei available = SDL_GetAudioStreamAvailable(stream);
-        while (available > maximum) {
-            const ALCsizei dumpsamps = (ALCsizei) SDL_min(maxread, (available - maximum) / framesize);
-            if (!SDL_GetAudioStreamData(stream, bitbucket, dumpsamps * framesize)) {
-                SDL_ClearAudioStream(stream);
-                return;  // oh well.
-            }
-            available = SDL_GetAudioStreamAvailable(stream);
-        }
+        available = SDL_GetAudioStreamAvailable(stream);
     }
 }
 
@@ -2664,6 +2710,9 @@ ALCdevice *alcCaptureOpenDevice(const ALCchar *devicename, ALCuint frequency, AL
     }
 
     device->capture.framesize = SDL_AUDIO_FRAMESIZE(spec);
+
+    SDL_AddEventWatch(DeviceDisconnectedEventWatcher, device);
+
     return device;
 }
 
@@ -2674,6 +2723,7 @@ ALCboolean alcCaptureCloseDevice(ALCdevice *device)
         return ALC_FALSE;
     }
 
+    SDL_RemoveEventWatch(DeviceDisconnectedEventWatcher, device);
     SDL_DestroyAudioStream(device->capture.stream);
     SDL_free(device->name);
     SDL_free(device);
@@ -2684,7 +2734,7 @@ ALCboolean alcCaptureCloseDevice(ALCdevice *device)
 
 static void _alcCaptureStart(ALCdevice *device)
 {
-    if (device && device->iscapture) {
+    if (device && device->iscapture && SDL_GetAtomicInt(&device->connected)) {
         // alcCaptureStart() drops any previously-buffered data.
         SDL_ClearAudioStream(device->capture.stream);
         SDL_ResumeAudioStreamDevice(device->capture.stream);
