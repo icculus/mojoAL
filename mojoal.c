@@ -2619,8 +2619,8 @@ static void SDLCALL capture_device_callback(void *userdata, SDL_AudioStream *str
         const ALCsizei maximum = device->capture.max_samples * framesize;
         const ALCsizei maxread = sizeof (bitbucket) / framesize;
         ALCsizei available = SDL_GetAudioStreamAvailable(stream);
-        while (maximum > available) {
-            const ALCsizei dumpsamps = (ALCsizei) SDL_min(maxread, (maximum - available));
+        while (available > maximum) {
+            const ALCsizei dumpsamps = (ALCsizei) SDL_min(maxread, (available - maximum) / framesize);
             if (!SDL_GetAudioStreamData(stream, bitbucket, dumpsamps * framesize)) {
                 SDL_ClearAudioStream(stream);
                 return;  // oh well.
