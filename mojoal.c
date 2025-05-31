@@ -1556,7 +1556,7 @@ static void mix_buffer(ALsource *src, const ALbuffer *buffer, const int output_c
         }
     } else if (output_channels == 2) {
         if (buffer->spec.channels == 1) {
-            mix_float32_mono_to_stereo_sse(panning, data, stream, mixframes);
+            mix_float32_mono_to_stereo(panning, data, stream, mixframes);
         } else if (buffer->spec.channels == 2) {
             mix_float32_stereo_to_stereo(panning, data, stream, mixframes);
         }
