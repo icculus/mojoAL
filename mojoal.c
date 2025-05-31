@@ -4698,6 +4698,17 @@ static void _alGenBuffers(const ALsizei n, ALuint *names)
 }
 ENTRYPOINTVOID(alGenBuffers,(ALsizei n, ALuint *names),(n,names))
 
+/*
+ * alGenStreamingBuffers was a pre-1.0 API. The Loki version of Unreal Tournament '99 uses it.
+ * It appears to be identical to alGenBuffers, but was probably meant to be
+ * a hint to the AL that the buffer's contents would be replaced frequently.
+ */
+static void _alGenStreamingBuffers(const ALsizei n, ALuint *names)
+{
+    _alGenBuffers(n, names);
+}
+ENTRYPOINTVOID(alGenStreamingBuffers,(ALsizei n, ALuint *names),(n,names))
+
 static void _alDeleteBuffers(const ALsizei n, const ALuint *names)
 {
     ALCcontext *ctx = get_current_context();
