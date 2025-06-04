@@ -883,7 +883,7 @@ static ALfloat SDL_TARGETING("sse") magnitude_sse(const __m128 v)
 static void SDL_TARGETING("sse") calculate_distance_attenuation_and_angle_sse(const ALCcontext *ctx, const ALsource *src, ALfloat *_gain, ALfloat *_radians)
 {
     // (the math is explained in the scalar version.)
-    const __m128 position_sse = src->source_relative ? _mm_sub_ps(_mm_load_ps(src->position), _mm_load_ps(ctx->listener.position)) : _mm_load_ps(src->position);
+    const __m128 position_sse = !src->source_relative ? _mm_sub_ps(_mm_load_ps(src->position), _mm_load_ps(ctx->listener.position)) : _mm_load_ps(src->position);
     const __m128 at_sse = _mm_load_ps(&ctx->listener.orientation[0]);
     const __m128 up_sse = _mm_load_ps(&ctx->listener.orientation[4]);
     const ALfloat a = dotproduct_sse(position_sse, up_sse);
@@ -932,7 +932,7 @@ static ALfloat SDL_TARGETING("neon") magnitude_neon(const float32x4_t v)
 static void SDL_TARGETING("neon") calculate_distance_attenuation_and_angle_neon(const ALCcontext *ctx, const ALsource *src, ALfloat *_gain, ALfloat *_radians)
 {
     // (the math is explained in the scalar version.)
-    const float32x4_t position_neon = src->source_relative ? vsubq_f32(vld1q_f32(src->position), vld1q_f32(ctx->listener.position)) : vld1q_f32(src->position);
+    const float32x4_t position_neon = !src->source_relative ? vsubq_f32(vld1q_f32(src->position), vld1q_f32(ctx->listener.position)) : vld1q_f32(src->position);
     const float32x4_t at_neon = vld1q_f32(&ctx->listener.orientation[0]);
     const float32x4_t up_neon = vld1q_f32(&ctx->listener.orientation[4]);
     const ALfloat a = dotproduct_neon(position_neon, up_neon);
