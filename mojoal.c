@@ -1890,7 +1890,8 @@ static ALCenum null_device_error = ALC_NO_ERROR;
 #define ALC_EXTENSION_ITEMS \
     ALC_EXTENSION_ITEM(ALC_ENUMERATION_EXT) \
     ALC_EXTENSION_ITEM(ALC_EXT_CAPTURE) \
-    ALC_EXTENSION_ITEM(ALC_EXT_DISCONNECT)
+    ALC_EXTENSION_ITEM(ALC_EXT_DISCONNECT) \
+    ALC_EXTENSION_ITEM(ALC_EXT_thread_local_context)
 
 #define AL_EXTENSION_ITEMS \
     AL_EXTENSION_ITEM(AL_EXT_FLOAT32) \
@@ -2278,10 +2279,25 @@ static ALCcontext *_alcCreateContext(ALCdevice *device, const ALCint* attrlist)
 }
 ENTRYPOINT(ALCcontext *,alcCreateContext,(ALCdevice *device, const ALCint* attrlist),(device,attrlist))
 
-
+static SDL_AtomicInt tls_ctx_used;
+static SDL_TLSID tlsid_current_ctx;
 static SDL_INLINE ALCcontext *get_current_context(void)
 {
-    return (ALCcontext *) SDL_GetAtomicPointer(&current_context);
+    ALCcontext *tlsctx = (ALCcontext *) SDL_GetTLS(&tlsid_current_ctx);
+    return tlsctx ? tlsctx : (ALCcontext *) SDL_GetAtomicPointer(&current_context);
+}
+
+// no api lock; it's thread-local.
+ALCboolean alcSetThreadContext(ALCcontext *context)
+{
+    SDL_SetAtomicInt(&tls_ctx_used, 1);
+    return SDL_SetTLS(&tlsid_current_ctx, context, NULL);
+}
+
+// no api lock; it's thread-local.
+ALCcontext *alcGetThreadContext(void)
+{
+    return (ALCcontext *) SDL_GetTLS(&tlsid_current_ctx);
 }
 
 // no api lock; it just sets an atomic pointer at the moment
@@ -2289,7 +2305,10 @@ ALCboolean alcMakeContextCurrent(ALCcontext *ctx)
 {
     FIXME("maybe just use the api lock");
     SDL_SetAtomicPointer(&current_context, ctx);
-    FIXME("any reason this might return ALC_FALSE?");
+    FIXME("any reason this might return ALC_FALSE?");  // technically this could return false for an invalid non-NULL context but we don't keep a list of created contexts.
+    if (SDL_GetAtomicInt(&tls_ctx_used)) {  // we don't want to create all the TLS infrastructure until someone has actually used ALC_EXT_thread_local_context, so query first.
+        SDL_SetTLS(&tlsid_current_ctx, ctx, NULL);
+    }
     return ALC_TRUE;
 }
 
@@ -2371,7 +2390,7 @@ static void _alcDestroyContext(ALCcontext *ctx)
 }
 ENTRYPOINTVOID(alcDestroyContext,(ALCcontext *ctx),(ctx))
 
-// no api lock; atomic.
+// no api lock; atomic (if not thread-local).
 ALCcontext *alcGetCurrentContext(void)
 {
     return get_current_context();
@@ -2430,6 +2449,8 @@ void *alcGetProcAddress(ALCdevice *device, const ALCchar *funcname)
     FN_TEST(alcCaptureStart);
     FN_TEST(alcCaptureStop);
     FN_TEST(alcCaptureSamples);
+    FN_TEST(alcSetThreadContext);
+    FN_TEST(alcGetThreadContext);
     #undef FN_TEST
 
     set_alc_error(device, ALC_INVALID_VALUE);
