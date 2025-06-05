@@ -94,6 +94,10 @@
 #define ALC_CONNECTED 0x313
 #endif
 
+// AL_EXT_source_distance_model support...
+#ifndef AL_SOURCE_DISTANCE_MODEL
+#define AL_SOURCE_DISTANCE_MODEL 0x200
+#endif
 
 /*
 The locking strategy for this OpenAL implementation:
@@ -516,6 +520,7 @@ struct SDL_ALIGNED(16) ALsource  // aligned to 16 bytes for SIMD support
     ALfloat cone_inner_angle;
     ALfloat cone_outer_angle;
     ALfloat cone_outer_gain;
+    ALenum distance_model;
     ALbuffer *buffer;
     SDL_AudioStream *stream;  // for conversion, resampling, pitch, etc. ALL DATA GOES THROUGH HERE NOW.
     SDL_AtomicInt total_queued_buffers;   // everything queued, playing and processed. AL_BUFFERS_QUEUED value.
@@ -599,6 +604,7 @@ struct ALCcontext_struct
     ALCsizei attributes_count;
 
     ALCboolean recalc;
+    ALCboolean source_distance_model;
     ALenum distance_model;
     ALfloat doppler_factor;
     ALfloat doppler_velocity;
@@ -762,6 +768,7 @@ static ALfloat calculate_distance_attenuation(const ALCcontext *ctx, const ALsou
     // error in it. In this case, there is no attenuation for that source."
     FIXME("check divisions by zero");
 
+    const ALenum distance_model = ctx->source_distance_model ? src->distance_model : ctx->distance_model;
     switch (ctx->distance_model) {
         case AL_INVERSE_DISTANCE_CLAMPED:
             distance = SDL_min(SDL_max(distance, src->reference_distance), src->max_distance);
@@ -989,7 +996,8 @@ static void calculate_distance_attenuation_and_angle(const ALCcontext *ctx, cons
 static void calculate_channel_gains(const ALCcontext *ctx, ALsource *src)
 {
     // rolloff==0.0f makes all distance models result in 1.0f, and we never spatialize non-mono sources, per the AL spec.
-    const ALboolean spatialize = (ctx->distance_model != AL_NONE) &&
+    const ALenum distance_model = ctx->source_distance_model ? src->distance_model : ctx->distance_model;
+    const ALboolean spatialize = (distance_model != AL_NONE) &&
                                  (src->queue_channels == 1) &&
                                  (src->rolloff_factor != 0.0f);
 
@@ -1895,7 +1903,8 @@ static ALCenum null_device_error = ALC_NO_ERROR;
 
 #define AL_EXTENSION_ITEMS \
     AL_EXTENSION_ITEM(AL_EXT_FLOAT32) \
-    AL_EXTENSION_ITEM(AL_EXT_32bit_formats)
+    AL_EXTENSION_ITEM(AL_EXT_32bit_formats) \
+    AL_EXTENSION_ITEM(AL_EXT_source_distance_model)
 
 
 static void set_alc_error(ALCdevice *device, const ALCenum error)
@@ -2963,23 +2972,54 @@ static void _alDistanceModel(const ALenum model)
 ENTRYPOINTVOID(alDistanceModel,(ALenum model),(model))
 
 
+static void enable_disable_toggle(const ALenum capability, const ALboolean toggle)
+{
+    ALCcontext *ctx = get_current_context();
+    if (!ctx) {
+        set_al_error(ctx, AL_INVALID_OPERATION);
+        return;
+    }
+
+    switch (capability)
+    {
+        case AL_SOURCE_DISTANCE_MODEL:
+            ctx->source_distance_model = toggle ? ALC_TRUE : ALC_FALSE;
+            context_needs_recalc(ctx);
+            break;
+
+        default: break;
+    }
+    set_al_error(ctx, AL_INVALID_ENUM);
+}
+
 static void _alEnable(const ALenum capability)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in core OpenAL 1.1 uses this
+    enable_disable_toggle(capability, AL_TRUE);
 }
 ENTRYPOINTVOID(alEnable,(ALenum capability),(capability))
 
 
 static void _alDisable(const ALenum capability)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in core OpenAL 1.1 uses this
+    enable_disable_toggle(capability, AL_FALSE);
 }
 ENTRYPOINTVOID(alDisable,(ALenum capability),(capability))
 
 
 static ALboolean _alIsEnabled(const ALenum capability)
 {
-    set_al_error(get_current_context(), AL_INVALID_ENUM);  // nothing in core OpenAL 1.1 uses this
+    ALCcontext *ctx = get_current_context();
+    if (!ctx) {
+        set_al_error(ctx, AL_INVALID_OPERATION);
+        return AL_FALSE;
+    }
+
+    switch (capability)
+    {
+        case AL_SOURCE_DISTANCE_MODEL: return ctx->source_distance_model;
+        default: break;
+    }
+    set_al_error(ctx, AL_INVALID_ENUM);
     return AL_FALSE;
 }
 ENTRYPOINT(ALboolean,alIsEnabled,(ALenum capability),(capability))
@@ -3300,6 +3340,7 @@ static ALenum _alGetEnumValue(const ALchar *enumname)
     ENUM_TEST(AL_FORMAT_STEREO_FLOAT32);
     ENUM_TEST(AL_FORMAT_MONO_I32);
     ENUM_TEST(AL_FORMAT_STEREO_I32);
+    ENUM_TEST(AL_SOURCE_DISTANCE_MODEL);
     #undef ENUM_TEST
 
     set_al_error(ctx, AL_INVALID_VALUE);
@@ -3727,6 +3768,7 @@ static void _alGenSources(const ALsizei n, ALuint *names)
         src->pitch = 1.0f;
         src->cone_inner_angle = 360.0f;
         src->cone_outer_angle = 360.0f;
+        src->distance_model = AL_INVERSE_DISTANCE_CLAMPED;
         source_needs_recalc(src);
         src->allocated = AL_TRUE;   // we officially own it.
     }
