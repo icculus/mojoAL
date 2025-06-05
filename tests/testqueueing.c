@@ -39,6 +39,10 @@ static ALenum get_openal_format(const SDL_AudioSpec *spec)
         return alIsExtensionPresent("AL_EXT_FLOAT32") ? alGetEnumValue("AL_FORMAT_MONO_FLOAT32") : AL_NONE;
     } else if ((spec->channels == 2) && (spec->format == SDL_AUDIO_F32)) {
         return alIsExtensionPresent("AL_EXT_FLOAT32") ? alGetEnumValue("AL_FORMAT_STEREO_FLOAT32") : AL_NONE;
+    } else if ((spec->channels == 1) && (spec->format == SDL_AUDIO_S32)) {
+        return alIsExtensionPresent("AL_EXT_32bit_formats") ? alGetEnumValue("AL_FORMAT_MONO_I32") : AL_NONE;
+    } else if ((spec->channels == 2) && (spec->format == SDL_AUDIO_F32)) {
+        return alIsExtensionPresent("AL_EXT_32bit_formats") ? alGetEnumValue("AL_FORMAT_STEREO_I32") : AL_NONE;
     }
     return AL_NONE;
 }

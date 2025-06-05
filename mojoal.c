@@ -79,6 +79,16 @@
 #define AL_FORMAT_STEREO_FLOAT32 0x10011
 #endif
 
+// AL_EXT_32bit_formats support...
+// (this doesn't cover the AL_EXT_MCFORMATS items at the moment, per spec).
+#ifndef AL_FORMAT_MONO_I32
+#define AL_FORMAT_MONO_I32 0x19DB
+#endif
+
+#ifndef AL_FORMAT_STEREO_I32
+#define AL_FORMAT_STEREO_I32 0x19DC
+#endif
+
 // ALC_EXT_DISCONNECTED support...
 #ifndef ALC_CONNECTED
 #define ALC_CONNECTED 0x313
@@ -1883,7 +1893,8 @@ static ALCenum null_device_error = ALC_NO_ERROR;
     ALC_EXTENSION_ITEM(ALC_EXT_DISCONNECT)
 
 #define AL_EXTENSION_ITEMS \
-    AL_EXTENSION_ITEM(AL_EXT_FLOAT32)
+    AL_EXTENSION_ITEM(AL_EXT_FLOAT32) \
+    AL_EXTENSION_ITEM(AL_EXT_32bit_formats)
 
 
 static void set_alc_error(ALCdevice *device, const ALCenum error)
@@ -2087,6 +2098,16 @@ static ALCboolean alcfmt_to_sdlfmt(const ALCenum alfmt, SDL_AudioFormat *sdlfmt,
             break;
         case AL_FORMAT_STEREO_FLOAT32:
             *sdlfmt = SDL_AUDIO_F32;
+            *channels = 2;
+            *framesize = 8;
+            break;
+        case AL_FORMAT_MONO_I32:
+            *sdlfmt = SDL_AUDIO_S32;
+            *channels = 1;
+            *framesize = 4;
+            break;
+        case AL_FORMAT_STEREO_I32:
+            *sdlfmt = SDL_AUDIO_S32;
             *channels = 2;
             *framesize = 8;
             break;
@@ -3256,6 +3277,8 @@ static ALenum _alGetEnumValue(const ALchar *enumname)
     ENUM_TEST(AL_EXPONENT_DISTANCE_CLAMPED);
     ENUM_TEST(AL_FORMAT_MONO_FLOAT32);
     ENUM_TEST(AL_FORMAT_STEREO_FLOAT32);
+    ENUM_TEST(AL_FORMAT_MONO_I32);
+    ENUM_TEST(AL_FORMAT_STEREO_I32);
     #undef ENUM_TEST
 
     set_al_error(ctx, AL_INVALID_VALUE);
