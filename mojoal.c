@@ -1761,13 +1761,15 @@ static void calculate_channel_gains(const ALCcontext *ctx, const ALsource *src, 
 
     {
     #if NEED_SCALAR_FALLBACK
-    /* if values aren't source-relative, then convert it to be so. */
-    if (!src->source_relative) {
-        SDL_memcpy(position, src->position, sizeof (position));
-    } else {
+    /* If !source_relative, position is in world space, otherwise, it's in relation to the Listener's position.
+        So a source-relative source that's at ( 0, 0, 0 ) will be treated as being on top of the listener,
+        no matter where the listener moves. If not source relative, it'll get quieter as the listener moves away. */
+     if (!src->source_relative) {
         position[0] = src->position[0] - ctx->listener.position[0];
         position[1] = src->position[1] - ctx->listener.position[1];
         position[2] = src->position[2] - ctx->listener.position[2];
+    } else {
+        SDL_memcpy(position, src->position, sizeof (position));
     }
     distance = magnitude(position);
     #endif
