@@ -815,17 +815,18 @@ static void calculate_distance_attenuation_and_angle_scalar(const ALCcontext *ct
     const ALfloat *at = &ctx->listener.orientation[0];
     const ALfloat *up = &ctx->listener.orientation[4];
 
-    // If !source_relative, position is absolute, otherwise, it's in relation to the Listener's position.
-    //   Another way to say this is that if !source_relative, act like the listener is at (0,0,0).
+    // If !source_relative, position is in world space, otherwise, it's in relation to the Listener's position.
+    //   So a source-relative source that's at ( 0, 0, 0 ) will be treated as being on top of the listener,
+    //   no matter where the listener moves. If not source relative, it'll get quieter as the listener moves away.
     ALfloat position[3];
     if (!src->source_relative) {
-        position[0] = src->position[0];
-        position[1] = src->position[1];
-        position[2] = src->position[2];
-    } else {
         position[0] = src->position[0] - ctx->listener.position[0];
         position[1] = src->position[1] - ctx->listener.position[1];
         position[2] = src->position[2] - ctx->listener.position[2];
+    } else {
+        position[0] = src->position[0];
+        position[1] = src->position[1];
+        position[2] = src->position[2];
     }
 
     // Remove upwards component so it lies completely within the horizontal plane.
