@@ -856,6 +856,7 @@ static void calculate_distance_attenuation_and_angle_scalar(const ALCcontext *ct
 
     // Calculate angle
     const ALfloat mags = magnitude_scalar(at) * magnitude_scalar(V);
+    ALfloat radians;
     if (mags == 0.0f) {
         radians = 0.0f;
     } else {
