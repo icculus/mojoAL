@@ -220,6 +220,16 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
         case SDL_EVENT_KEY_DOWN:
             if (event->key.key == SDLK_ESCAPE) {
                 return SDL_APP_SUCCESS;
+            } else if (event->key.key == SDLK_SPACE) {
+                const ALuint sid = objects[1].sid;
+                ALint state = 0;
+                alGetSourceiv(sid, AL_SOURCE_STATE, &state);
+                if (state == AL_PLAYING) {
+                    alSourcePause(sid);
+                } else if (state == AL_PAUSED) {
+                    alSourcePlay(sid);
+                }
+                return SDL_APP_CONTINUE;
             }
             break;
 

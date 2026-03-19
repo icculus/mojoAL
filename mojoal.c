@@ -1774,7 +1774,7 @@ static void migrate_playlist_requests(ALCcontext *ctx)
                 }
             }
             if (buffer) {
-                put_albuffer_to_audiostream(ctx, buffer, 0, src->stream);
+                put_albuffer_to_audiostream(ctx, buffer, src->offset, src->stream);
             }
 
             src->playlist_next = ctx->playlist;
