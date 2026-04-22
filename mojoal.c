@@ -269,10 +269,10 @@ static void ungrab_api_lock(void)
 }
 
 #define ENTRYPOINT(rettype,fn,params,args) \
-    rettype fn params { rettype retval; grab_api_lock(); retval = _##fn args ; ungrab_api_lock(); return retval; }
+    rettype AL_APIENTRY fn params { rettype retval; grab_api_lock(); retval = _##fn args ; ungrab_api_lock(); return retval; }
 
 #define ENTRYPOINTVOID(fn,params,args) \
-    void fn params { grab_api_lock(); _##fn args ; ungrab_api_lock(); }
+    void fn AL_APIENTRY params { grab_api_lock(); _##fn args ; ungrab_api_lock(); }
 
 
 static size_t simd_alignment = 0;
