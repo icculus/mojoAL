@@ -21,5 +21,6 @@ endmacro()
 add_test_executable(testopenalinfo)
 add_test_executable(testqueueing)
 add_test_executable(testcapture)
+add_test_executable(testcallbackbuffer)
 add_test_executable(testposition)
 

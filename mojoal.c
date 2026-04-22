@@ -99,6 +99,23 @@
 #define AL_SOURCE_DISTANCE_MODEL 0x200
 #endif
 
+// AL_SOFT_callback_buffer support...
+#ifndef AL_BUFFER_CALLBACK_FUNCTION_SOFT
+#define AL_BUFFER_CALLBACK_FUNCTION_SOFT 0x19A0
+#endif
+
+#ifndef AL_BUFFER_CALLBACK_USER_PARAM_SOFT
+#define AL_BUFFER_CALLBACK_USER_PARAM_SOFT 0x19A1
+#endif
+
+typedef ALsizei (AL_APIENTRY *ALBUFFERCALLBACKTYPESOFT)(ALvoid *userptr, ALvoid *sampledata, ALsizei numbytes);
+AL_API void AL_APIENTRY alBufferCallbackSOFT(ALuint buffer, ALenum format, ALsizei freq, ALBUFFERCALLBACKTYPESOFT callback, ALvoid *userptr);
+AL_API void AL_APIENTRY alGetBufferPtrSOFT(ALuint buffer, ALenum param, ALvoid **ptr);
+AL_API void AL_APIENTRY alGetBuffer3PtrSOFT(ALuint buffer, ALenum param, ALvoid **ptr0, ALvoid **ptr1, ALvoid **ptr2);
+AL_API void AL_APIENTRY alGetBufferPtrvSOFT(ALuint buffer, ALenum param, ALvoid **ptr);
+
+
+
 /*
 The locking strategy for this OpenAL implementation:
 
@@ -466,6 +483,8 @@ typedef struct ALbuffer
     SDL_AudioSpec spec;
     ALsizei len;   // length of data in bytes.
     const void *data;
+    ALBUFFERCALLBACKTYPESOFT callback;   // AL_SOFT_callback_buffer extension. `data` must be NULL if this is used!
+    void *callback_userptr;  // AL_SOFT_callback_buffer extension.
     SDL_AtomicInt refcount;  // if zero, can be deleted or alBufferData'd
 } ALbuffer;
 
@@ -531,6 +550,7 @@ struct SDL_ALIGNED(16) ALsource  // aligned to 16 bytes for SIMD support
     ALint queue_channels;
     ALsizei queue_frequency;
     ALsource *playlist_next;  // linked list that contains currently-playing sources! Only touched by mixer thread!
+    ALboolean callback_exhausted;    // AL_SOFT_callback_buffer extension.
 };
 
 // !!! FIXME: buffers and sources use almost identical code for blocks
@@ -699,11 +719,13 @@ static void SDLCALL albuffer_in_audiostream_complete(void *userdata, const void 
 static void put_albuffer_to_audiostream(ALCcontext *ctx, ALbuffer *buffer, int offset, SDL_AudioStream *stream)
 {
     if (buffer) {
-        SDL_AtomicInt *refcount = (SDL_AtomicInt *) (((Uint8 *) buffer->data) - simd_alignment);
         const SDL_AudioSpec output_spec = { SDL_AUDIO_F32, buffer->spec.channels, ctx->spec.freq };
-        SDL_AtomicIncRef(refcount);
         SDL_SetAudioStreamFormat(stream, &buffer->spec, &output_spec);
-        SDL_PutAudioStreamDataNoCopy(stream, ((const Uint8 *) buffer->data) + offset, buffer->len - offset, albuffer_in_audiostream_complete, refcount);
+        if (!buffer->callback) {
+            SDL_AtomicInt *refcount = (SDL_AtomicInt *) (((Uint8 *) buffer->data) - simd_alignment);
+            SDL_AtomicIncRef(refcount);
+            SDL_PutAudioStreamDataNoCopy(stream, ((const Uint8 *) buffer->data) + offset, buffer->len - offset, albuffer_in_audiostream_complete, refcount);
+        }
     }
 }
 
@@ -1598,26 +1620,40 @@ static ALboolean mix_source_buffer(ALCcontext *ctx, ALsource *src, BufferQueueIt
     SDL_assert(*len > 0);
 
     // you can legally queue or set a NULL buffer.
-    if (buffer && buffer->data && (buffer->len > 0)) {
+    if (buffer && ((buffer->data && (buffer->len > 0)) || buffer->callback)) {
         // The stream will output data in `*output`'s format, except for the channel count, which matches the buffer, so we can mix it properly.
         // So we need to figure out the difference between what we need and what we're getting.
         const int bufferframesize = (int) (sizeof (float) * buffer->spec.channels);
         const int needed_frames = *len / (int) ctx->framesize;
         const int get_bytes = needed_frames * bufferframesize;
+        const int alloc_bytes = buffer->callback ? SDL_max(get_bytes, 4096) : get_bytes;
         SDL_AudioStream *stream = src->stream;
 
-        if (ctx->device->get_buffer_len < get_bytes) {
-            void *ptr = malloc_simd_aligned(get_bytes);
+        if (ctx->device->get_buffer_len < alloc_bytes) {
+            void *ptr = malloc_simd_aligned(alloc_bytes);
             if (!ptr) {
                 SDL_ClearAudioStream(stream);
                 return AL_TRUE;  // oh well, we're in trouble.
             }
             free_simd_aligned(ctx->device->get_buffer);
             ctx->device->get_buffer = (float *) ptr;
-            ctx->device->get_buffer_len = get_bytes;
+            ctx->device->get_buffer_len = alloc_bytes;
         }
 
         float *get_buffer = ctx->device->get_buffer;
+
+        if (buffer->callback) {
+            const ALsizei requested_bytes = (ALsizei) ((alloc_bytes / bufferframesize) * bufferframesize);
+            while (!src->callback_exhausted && (SDL_GetAudioStreamAvailable(stream) <= get_bytes)) {
+                const ALsizei rc = buffer->callback(buffer->callback_userptr, (ALvoid *) get_buffer, requested_bytes);
+                if (rc < requested_bytes) {
+                    src->callback_exhausted = AL_TRUE;
+                }
+                if (rc > 0) {
+                    SDL_PutAudioStreamData(stream, (ALvoid *) get_buffer, (int) (SDL_min(rc, requested_bytes)));
+                }
+            }
+        }
 
         // if we still have data queued in src->stream, we assume it's `buffer` still mixing.
         if (SDL_GetAudioStreamAvailable(stream) <= get_bytes) {
@@ -1666,6 +1702,8 @@ static ALCboolean mix_source_buffer_queue(ALCcontext *ctx, ALsource *src, Buffer
         if (src->looping) {
             if (src->type == AL_STATIC) {
                 FIXME("looping is supposed to move to AL_INITIAL then immediately to AL_PLAYING, but I'm not sure what side effect this is meant to trigger");
+                FIXME("what does looping do with buffer callbacks?");
+                src->callback_exhausted = AL_FALSE;  // so the callback is allowed to run, even if it were previously exhausted.
                 put_albuffer_to_audiostream(ctx, src->buffer, 0, src->stream);   // put it back in the stream for another round
                 src->offset = 0;
                 continue;
@@ -1767,6 +1805,7 @@ static void migrate_playlist_requests(ALCcontext *ctx)
             ALbuffer *buffer = NULL;
             if (src->type == AL_STATIC) {
                 buffer = src->buffer;
+                src->callback_exhausted = AL_FALSE;  // so the callback is allowed to run, even if it were previously exhausted.
             } else if (src->type == AL_STREAMING) {
                 obtain_newly_queued_buffers(&src->buffer_queue);
                 if (src->buffer_queue.head) {
@@ -1905,7 +1944,8 @@ static ALCenum null_device_error = ALC_NO_ERROR;
 #define AL_EXTENSION_ITEMS \
     AL_EXTENSION_ITEM(AL_EXT_FLOAT32) \
     AL_EXTENSION_ITEM(AL_EXT_32bit_formats) \
-    AL_EXTENSION_ITEM(AL_EXT_source_distance_model)
+    AL_EXTENSION_ITEM(AL_EXT_source_distance_model) \
+    AL_EXTENSION_ITEM(AL_SOFT_callback_buffer)
 
 
 static void set_alc_error(ALCdevice *device, const ALCenum error)
@@ -3255,6 +3295,10 @@ static void *_alGetProcAddress(const ALchar *funcname)
     FN_TEST(alGetBufferi);
     FN_TEST(alGetBuffer3i);
     FN_TEST(alGetBufferiv);
+    FN_TEST(alBufferCallbackSOFT);
+    FN_TEST(alGetBufferPtrSOFT);
+    FN_TEST(alGetBuffer3PtrSOFT);
+    FN_TEST(alGetBufferPtrvSOFT);
     #undef FN_TEST
 
     set_al_error(ctx, ALC_INVALID_VALUE);
@@ -3342,6 +3386,8 @@ static ALenum _alGetEnumValue(const ALchar *enumname)
     ENUM_TEST(AL_FORMAT_MONO_I32);
     ENUM_TEST(AL_FORMAT_STEREO_I32);
     ENUM_TEST(AL_SOURCE_DISTANCE_MODEL);
+    ENUM_TEST(AL_BUFFER_CALLBACK_FUNCTION_SOFT);
+    ENUM_TEST(AL_BUFFER_CALLBACK_USER_PARAM_SOFT);
     #undef ENUM_TEST
 
     set_al_error(ctx, AL_INVALID_VALUE);
@@ -3932,6 +3978,11 @@ static void set_source_static_buffer(ALCcontext *ctx, ALsource *src, const ALuin
             set_al_error(ctx, AL_INVALID_VALUE);
         } else {
             if (src->buffer != buffer) {
+                if (buffer && buffer->callback && (SDL_GetAtomicInt(&buffer->refcount) != 0)) {
+                    // AL_SOFT_callback_buffer buffers can only be attached to a single source at a time.
+                    set_al_error(ctx, AL_INVALID_OPERATION);
+                    return;
+                }
                 if (src->buffer) {
                     (void) SDL_AtomicDecRef(&src->buffer->refcount);
                 }
@@ -4365,6 +4416,8 @@ static void source_set_offset(ALsource *src, ALenum param, ALfloat value)
         set_al_error(ctx, AL_INVALID_OPERATION);
     } else if (src->type == AL_STREAMING) {
         FIXME("set_offset for streaming sources not implemented");
+    } else if (src->buffer->callback) {
+        set_al_error(ctx, AL_INVALID_OPERATION);  // can't set an offset on a buffer callback.
     } else {
         const int bufflen = (int) src->buffer->len;
         const int framesize = (int) (src->buffer->spec.channels * sizeof (float));
@@ -4479,6 +4532,11 @@ static void _alSourceQueueBuffers(const ALuint name, const ALsizei nb, const ALu
             } else if ((queue_channels != buffer->spec.channels) || (queue_frequency != buffer->spec.freq)) {
                 // the whole queue must be the same format.
                 set_al_error(ctx, AL_INVALID_VALUE);
+                failed = AL_TRUE;
+                break;
+            } else if (buffer->callback != NULL) {
+                // AL_SOFT_callback_buffer buffers can't be queued.
+                set_al_error(ctx, AL_INVALID_OPERATION);
                 failed = AL_TRUE;
                 break;
             }
@@ -4863,6 +4921,8 @@ static void _alBufferData(const ALuint name, const ALenum alfmt, const ALvoid *d
     SDL_copyp(&buffer->spec, &spec);
     buffer->data = newdata;
     buffer->len = size;
+    buffer->callback = NULL;
+    buffer->callback_userptr = NULL;
     SDL_AtomicDecRef(&buffer->refcount);  // ready to go!
 }
 ENTRYPOINTVOID(alBufferData,(ALuint name, ALenum alfmt, const ALvoid *data, ALsizei size, ALsizei freq),(name,alfmt,data,size,freq))
@@ -4958,6 +5018,94 @@ static void _alGetBufferiv(const ALuint name, const ALenum param, ALint *values)
     }
 }
 ENTRYPOINTVOID(alGetBufferiv,(ALuint name, ALenum param, ALint *values),(name,param,values))
+
+
+// AL_SOFT_callback_buffer extension ...
+
+static void _alBufferCallbackSOFT(ALuint name, ALenum alfmt, ALsizei freq, ALBUFFERCALLBACKTYPESOFT callback, ALvoid *userptr)
+{
+    ALCcontext *ctx = get_current_context();
+    ALbuffer *buffer = get_buffer(ctx, name, NULL);
+    SDL_AudioSpec spec;
+    ALCsizei framesize;
+
+    if (!buffer) {
+        return;
+    } else if (callback == NULL) {  // you can't disable the callback with a NULL; you have to do alBufferData(), or set a new callback, to replace it.
+        set_al_error(ctx, AL_INVALID_VALUE);
+        return;
+    } else if (freq <= 0) {
+        set_al_error(ctx, AL_INVALID_VALUE);
+        return;
+    } else if (!alcfmt_to_sdlfmt(alfmt, &spec.format, &spec.channels, &framesize)) {
+        set_al_error(ctx, AL_INVALID_VALUE);
+        return;
+    }
+
+    spec.freq = (int) freq;
+
+    // increment refcount so this can't be deleted or alBufferData'd from another thread
+    const int prevrefcount = SDL_AtomicIncRef(&buffer->refcount);
+    SDL_assert(prevrefcount >= 0);
+    if (prevrefcount != 0) {
+        // this buffer is being used by some source. Unqueue it first.
+        (void) SDL_AtomicDecRef(&buffer->refcount);
+        set_al_error(ctx, AL_INVALID_OPERATION);
+        return;
+    }
+
+    // This check was from the wild west of lock-free programming, now we shouldn't pass get_buffer() if not allocated.
+    SDL_assert(buffer->allocated);
+
+    if (buffer->data) {
+        albuffer_in_audiostream_complete(((Uint8 *) buffer->data) - simd_alignment, buffer->data, buffer->len);
+    }
+
+    buffer->data = NULL;
+    buffer->len = 0;
+    buffer->callback = callback;
+    buffer->callback_userptr = userptr;
+    SDL_copyp(&buffer->spec, &spec);
+    SDL_AtomicDecRef(&buffer->refcount);  // ready to go!
+}
+ENTRYPOINTVOID(alBufferCallbackSOFT,(ALuint name, ALenum alfmt, ALsizei freq, ALBUFFERCALLBACKTYPESOFT callback, ALvoid *userptr),(name, alfmt, freq, callback, userptr))
+
+
+static void _alGetBuffer3PtrSOFT(ALuint name, ALenum param, ALvoid **ptr0, ALvoid **ptr1, ALvoid **ptr2)
+{
+    set_al_error(get_current_context(), AL_INVALID_ENUM); // nothing in any extension we currently support uses this.
+}
+ENTRYPOINTVOID(alGetBuffer3PtrSOFT,(ALuint name, ALenum param, ALvoid **ptr0, ALvoid **ptr1, ALvoid **ptr2),(name, param, ptr0, ptr1, ptr2))
+
+
+static void _alGetBufferPtrvSOFT(ALuint name, ALenum param, ALvoid **ptr)
+{
+    ALCcontext *ctx = get_current_context();
+    ALbuffer *buffer = get_buffer(ctx, name, NULL);
+    if (!buffer) {
+        return;
+    }
+
+    switch (param) {
+        case AL_BUFFER_CALLBACK_FUNCTION_SOFT: *ptr = (ALvoid *) buffer->callback; break;
+        case AL_BUFFER_CALLBACK_USER_PARAM_SOFT: *ptr = (ALvoid *) buffer->callback_userptr; break;
+        default: set_al_error(ctx, AL_INVALID_ENUM); break;
+    }
+}
+ENTRYPOINTVOID(alGetBufferPtrvSOFT,(ALuint name, ALenum param, ALvoid **ptr),(name, param, ptr))
+
+
+static void _alGetBufferPtrSOFT(ALuint name, ALenum param, ALvoid **ptr)
+{
+    switch (param) {
+        case AL_BUFFER_CALLBACK_FUNCTION_SOFT:
+        case AL_BUFFER_CALLBACK_USER_PARAM_SOFT:
+            alGetBufferPtrvSOFT(name, param, ptr);
+            break;
+        default: set_al_error(get_current_context(), AL_INVALID_ENUM); break;
+    }
+}
+ENTRYPOINTVOID(alGetBufferPtrSOFT,(ALuint name, ALenum param, ALvoid **ptr),(name, param, ptr))
 
 // end of mojoal.c ...
 
