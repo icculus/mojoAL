@@ -1009,7 +1009,7 @@ static void calculate_distance_attenuation_and_angle(const ALCcontext *ctx, cons
     if (has_neon) { calculate_distance_attenuation_and_angle_neon(ctx, src, _gain, _radians); return; }
     #endif
 
-    #if SDL_MIXER_NEED_SCALAR_FALLBACK
+    #if NEED_SCALAR_FALLBACK
     calculate_distance_attenuation_and_angle_scalar(ctx, src, _gain, _radians);
     #else
     SDL_assert(!"uhoh, we didn't compile in scalar fallback!");
