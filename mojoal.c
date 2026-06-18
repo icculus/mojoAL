@@ -791,7 +791,10 @@ static ALfloat calculate_distance_attenuation(const ALCcontext *ctx, const ALsou
     FIXME("check divisions by zero");
 
     const ALenum distance_model = ctx->source_distance_model ? src->distance_model : ctx->distance_model;
-    switch (ctx->distance_model) {
+    switch (distance_model) {
+        case AL_NONE:
+            return 1.0f;
+
         case AL_INVERSE_DISTANCE_CLAMPED:
             distance = SDL_min(SDL_max(distance, src->reference_distance), src->max_distance);
             SDL_FALLTHROUGH;
@@ -1018,11 +1021,9 @@ static void calculate_distance_attenuation_and_angle(const ALCcontext *ctx, cons
 
 static void calculate_channel_gains(const ALCcontext *ctx, ALsource *src)
 {
-    // rolloff==0.0f makes all distance models result in 1.0f, and we never spatialize non-mono sources, per the AL spec.
-    const ALenum distance_model = ctx->source_distance_model ? src->distance_model : ctx->distance_model;
-    const ALboolean spatialize = (distance_model != AL_NONE) &&
-                                 (src->queue_channels == 1) &&
-                                 (src->rolloff_factor != 0.0f);
+    // We never spatialize non-mono sources, per the AL spec. Distance
+    // attenuation is a separate concern from mono source panning.
+    const ALboolean spatialize = (src->queue_channels == 1);
 
     // this goes through the steps the AL spec dictates for gain and distance attenuation...
 
